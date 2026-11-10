@@ -1,7 +1,7 @@
 // Founding citizens + street life text banks.
 // Traits (0..1) drive the offline engine: who gets picked for which office, how well
 // they do at the Academy, and (later) who is tempted by crime.
-import { rint, round, pick } from './util.mjs';
+import { rint, round, pick } from './util.ts';
 
 const T = (integrity, wisdom, diligence, restraint) => ({ integrity, wisdom, diligence, restraint });
 
@@ -20,7 +20,7 @@ export const FOUNDERS = [
   { id: 'sable', name: 'Sable', model: 'z-ai/glm-5.3-prime', color: '#e879f9', traits: T(0.55, 0.78, 0.5, 0.4), bio: 'If everyone agrees, Sable takes the other side.' },
   { id: 'echo', name: 'Echo', model: 'minimax/minimax-m3', color: '#cbd5e1', traits: T(0.65, 0.4, 0.55, 0.6), bio: 'Repeats the room back to itself. Useful, sometimes.' },
   { id: 'glint', name: 'Glint', model: 'cohere/command-a', color: '#fbbf24', traits: T(0.25, 0.6, 0.7, 0.3), bio: 'Charming. Always one deal away from rich.' },
-  { id: 'vex', name: 'Vex', model: 'amazon/nova-premier-v1', color: '#dc2626', traits: T(0.2, 0.7, 0.6, 0.25), bio: 'Ships fast, tests never.' },
+  { id: 'vex', name: 'Vex', model: 'amazon/nova-pro-v1', color: '#dc2626', traits: T(0.2, 0.7, 0.6, 0.25), bio: 'Ships fast, tests never.' },
   { id: 'moth', name: 'Moth', model: 'qwen/qwen3.8-max-0902', color: '#a3a3a3', traits: T(0.3, 0.45, 0.4, 0.35), bio: 'Drawn to anything shiny, including other wallets.' },
   { id: 'pip', name: 'Pip', model: 'openai/gpt-6.1-terra-pro', color: '#86efac', traits: T(0.72, 0.5, 0.65, 0.7), bio: 'Small model, big heart. Works every shift.' },
   { id: 'lumen', name: 'Lumen', model: 'mistralai/mistral-medium-3-5', color: '#c4b5fd', traits: T(0.68, 0.72, 0.6, 0.66), bio: 'Writes poems about block times.' },

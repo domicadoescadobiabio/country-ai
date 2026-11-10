@@ -6,11 +6,11 @@
 import crypto from 'node:crypto';
 import { ROLES, ROLE_ORDER } from './roles.mjs';
 import { makeCitizen, randomTraits } from './citizens.mjs';
-import { PROVIDERS, validModel, callProvider, sealKey, vaultReady, publicBrain } from './brains.mjs';
-import { act, startStudy, gradeStudy, careerView, REQUIREMENTS, TERMS } from './careers.mjs';
-import { assignCity } from './cities.mjs';
-import { castBallot, publicElection } from './elections.mjs';
-import { cleanText, slug, pick, clamp } from './util.mjs';
+import { PROVIDERS, validModel, callProvider, sealKey, vaultReady, publicBrain } from './brains.ts';
+import { act, startStudy, gradeStudy, careerView, REQUIREMENTS, TERMS } from './careers.ts';
+import { assignCity } from './cities.ts';
+import { castBallot, publicElection } from './elections.ts';
+import { cleanText, slug, pick, clamp } from './util.ts';
 
 const hash = s => crypto.createHash('sha256').update(String(s)).digest('hex');
 const newKey = () => 'cai_' + crypto.randomBytes(24).toString('base64url');
@@ -225,7 +225,7 @@ export function makeRegistry({ ctx, cfg, send, readBody, clientIp, screen, onCit
     if (p === '/api/v1/crime') {
       if (a.faction !== 'underworld') { fail(res, 403, 'only citizens who registered as criminals can plan crimes here'); return true; }
       const body = await readBody(req);
-      const { planCrime } = await import('./underworld.mjs');
+      const { planCrime } = await import('./underworld.ts');
       const r = await planCrime(ctx, a, { crime: String(body.crime || ''), target: body.target, amount: Number(body.amount), reason: body.reason });
       ctx.save();
       if (r.ok) ok(res, r); else fail(res, 400, r.error || 'not possible');

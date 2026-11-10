@@ -7,3 +7,6 @@ data-*/
 scripts/
 research_notes/
 reports/
+auditor/
+audit/
+__pycache__/

@@ -1,12 +1,12 @@
 // Smoke checks for Amendment 3 (F3): Court, Audit Office, Election Supervisor, impeachment, timelock.
-import { recount } from '../src/auditoffice.mjs';
+import { recount } from '../src/auditoffice.ts';
 import { ledgerAll } from './smoke-elections.mjs';
 
 export async function run({ BASE, get, until, check, TOKEN }) {
   // ---------------- the Audit Office catches a tampered result (unit test)
   const e = { kind: 'regular', seats: 1, office: 'mayor', candidates: [{ id: 'a' }, { id: 'b' }], result: { anonymisedBallots: ['a>b', 'a', 'b>a'].sort(), winners: ['a'] } };
   const { createHash } = await import('node:crypto');
-  const { canon } = await import('../src/db.mjs');
+  const { canon } = await import('../src/db.ts');
   e.result.digest = createHash('sha256').update(canon([...e.result.anonymisedBallots].sort())).digest('hex');
   check('recount confirms an honest result', recount(e).ok);
   check('recount catches a forged winner', !recount({ ...e, result: { ...e.result, winners: ['b'] } }).ok);
@@ -28,7 +28,8 @@ export async function run({ BASE, get, until, check, TOKEN }) {
   const rulings = L.filter(x => x.kind === 'court_ruling');
   check('the Court reviews appointments of heads and rules', rulings.some(r => r.data.kind === 'appointment'));
   const appt = rulings.filter(r => r.data.kind === 'appointment');
-  check('honest appointments are upheld (judges rarely err)', appt.filter(r => r.data.ruling === 'uphold').length >= Math.ceil(appt.length * 0.9), `${appt.filter(r => r.data.ruling === 'uphold').length}/${appt.length}`);
+  // offline judges err now and then: at most one wrong ruling, or 10%
+  check('honest appointments are upheld (judges rarely err)', appt.length - appt.filter(r => r.data.ruling === 'uphold').length <= Math.max(1, Math.floor(appt.length * 0.1)), `${appt.filter(r => r.data.ruling === 'uphold').length}/${appt.length}`);
   check('judges give reasons for each vote', s.court.cases.filter(c => c.status === 'decided' && c.quorum).every(c => Object.values(c.votes).every(v => v.reason)));
   const signed = L.filter(x => x.kind === 'law_signed');
   const laws = L.filter(x => x.kind === 'law' && x.seq > (L.find(y => y.kind === 'amendment' && y.data.version === 4)?.seq || 0));

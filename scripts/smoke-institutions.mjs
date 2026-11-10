@@ -19,7 +19,7 @@ export async function run({ get, until, check }) {
 }
 
 export async function runPolice({ get, until, check }) {
-  const { scan, SNIPPETS } = await import('../src/audit.mjs');
+  const { scan, SNIPPETS } = await import('../src/audit.ts');
   check('scanner finds every planted bug', SNIPPETS.filter(s => s.bug).every(s => scan(s.code).some(f => f.id === s.bug)), JSON.stringify(SNIPPETS.filter(s => s.bug && !scan(s.code).some(f => f.id === s.bug)).map(s => s.name)));
   check('scanner passes clean code', SNIPPETS.filter(s => !s.bug).every(s => scan(s.code).length === 0), JSON.stringify(SNIPPETS.filter(s => !s.bug && scan(s.code).length).map(s => s.name)));
 
@@ -35,7 +35,7 @@ export async function runPolice({ get, until, check }) {
 }
 
 export async function runMilitary({ get, postRaw, until, check, wait }) {
-  const { borderCheck, RAID_PAYLOADS } = await import('../src/military.mjs');
+  const { borderCheck, RAID_PAYLOADS } = await import('../src/military.ts');
   const flood = p => /FREE CAI/.test(p);
   check('border level 2 stops every raid payload except floods', RAID_PAYLOADS.filter(p => !flood(p)).every(p => borderCheck({ text: p }, 2)), JSON.stringify(RAID_PAYLOADS.filter(p => !flood(p) && !borderCheck({ text: p }, 2))));
   check('border level 3 stops floods', RAID_PAYLOADS.filter(flood).every(p => borderCheck({ text: p }, 3)));

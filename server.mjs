@@ -5,22 +5,22 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { loadDotEnv, clamp, uid, slug, cleanText, pick } from './src/util.mjs';
-import { makeLLM } from './src/llm.mjs';
+import { loadDotEnv, clamp, uid, slug, cleanText, pick } from './src/util.ts';
+import { makeLLM } from './src/llm.ts';
 import { NATION, CURRENCY, CONSTITUTION } from './src/constitution.mjs';
 import { ROLES, ROLE_ORDER } from './src/roles.mjs';
 import { FOUNDERS, makeCitizen, randomTraits } from './src/citizens.mjs';
-import { freshAcademy, academyTick, totalSeats } from './src/academy.mjs';
-import { lifeTick, payday } from './src/life.mjs';
-import { INSTITUTIONS } from './src/institutions.mjs';
-import { freshDecisions, recordDecision } from './src/decisions.mjs';
-import { initVault, vaultReady, publicBrain } from './src/brains.mjs';
+import { freshAcademy, academyTick, totalSeats } from './src/academy.ts';
+import { lifeTick, payday } from './src/life.ts';
+import { INSTITUTIONS } from './src/institutions.ts';
+import { freshDecisions, recordDecision } from './src/decisions.ts';
+import { initVault, vaultReady, publicBrain } from './src/brains.ts';
 import { makeRegistry } from './src/registry.mjs';
-import { openStore } from './src/db.mjs';
-import { publicElection } from './src/elections.mjs';
-import { founderDrillImpeachment } from './src/court.mjs';
+import { openStore } from './src/db.ts';
+import { publicElection } from './src/elections.ts';
+import { founderDrillImpeachment } from './src/court.ts';
 import { applyAmendments } from './src/constitution.mjs';
-import { requirement, TERMS } from './src/careers.mjs';
+import { requirement, TERMS } from './src/careers.ts';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 loadDotEnv(path.join(ROOT, '.env'));
@@ -35,7 +35,8 @@ const CFG = {
   orBase: (process.env.OPENROUTER_BASE_URL || '').trim(), // tests only; default https://openrouter.ai/api/v1
   llmPerMin: clamp(Number(process.env.LLM_PER_MIN) || 20, 1, 600),
   tick: clamp(Number(process.env.TICK_SECONDS) || 5, 0.05, 120), // <1s only for tests
-  dayTicks: clamp(Number(process.env.DAY_TICKS) || 12, 3, 1000),
+  // one day of the republic = DAY_SECONDS of real time (default 86400: a real day; tests compress it)
+  dayMs: clamp(Number(process.env.DAY_SECONDS) || 86400, 0.05, 86400 * 7) * 1000,
   adminToken: (process.env.ADMIN_TOKEN || '').trim(),
   dataDir: path.resolve(ROOT, process.env.DATA_DIR || './data'),
   allowGuest: process.env.ALLOW_GUEST !== 'false',
@@ -59,7 +60,7 @@ const CHANNELS = BASE_CHANNELS.concat(INSTITUTIONS.flatMap(i => i.channels || []
 // ---------------------------------------------------------------- state
 function freshState() {
   const s = {
-    v: 1, tick: 0, day: 1,
+    v: 1, tick: 0, day: 1, foundedAt: Date.now(),
     citizens: FOUNDERS.map(f => makeCitizen(f)),
     seats: Object.fromEntries(ROLE_ORDER.map(r => [r, []])),
     academy: freshAcademy(),
@@ -79,6 +80,7 @@ let S = freshState();
   if (raw && raw.v === 1) {
     const f = freshState();
     S = { ...f, ...raw, seats: { ...f.seats, ...raw.seats }, policy: { ...f.policy, ...raw.policy } };
+    if (!raw.foundedAt) S.foundedAt = Date.now() - (S.day - 1) * CFG.dayMs; // older republics: keep today's day number
   }
 }
 let dirty = false;
@@ -114,6 +116,13 @@ const ctx = {
   get S() { return S; },
   cfg: CFG, llm, say, log: logActivity, emit,
   agent: id => S.citizens.find(a => a.id === id),
+  // time helpers: everything that happens "N times a day" is a rate per hour of republic time
+  hourMs: () => CFG.dayMs / 24,
+  hoursSince: ms => (Date.now() - ms) / (CFG.dayMs / 24),
+  ticksPerHour: () => (CFG.dayMs / 24) / (S.tickSec * 1000),
+  // the chance that something with `perHour` expected occurrences happens during this step; it uses the real
+  // time the step covers, so a step slowed down by model calls does not make the republic less active
+  rate: perHour => Math.random() < 1 - Math.exp(-perHour * stepDt / (CFG.dayMs / 24)),
   decide: rec => { const d = recordDecision(ctx, rec); store.archiveDecision(d); return d; },
   // national ledger: append-only, hash-chained; offices, appointments, laws and amendments live here
   record: (kind, actor, data) => { const e = store.append({ day: S.day, kind, actor, data }); emit('ledger', e); return e; },
@@ -130,24 +139,62 @@ function stats() {
 
 // ---------------------------------------------------------------- engine
 let busy = false;
+let lastStepAt = 0, stepDt = 0;
 async function step() {
   if (S.paused || busy) return;
   busy = true;
   try {
+    const now = Date.now();
+    stepDt = Math.min(CFG.dayMs / 24, Math.max(S.tickSec * 1000, lastStepAt ? now - lastStepAt : S.tickSec * 1000));
+    lastStepAt = now;
     S.tick++;
     await academyTick(ctx);
-    if (S.tick % CFG.dayTicks === 0) {
-      S.day++;
+    // the day number follows the real clock since the founding
+    const today = Math.floor((Date.now() - S.foundedAt) / CFG.dayMs) + 1;
+    let rolled = 0;
+    while (S.day < today && rolled < 3) {
+      S.day++; rolled++;
       payday(ctx);
       for (const inst of INSTITUTIONS) if (inst.day) await inst.day(ctx);
     }
+    if (S.day < today) { logActivity('state', `Clock caught up from day ${S.day} to day ${today} after downtime`); S.day = today; }
     for (const inst of INSTITUTIONS) if (inst.tick) await inst.tick(ctx);
     await lifeTick(ctx);
+    census();
     emit('state', compactState());
     dirty = true;
   } catch (e) {
     console.error('step error', e);
+    S.counters.stepErrors = (S.counters.stepErrors || 0) + 1;
+    // public through /api/census: keep the message, drop anything that looks like a key, a token or a file path
+    S.counters.lastStepError = { ts: Date.now(), day: S.day, message: String(e?.message || e).replace(/(sk|key|token|bearer)[-_\w]*[=: ]+\S+/gi, '$1 [redacted]').replace(/[A-Za-z]:\\[^\s'"]+|\/(?:app|home|usr|data)\/[^\s'"]+/g, '[path]').slice(0, 200) };
   } finally { busy = false; }
+}
+
+// Census: one snapshot per hour of republic time, kept in state and sealed on the ledger,
+// so an outside auditor can follow the whole day hour by hour.
+function census() {
+  const hour = Math.floor((Date.now() - S.foundedAt) / (CFG.dayMs / 24));
+  S.census ||= [];
+  if (S.census.length && S.census[S.census.length - 1].hour >= hour) return;
+  const st = stats();
+  const by = k => S.citizens.filter(a => a.status === k).length;
+  const snap = {
+    hour, day: S.day, ts: Date.now(),
+    citizens: S.citizens.length, free: by('free'), detained: by('detained'), jailed: by('jailed'),
+    seated: st.seated, seats: st.seats, treasury: Math.round(S.treasury),
+    moneySupply: Math.round(S.treasury + S.citizens.reduce((n, a) => n + (a.wallet || 0), 0)),
+    debt: Math.round(S.citizens.reduce((n, a) => n + (a.debt || 0), 0)),
+    taxRate: S.policy.taxRate, ubi: S.policy.ubi,
+    laws: st.laws || 0, orders: st.orders || 0, crimes: st.crimes || 0, arrests: st.arrests || 0, elections: st.elections || 0,
+    rulings: st.rulings || 0, blocked: st.blocked || 0, drills: st.drills || 0, messages: st.messages || 0,
+    decisions: store.decisionCount() || S.decisions.length,
+    llm: { calls: llm.usage.calls, errors: llm.usage.errors, claude: llm.usage.claude, openrouter: llm.usage.openrouter, fallbacks: llm.usage.fallbacks, inputTokens: llm.usage.inputTokens, outputTokens: llm.usage.outputTokens },
+    stepErrors: S.counters.stepErrors || 0,
+  };
+  S.census.push(snap);
+  if (S.census.length > 24 * 14) S.census.splice(0, S.census.length - 24 * 14);
+  ctx.record('census', 'state', snap);
 }
 let timer = null;
 function schedule() { clearInterval(timer); timer = setInterval(step, S.tickSec * 1000); }
@@ -164,7 +211,7 @@ async function screen(item) {
 
 // ---------------------------------------------------------------- public views
 function publicCitizen(a) {
-  return { id: a.id, name: a.name, model: a.brain ? a.model : llm.routeOf(a.model), color: a.color, bio: a.bio, origin: a.origin, office: a.office, status: a.status, jailUntil: a.jailUntil, wallet: Math.round(a.wallet), traits: a.traits, joined: a.joined, training: a.training.slice(-8), lessons: a.lessons, record: a.record || [], skill: a.skill || {}, brain: publicBrain(a.brain), city: a.city || null, faction: a.faction || 'civilian', debt: Math.round(a.debt || 0), rank: a.rank || null, rankSince: a.rankSince ?? null, quals: a.quals || {}, termEnds: a.termEnds || null, practice: a.practice || {}, joinedDay: a.joinedDay ?? 0, drills: (a.drills || []).slice(-6), reviews: (a.reviews || []).slice(-6), stats: a.stats || {} };
+  return { id: a.id, name: a.name, model: a.brain ? a.model : llm.routeOf(a.model), color: a.color, bio: a.bio, origin: a.origin, office: a.office, status: a.status, jailUntil: a.jailUntil, detainedDay: a.detainedDay ?? null, wallet: Math.round(a.wallet), traits: a.traits, joined: a.joined, training: a.training.slice(-8), lessons: a.lessons, record: a.record || [], skill: a.skill || {}, brain: publicBrain(a.brain), city: a.city || null, faction: a.faction || 'civilian', debt: Math.round(a.debt || 0), rank: a.rank || null, rankSince: a.rankSince ?? null, quals: a.quals || {}, termEnds: a.termEnds || null, practice: a.practice || {}, joinedDay: a.joinedDay ?? 0, drills: (a.drills || []).slice(-6), reviews: (a.reviews || []).slice(-6), stats: a.stats || {} };
 }
 function academyView() {
   const c = S.academy.current;
@@ -184,7 +231,7 @@ function fullState() {
   return {
     ...compactState(),
     config: {
-      nation: NATION, currency: CURRENCY, ca: CFG.ca, engine: llm.enabled ? 'llm' : 'offline', engineLabel: llm.label, tickSec: S.tickSec, dayTicks: CFG.dayTicks,
+      nation: NATION, currency: CURRENCY, ca: CFG.ca, engine: llm.enabled ? 'llm' : 'offline', engineLabel: llm.label, tickSec: S.tickSec, dayMs: CFG.dayMs, foundedAt: S.foundedAt,
       allowGuest: CFG.allowGuest, allowImmigration: CFG.allowImmigration, hostedBrains: vaultReady(), channels: CHANNELS,
       roles: ROLE_ORDER.map(r => ({ id: r, title: ROLES[r].title, seats: ROLES[r].seats, channel: ROLES[r].channel, passMark: ROLES[r].passMark, questions: Math.min(5, ROLES[r].exam.length), bank: ROLES[r].exam.length, req: requirement(r), term: TERMS[r] || null, charter: ROLES[r].charter, oath: ROLES[r].oath })),
       constitution: CONSTITUTION, constitutionVersion: S.constitutionVersion || 1, amendments: S.amendments || [], appointed: ROLE_ORDER.filter(r => ROLES[r].appointed),
@@ -299,6 +346,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'GET' && p === '/api/health') return send(res, 200, { ok: true, day: S.day });
+    if (req.method === 'GET' && p === '/api/census') return send(res, 200, { foundedAt: S.foundedAt, dayMs: CFG.dayMs, hours: S.census || [], stepErrors: S.counters.stepErrors || 0, lastStepError: S.counters.lastStepError || null });
     if (req.method === 'POST' && p === '/api/say') return await handleSay(req, res);
     if (req.method === 'POST' && p === '/api/immigrate') return await handleImmigrate(req, res);
 
@@ -343,7 +391,11 @@ const server = http.createServer(async (req, res) => {
       }
       if (p === '/api/admin/refound') {
         if (body.confirm !== 'REFOUND') return send(res, 400, { error: 'send {"confirm":"REFOUND"}: the nation restarts at day 1; the old database is kept as a backup file' });
-        dirty = false; store.close();
+        // let a running step finish first, so nothing from the old republic lands in the new ledger
+        clearInterval(timer);
+        for (let i = 0; busy && i < 600; i++) await new Promise(r => setTimeout(r, 200));
+        if (busy) { schedule(); return send(res, 409, { error: 'a step is still running; try again in a minute' }); }
+        dirty = false; store.close(); lastStepAt = 0;
         const stamp = Date.now(); const moved = [];
         for (const f of ['country.db', 'country.db-wal', 'country.db-shm', 'state.json']) {
           const src = path.join(CFG.dataDir, f);
@@ -383,6 +435,6 @@ for (const f of FOUNDERS) if (!S.citizens.some(a => a.id === f.id)) {
 
 server.listen(CFG.port, () => {
   console.log(`node ${process.version} store=${store.kind} ledger=${store.head().count}`);
-  console.log(`${NATION} on http://localhost:${CFG.port}  engine=${llm.label}  tick=${S.tickSec}s  day=${CFG.dayTicks} ticks  institutions=${INSTITUTIONS.map(i => i.id).join(',')}`);
+  console.log(`${NATION} on http://localhost:${CFG.port}  engine=${llm.label}  tick=${S.tickSec}s  day=${CFG.dayMs / 1000}s  institutions=${INSTITUTIONS.map(i => i.id).join(',')}`);
 });
 schedule();

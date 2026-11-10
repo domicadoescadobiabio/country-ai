@@ -1,5 +1,5 @@
 // Smoke checks for Amendment 2 (F2): elections, compulsory voting, secret ballots, recounts.
-import { irv, stv } from '../src/elections.mjs';
+import { irv, stv } from '../src/elections.ts';
 export async function ledgerAll(BASE) {
   const out = []; let after = 0;
   for (;;) { const j = await (await fetch(`${BASE}/api/ledger?after=${after}&limit=500`)).json(); out.push(...j.entries); if (j.entries.length < 500) return out; after = j.entries[j.entries.length - 1].seq; }
@@ -47,7 +47,9 @@ export async function run({ BASE, get, until, check }) {
   check('a President won with at least 20% in 2 cities (or went to a runoff)', presidents.every(e => !e.result.spread || e.result.spread.citiesOver20 >= 2), JSON.stringify(presidents.map(e => e.result.spread)));
   const mayors = all.filter(e => e.office === 'mayor');
   check('mayor elections only count residents of that city', mayors.every(e => e.electorate <= s.citizens.filter(a => a.city === e.city).length));
-  const decisions = s.decisions.filter(d => d.type === 'election');
+  // the public state shows only the latest decisions: wait until an election result is among them
+  const withElection = await until(x => x.decisions.some(d => d.type === 'election'), 90000).catch(() => s);
+  const decisions = withElection.decisions.filter(d => d.type === 'election');
   check('every result is in the decision log with its method', decisions.length > 0 && decisions.every(d => d.inputs.some(i => i[0] === 'Method')));
   const res = await fetch(BASE + '/api/elections/999999');
   check('unknown election id returns 404', res.status === 404);

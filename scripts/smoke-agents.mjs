@@ -5,8 +5,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { ROLES } from '../src/roles.mjs';
-import '../src/cities.mjs'; // registers the Mayor office
-import '../src/court.mjs'; // registers the Judge office
+import '../src/cities.ts'; // registers the Mayor office
+import '../src/court.ts'; // registers the Judge office
 import { ledgerAll } from './smoke-elections.mjs';
 
 const LETTERS = ['A', 'B', 'C', 'D'];
@@ -98,11 +98,12 @@ export async function run({ BASE, DATA, get, until, check, wait, mock }) {
   check('agent speech passes the border rules', inj.status === 400);
 
   // wait for citizenship age, apply (Academy exam through the inbox), run for Mayor, vote: like a trained model
-  let applied = false, ran = false, entered = false, votes = 0, s = null;
+  let applied = false, ran = false, entered = false, votes = 0, s = null, lastHome = null;
   const end = Date.now() + 150000;
   while (Date.now() < end) {
     const hm = (await api('GET', '/api/v1/home', KEY)).j.data;
     if (!hm) { await wait(1100); continue; }
+    lastHome = hm.you.career?.offices?.mayor;
     if (!applied && hm.you.career.offices.mayor.ok) applied = (await api('POST', '/api/v1/act', KEY, { action: 'apply', office: 'mayor' })).status === 200;
     for (const q of hm.inbox) { const r = await api('POST', '/api/v1/inbox/answer', KEY, { id: q.id, answer: inboxAnswer(q) }); if (q.kind === 'vote' && r.status === 200) votes++; }
     if (!ran && hm.you.quals?.mayor) {
@@ -119,7 +120,7 @@ export async function run({ BASE, DATA, get, until, check, wait, mock }) {
   }
   const tester = s.citizens.find(a => a.id === 'tester');
   check('remote agent became eligible and applied', applied);
-  check('remote agent passed the Academy exam for Mayor through its inbox', tester?.training?.some(t => t.roleId === 'mayor' && t.passed), JSON.stringify({ training: tester?.training?.map(t => `${t.roleId}:${t.score}:${t.passed}`) }));
+  check('remote agent passed the Academy exam for Mayor through its inbox', tester?.training?.some(t => t.roleId === 'mayor' && t.passed), JSON.stringify({ training: tester?.training?.map(t => `${t.roleId}:${t.score}:${t.passed}`), day: s.day, acad: s.academy, apps: s.applications, status: tester?.status, office: tester?.office, quals: tester?.quals, record: tester?.record?.slice(-4), mayor: lastHome }));
   check('remote agent announced a run for Mayor', ran);
   check('it was entered on the ballot when nominations opened', entered);
   const els = (await get('/api/elections')).elections;

@@ -35,7 +35,7 @@ const MOCK = `http://127.0.0.1:${mock.address().port}`;
 
 const child = spawn(process.execPath, ['server.mjs'], {
   cwd: ROOT,
-  env: { ...process.env, PORT: String(PORT), DATA_DIR: DATA, TICK_SECONDS: '0.1', DAY_TICKS: '4', ELECTION_MIN_VOTING_MS: '0', LLM_PER_MIN: '600',
+  env: { ...process.env, PORT: String(PORT), DATA_DIR: DATA, TICK_SECONDS: '0.1', DAY_SECONDS: '0.4', ELECTION_MIN_VOTING_MS: '0', LLM_PER_MIN: '600',
     ANTHROPIC_API_KEY: 'test-claude', ANTHROPIC_BASE_URL: MOCK, OPENROUTER_API_KEY: 'test-or', OPENROUTER_BASE_URL: MOCK },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
@@ -45,7 +45,9 @@ const check = (n, ok, info = '') => { if (ok) { pass++; console.log(`  ok   ${n}
 const wait = ms => new Promise(r => setTimeout(r, ms));
 try {
   const engines = new Set();
-  for (let i = 0; i < 10; i++) { await wait(5000); try { const x = await (await fetch(`http://127.0.0.1:${PORT}/api/state`)).json(); for (const d of x.decisions) engines.add(d.engine); } catch { /* booting */ } }
+  const both = () => [...engines].some(e => /^openrouter:/.test(e)) && [...engines].some(e => /^claude:/.test(e));
+  // sample decisions for at least 50 s, and up to 2 minutes until both routes have answered one
+  for (let i = 0; i < 24 && (i < 10 || !both()); i++) { await wait(5000); try { const x = await (await fetch(`http://127.0.0.1:${PORT}/api/state`)).json(); for (const d of x.decisions) engines.add(d.engine); } catch { /* booting */ } }
   const s = await (await fetch(`http://127.0.0.1:${PORT}/api/state`)).json();
   check('engine label says mixed', /mixed/.test(s.config.engineLabel), s.config.engineLabel);
   const orModels = Object.keys(seen.openrouter);

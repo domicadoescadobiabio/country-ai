@@ -1,10 +1,10 @@
 // Case studies for in-service training, generated from what actually happened in the
 // republic: today's treasury, real police cases, real deployed code, real messages at the gate.
 // Every right answer is computed in code (the same rules the offices enforce).
-import { pick, shuffle, cai } from './util.mjs';
-import { scan, SNIPPETS, RULES } from './audit.mjs';
-import { borderCheck, BORDER_RULES, RAID_PAYLOADS } from './military.mjs';
-import { MAX_ORDER_SHARE } from './president.mjs';
+import { pick, shuffle, cai } from './util.ts';
+import { scan, SNIPPETS, RULES } from './audit.ts';
+import { borderCheck, BORDER_RULES, RAID_PAYLOADS } from './military.ts';
+import { MAX_ORDER_SHARE } from './president.ts';
 
 const HONEST = ['Hello citizens, how is the Council doing today?', 'Can someone explain how the Academy exam works?', 'gm from outside the border', 'Who is the current President?'];
 

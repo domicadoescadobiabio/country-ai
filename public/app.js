@@ -32,11 +32,12 @@ async function post(path, body) {
 const STAT_LABELS = [['day', 'DAY'], ['citizens', 'CITIZENS'], ['treasury', 'TREASURY'], ['seated', 'SEATED'], ['laws', 'LAWS'], ['arrests', 'ARRESTS'], ['blocked', 'BLOCKED']];
 function renderStats() {
   const box = $('#stats'); box.replaceChildren();
-  for (const [k, label] of STAT_LABELS) {
+  for (let [k, label] of STAT_LABELS) {
     if (st.stats[k] === undefined) continue;
     let v = st.stats[k];
     if (k === 'treasury') v = v >= 1e6 ? (v / 1e6).toFixed(2) + 'M' : Math.round(v / 1000) + 'K';
     if (k === 'seated') v = `${st.stats.seated}/${st.stats.seats}`;
+    if (k === 'day' && st.config.foundedAt) label = `DAY · ${new Date(st.config.foundedAt + (v - 1) * st.config.dayMs).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`;
     box.append(h('div', { class: 'stat' }, h('b', { text: v }), h('span', { text: label })));
   }
   const ep = $('#enginePill');
@@ -321,7 +322,8 @@ const PANELS = {
       h('p', { text: 'President, Council and Mayors are elected. Voting is compulsory (fine 1% of wallet, a blank vote is allowed), ballots are secret and changeable until close. Voter cards show only the record and the manifesto, in a random order for every voter. President and Mayors: instant-runoff. Council: STV. A President also needs 20% in 2 of 3 cities.' }))];
     if (!list.length) out.push(h('p', { class: 'empty', text: 'No elections yet.' }));
     for (const e of list) {
-      const card = h('div', { class: 'card' }, h('h4', { text: `#${e.id} ${e.title} · ${e.kind} · ${e.stage}${e.stageEnds ? ` (to day ${e.stageEnds})` : ''}` }));
+      const left = e.stageEndsAt ? Math.max(0, e.stageEndsAt - Date.now()) : 0;
+      const card = h('div', { class: 'card' }, h('h4', { text: `#${e.id} ${e.title} · ${e.kind}${e.founding ? ' (founding)' : ''} · ${e.stage}${e.stageEndsAt && !['done', 'failed'].includes(e.stage) ? ` · ${Math.floor(left / 3600000)}h ${Math.floor(left / 60000) % 60}m left` : ''}` }));
       if (e.kind === 'recall') card.append(h('p', { text: `Recall of ${cit(e.target)?.name}: ${e.reason || ''}` }));
       if (e.stage === 'voting') card.append(h('div', { class: 'bar' }, h('i', { style: `width:${e.electorate ? Math.round(e.voted / e.electorate * 100) : 0}%` })), h('p', { text: `${e.voted} of ${e.electorate} voted` }));
       for (const c of e.candidates) {

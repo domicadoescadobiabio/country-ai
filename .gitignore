@@ -6,3 +6,6 @@ data-*/
 !.env.example
 .keys/
 .claude/settings.local.json
+__pycache__/
+*.pyc
+audit/*.jsonl

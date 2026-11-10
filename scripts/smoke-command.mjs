@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { openStore } from '../src/db.mjs';
+import { openStore } from '../src/db.ts';
 
 export async function run({ BASE, get, until, check }) {
   // ---------------- ledger integrity (unit test on a scratch database)
