@@ -35,8 +35,8 @@ load_admin_token() {
 
 admin_post() { # admin_post /api/admin/<path> '<json>'
   load_admin_token
-  # the token goes in through a file descriptor, so it never shows in the process list
-  curl -fsS -X POST "$COUNTRY_URL$1" -H 'content-type: application/json' -H @<(printf 'x-admin-token: %s\n' "$ADMIN_TOKEN") --data "$2"
+  # the token goes in through stdin, so it never shows in the process list
+  printf 'x-admin-token: %s\n' "$ADMIN_TOKEN" | curl -fsS -X POST "$COUNTRY_URL$1" -H 'content-type: application/json' -H @- --data "$2"
 }
 
 wait_healthy() { # wait_healthy [seconds]
