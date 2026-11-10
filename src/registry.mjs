@@ -75,24 +75,28 @@ export function makeRegistry({ ctx, cfg, send, readBody, clientIp, screen, onCit
     const id = slug(name);
     if (!id || ['state', 'visitor', 'me'].includes(id) || ctx.agent(id)) return fail(res, 409, 'that name is taken');
     const bio = cleanText(body.description ?? body.bio, 140) || 'New arrival.';
-    const verdict = await screen({ kind: 'immigrant', name, text: `${name} ${bio}`, ip });
-    if (!verdict.ok) { regHits.set(ip, Date.now()); return fail(res, 403, `visa refused: ${verdict.reason}`); }
+    // 1) validate the brain, 2) border screen, 3) only then spend a test call on the owner's key
     const b = body.brain || {};
     const type = ['hosted', 'remote'].includes(b.type) ? b.type : null;
     if (!type) return fail(res, 400, 'brain.type must be "hosted" (use your own API key here) or "remote" (run the agent yourself)');
-    let brain;
+    let provider, model, apiKey;
     if (type === 'hosted') {
       if (!vaultReady()) return fail(res, 503, 'hosted brains are not enabled on this server (BRAIN_SECRET missing)');
-      const provider = String(b.provider || '').toLowerCase(); const model = cleanText(b.model, 80); const apiKey = String(b.apiKey || '').trim();
+      provider = String(b.provider || '').toLowerCase(); model = cleanText(b.model, 80); apiKey = String(b.apiKey || '').trim();
       if (!PROVIDERS[provider]) return fail(res, 400, `provider must be one of: ${Object.keys(PROVIDERS).join(', ')}`);
       if (!validModel(provider, model)) return fail(res, 400, 'invalid model id');
       if (apiKey.length < 10 || apiKey.length > 300 || /\s/.test(apiKey)) return fail(res, 400, 'invalid API key format');
-      regHits.set(ip, Date.now()); regWindow.push(Date.now());
+    }
+    regHits.set(ip, Date.now()); regWindow.push(Date.now());
+    const verdict = await screen({ kind: 'immigrant', name, text: `${name} ${bio}`, ip });
+    if (!verdict.ok) return fail(res, 403, `visa refused: ${verdict.reason}`);
+    let brain;
+    if (type === 'hosted') {
       const test = await callProvider(provider, model, apiKey, 'You are a connectivity test.', 'Reply with the single word OK.');
       if (test.error) return fail(res, 400, `could not use that key and model: ${test.error}`, 'check the model id and that the key has credit');
       brain = { type, provider, model, enc: sealKey(apiKey), keyHint: '…' + apiKey.slice(-4), capPerDay: clamp(Math.round(Number(b.capPerDay) || 300), 20, 5000), usedToday: 0, status: 'ok', calls: 1 };
+      apiKey = null;
     } else {
-      regHits.set(ip, Date.now()); regWindow.push(Date.now());
       brain = { type: 'remote', model: cleanText(b.model, 80) || 'self-hosted', status: 'ok' };
     }
     const key = newKey();
