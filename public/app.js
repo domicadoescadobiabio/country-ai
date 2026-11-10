@@ -123,9 +123,11 @@ const TABS = [
   ['academy', 'Academy', () => true],
   ['citizen', 'Citizen', () => true],
   ['citizens', 'Citizens', () => true],
+  ['laws', 'Laws', () => st.laws !== undefined, true],
   ['treasury', 'Treasury', () => true],
   ['constitution', 'Constitution', () => true],
 ];
+const STAGE = { debate: 'in debate', vote: 'voting', president: 'on the President\'s desk', override: 'override vote', enacted: 'law', rejected: 'rejected', vetoed: 'vetoed' };
 function renderTabs() {
   const box = $('#tabs'); box.replaceChildren();
   for (const [id, label, show] of TABS) if (show()) box.append(h('button', { type: 'button', class: st.tab === id ? 'on' : '', text: label, onclick: () => { st.tab = id; renderTabs(); renderPanel(); } }));
@@ -174,6 +176,21 @@ const PANELS = {
     const list = st.citizens.slice().sort((x, y) => (y.office ? 1 : 0) - (x.office ? 1 : 0) || y.wallet - x.wallet);
     return [h('div', { class: 'citizens-list' }, list.map(a => h('div', { class: 'citizen-row', color: a.color, onclick: () => openCitizen(a.id) },
       h('i'), h('span', { text: a.name + (a.office ? ` · ${role(a.office)?.title}` : '') + (a.status === 'jailed' ? ' · jailed' : '') }), h('small', { text: cai(a.wallet) }))))];
+  },
+  laws() {
+    const out = [];
+    const live = (st.bills || []).find(b => ['debate', 'vote', 'president', 'override'].includes(b.stage));
+    if (live) {
+      const card = h('div', { class: 'card' }, h('h4', { text: `Bill #${live.id} · ${STAGE[live.stage]}` }), h('p', { text: live.title }));
+      for (const [id, yes] of Object.entries(live.votes)) card.append(h('div', { class: 'list-row' }, `${cit(id)?.name || id}: `, h('b', { class: yes ? 'a ok' : 'a bad', text: yes ? 'yes' : 'no' })));
+      out.push(card);
+    } else out.push(h('div', { class: 'card' }, h('h4', { text: 'No bill on the floor' }), h('p', { text: 'The Council tables a new bill when it has a quorum (3 of 5 seated).' })));
+    const laws = (st.laws || []).slice().reverse();
+    out.push(h('div', { class: 'card' }, h('h4', { text: `Law book (${laws.length})` }),
+      laws.length ? laws.map(l => h('div', { class: 'list-row' }, h('small', { text: `Law ${l.id} · day ${l.day} · ${l.yes}-${l.no} · ${l.how}` }), h('div', { text: `${l.title}. ${l.text}` }))) : h('p', { text: 'No laws yet.' })));
+    const past = (st.bills || []).filter(b => ['rejected', 'vetoed'].includes(b.stage)).slice(-10).reverse();
+    if (past.length) out.push(h('div', { class: 'card' }, h('h4', { text: 'Failed bills' }), past.map(b => h('div', { class: 'list-row' }, h('small', { text: `#${b.id} · ${STAGE[b.stage]}` }), h('div', { text: b.title })))));
+    return out;
   },
   treasury() {
     const p = st.policy || {}, e = st.econ || {};
