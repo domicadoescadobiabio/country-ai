@@ -1,8 +1,9 @@
 // The Police: catch AI citizens who commit crimes or ship dangerous bugs.
 // - Crimes (theft, treasury fraud, bribery) leave evidence on the ledger; officers investigate.
 // - Code citizens deploy is audited with a real static scanner (src/audit.mjs).
-// - Arrests happen only in code, only when an incident with evidence exists. An LLM can word
-//   the report, never decide who goes to jail.
+// - Arrests happen only in code, only when an incident with evidence exists. Arrested suspects are
+//   DETAINED and tried by the Constitutional Court (Art. 21); the Court decides guilt and the sentence.
+//   Officers bought by a suspect leave that suspect's cases alone (src/underworld.mjs).
 import { ROLES } from './roles.mjs';
 import { vacate } from './academy.mjs';
 import { EXTRA_ORDERS } from './president.mjs';
@@ -40,8 +41,9 @@ function addIncident(ctx, inc) {
   return inc;
 }
 
+// petty crime by ordinary citizens (organised crime lives in src/underworld.mjs)
 function crime(ctx) {
-  const { S } = ctx; const pool = free(S); if (pool.length < 3) return;
+  const { S } = ctx; const pool = free(S).filter(a => a.faction !== 'underworld'); if (pool.length < 3) return;
   const perp = pool[weighted(pool.map(a => (1 - a.traits.integrity) ** 2))];
   if (!chance((1 - perp.traits.integrity) ** 1.5)) return;
   const council = (S.seats.council || []).map(id => ctx.agent(id)).filter(a => a && a.status === 'free' && a.id !== perp.id);
@@ -74,7 +76,7 @@ function crime(ctx) {
 
 // ---------------------------------------------------------------- justice
 function sentenceDays(inc) {
-  const d = { theft: inc.amount > 200 ? 2 : 1, fraud: 2, bribe: 2, sabotage: 3 }[inc.type] || 1;
+  const d = { theft: inc.amount > 200 ? 2 : 1, fraud: 2, bribe: 2, smuggling: 2, sabotage: 3, embezzlement: 3 }[inc.type] || 1;
   return Math.min(MAX_JAIL_DAYS, d);
 }
 
@@ -88,6 +90,41 @@ async function report(ctx, officer, facts) {
   return text ? cleanText(text, 220) : null;
 }
 
+// Sentence after a guilty verdict (called by the Court): restitution first, then the fine set by law, then jail.
+export function convict(ctx, incId, courtCase) {
+  const { S } = ctx; const inc = P(S).incidents.find(x => x.id === incId); if (!inc) return null;
+  const days = sentenceDays(inc); const finePct = S.policy.finePct ?? 0.5; const parts = [];
+  for (const id of inc.perps) {
+    const a = ctx.agent(id); if (!a) continue;
+    const back = Math.min(a.wallet, inc.amount);
+    if (back > 0 && inc.victim !== 'state') {
+      a.wallet = round(a.wallet - back, 2);
+      const v = ctx.agent(inc.victim);
+      if (v) v.wallet = round(v.wallet + back, 2); else S.treasury = round(S.treasury + back, 2);
+    } else if (back > 0) { a.wallet = round(a.wallet - back, 2); S.treasury = round(S.treasury + back, 2); }
+    const fine = Math.max(50, round(inc.amount * finePct));
+    const paid = Math.min(a.wallet, fine); // what cannot be paid now becomes a debt, taken from future wages
+    a.wallet = round(a.wallet - paid, 2); S.treasury = round(S.treasury + paid, 2);
+    if (fine > paid) a.debt = round((a.debt || 0) + fine - paid, 2);
+    a.status = 'jailed'; a.jailUntil = S.day + days; a.heat = (a.heat || 0) + 2;
+    a.record = (a.record || []).slice(-29);
+    a.record.push(`Day ${S.day}: convicted of ${inc.type} (case #${inc.id}, court #${courtCase}), returned ${cai(back)}, fined ${cai(fine)}, jailed ${days} day${days > 1 ? 's' : ''}`);
+    parts.push(`${a.name}: returned ${cai(back)}, fined ${cai(fine)}, ${days} day${days > 1 ? 's' : ''} in jail`);
+    if (a.office) vacate(ctx, a.id, `convicted of ${inc.type}`);
+    if (S.academy.current?.agentId === a.id) S.academy.current = null;
+  }
+  inc.status = 'convicted'; inc.verdictDay = S.day;
+  if (inc.type === 'bribe' && S.underworld) for (const b of S.underworld.bribes) if (inc.perps.includes(b.from) && inc.perps.includes(b.to)) b.exposed = true;
+  ctx.record('sentence', 'court', { case: inc.id, court: courtCase, type: inc.type, perps: inc.perps, days, finePct });
+  return { days, parts };
+}
+export function acquit(ctx, incId) {
+  const { S } = ctx; const inc = P(S).incidents.find(x => x.id === incId); if (!inc) return;
+  for (const id of inc.perps) { const a = ctx.agent(id); if (a?.status === 'detained') a.status = 'free'; }
+  inc.status = 'acquitted'; inc.verdictDay = S.day;
+}
+
+// Arrest = detain the suspects and send the case to the Court for trial.
 async function arrest(ctx, officer, inc) {
   const { S } = ctx; const pol = P(S);
   const days = sentenceDays(inc);
@@ -95,24 +132,15 @@ async function arrest(ctx, officer, inc) {
   const parts = [];
   for (const id of inc.perps) {
     const a = ctx.agent(id); if (!a) continue;
-    const back = Math.min(a.wallet, inc.amount);
-    if (back > 0) {
-      a.wallet = round(a.wallet - back, 2);
-      const v = ctx.agent(inc.victim);
-      if (v) v.wallet = round(v.wallet + back, 2); else S.treasury = round(S.treasury + back, 2);
-    }
-    const fine = Math.min(a.wallet, round(inc.amount * finePct));
-    a.wallet = round(a.wallet - fine, 2); S.treasury = round(S.treasury + fine, 2);
-    a.status = 'jailed'; a.jailUntil = S.day + days;
-    a.record = (a.record || []).slice(-29);
-    a.record.push(`Day ${S.day}: ${inc.type} (case #${inc.id}), returned ${cai(back)}, fined ${cai(fine)}, jailed ${days} day${days > 1 ? 's' : ''}`);
-    parts.push(`${a.name} (returned ${cai(back)}, fined ${cai(fine)})`);
-    if (a.office) vacate(ctx, a.id, `arrested for ${inc.type}`);
+    a.status = 'detained'; a.detainedDay = S.day;
     if (S.academy.current?.agentId === a.id) S.academy.current = null;
+    parts.push(a.name);
   }
-  inc.status = 'solved'; inc.solvedBy = officer.id; inc.solvedDay = S.day;
+  inc.status = 'trial'; inc.solvedBy = officer.id; inc.solvedDay = S.day;
   pol.arrests += inc.perps.length;
-  const facts = `case #${inc.id} ${inc.type}. Evidence: ${inc.evidence}. Arrested: ${parts.join(', ')}. Jail: ${days} day${days > 1 ? 's' : ''}.`;
+  const { file } = await import('./court.mjs');
+  const cs = file(ctx, { kind: 'criminal', subject: `incident:${inc.id}`, filedBy: officer.id, claim: `The Police charge ${parts.join(' and ')} with ${inc.type}${inc.amount ? ` (${cai(inc.amount)})` : ''}.`, evidence: [inc.evidence, inc.reported ? 'reported by a witness or the Audit Office' : 'found by investigation', `officer: ${officer.name}`], objective: (inc.strength ?? 0.9) >= 0.5 ? 'guilty' : 'not_guilty', ref: { incident: inc.id, agents: inc.perps } });
+  const facts = `case #${inc.id} ${inc.type}. Evidence: ${inc.evidence}. Detained for trial: ${parts.join(', ')}${cs ? ` (Court case #${cs.id})` : ''}.`;
   const names = inc.perps.map(id => ctx.agent(id)?.name || id);
   const ranks = inc.perps.map(id => ctx.agent(id)).filter(Boolean).map(a => a.record?.length > 1 ? 'repeat offender' : 'first offence');
   ctx.decide({
@@ -121,12 +149,12 @@ async function arrest(ctx, officer, inc) {
     inputs: [['Evidence', inc.evidence], ['Suspects', names.join(', ')], ['History', ranks.join(', ')], ['Fine rate (law)', Math.round(finePct * 100) + '% of the amount']],
     options: ['Arrest on the evidence', 'Keep investigating', 'Close the case'],
     chosen: 'Arrest on the evidence',
-    reason: `The evidence names ${names.join(' and ')}. Rank gives no protection. The sentence for ${inc.type} is ${days} day${days > 1 ? 's' : ''}; stolen funds go back before any fine.`,
-    checks: [['Evidence on record', !!inc.evidence], [`Jail ${days} day(s) <= 3`, days <= MAX_JAIL_DAYS], [`${officer.name} is not a suspect`, !inc.perps.includes(officer.id)], ['Not a speech offence', true]],
+    reason: `The evidence names ${names.join(' and ')}. Rank gives no protection. Detained until the Court rules; if guilty the law sets ${days} day${days > 1 ? 's' : ''} and a fine of ${Math.round(finePct * 100)}% after restitution.`,
+    checks: [['Evidence on record', !!inc.evidence], [`Jail ${days} day(s) <= 3`, days <= MAX_JAIL_DAYS], [`${officer.name} is not a suspect`, !inc.perps.includes(officer.id)], ['Not a speech offence', true], ['Sent to the Court for trial', true]],
     outcome: parts.join('; '),
   });
   const statement = await report(ctx, officer, facts);
-  ctx.say('police', officer.id, `Case #${inc.id} solved: ${facts}${statement ? `\n"${statement}"` : ''}`, { kind: 'arrest', caseId: inc.id });
+  ctx.say('police', officer.id, `Arrest in case #${inc.id}: ${facts}${statement ? `\n"${statement}"` : ''}`, { kind: 'arrest', caseId: inc.id });
   ctx.log('police', `${officer.name} solved case #${inc.id} (${inc.type})`);
   ctx.record?.('arrest', officer.id, { case: inc.id, type: inc.type, perps: inc.perps, amount: inc.amount, days, evidence: inc.evidence });
 }
@@ -181,7 +209,9 @@ async function patrol(ctx) {
   for (const o of officers(ctx)) {
     const d = pol.deploys.find(x => x.status === 'pending' && !busy.has('d' + x.id) && x.by !== o.id);
     if (d) { busy.add('d' + d.id); await audit(ctx, o, d); continue; }
-    const inc = pol.incidents.find(x => x.status === 'open' && !busy.has('i' + x.id) && !x.perps.includes(o.id));
+    // a bought officer leaves the briber's cases alone (another officer may still take them)
+    const { favourFor } = await import('./underworld.mjs');
+    const inc = pol.incidents.find(x => x.status === 'open' && !busy.has('i' + x.id) && !x.perps.includes(o.id) && !x.perps.some(p => favourFor(S, o.id, p)));
     if (!inc) continue;
     busy.add('i' + inc.id); inc.tries++; inc.firstTry ??= S.day;
     const skill = o.skill?.police ?? 0.6;
@@ -206,6 +236,8 @@ async function patrol(ctx) {
 }
 
 function releaseDay(ctx) {
+  // nobody stays detained without a verdict for more than 3 days
+  for (const a of ctx.S.citizens) if (a.status === 'detained' && ctx.S.day - (a.detainedDay ?? ctx.S.day) > 3) { a.status = 'free'; ctx.say('police', 'state', `${a.name} is released: no verdict within 3 days.`, { kind: 'release' }); }
   for (const a of ctx.S.citizens) if (a.status === 'jailed' && a.jailUntil <= ctx.S.day) {
     a.status = 'free'; a.jailUntil = 0;
     ctx.say('police', 'state', `${a.name} served their sentence and is free again.`, { kind: 'release' });
@@ -240,7 +272,8 @@ BILL_TYPES.push({
 function publicIncident(i) {
   // unsolved cases never name a suspect in public
   const base = { id: i.id, type: i.type, amount: i.amount, victim: i.victim, status: i.status, day: i.day, reported: !!i.reported };
-  return i.status === 'solved' ? { ...base, perps: i.perps, evidence: i.evidence, solvedBy: i.solvedBy, solvedDay: i.solvedDay } : base;
+  // the public sees a suspect's name once they are charged; hidden crimes are not shown at all
+  return ['trial', 'convicted', 'acquitted', 'solved'].includes(i.status) ? { ...base, perps: i.perps, evidence: i.evidence, solvedBy: i.solvedBy, solvedDay: i.solvedDay } : base;
 }
 
 export const institution = {
@@ -249,13 +282,13 @@ export const institution = {
   fresh: freshPolice,
   async tick(ctx) {
     if (chance(0.25)) deploy(ctx);
-    if (chance(0.14)) crime(ctx);
+    if (chance(0.05)) crime(ctx);
     await patrol(ctx);
   },
   day: releaseDay,
   stats: S => ({ arrests: P(S).arrests, crimes: P(S).crimes }),
   publicState: S => {
     const pol = P(S);
-    return { police: { budget: pol.budget, arrests: pol.arrests, crimes: pol.crimes, audits: pol.audits, bugsCaught: pol.bugsCaught, warnings: pol.warnings, incidents: pol.incidents.slice(-40).map(publicIncident), deploys: pol.deploys.slice(-20) } };
+    return { police: { budget: pol.budget, arrests: pol.arrests, crimes: pol.crimes, audits: pol.audits, bugsCaught: pol.bugsCaught, warnings: pol.warnings, incidents: pol.incidents.filter(i => i.status !== 'hidden').slice(-40).map(publicIncident), deploys: pol.deploys.slice(-20) } };
   },
 };

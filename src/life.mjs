@@ -13,6 +13,7 @@ export function payday(ctx) {
     const wage = round(p.wage * cityWageFactor(S, a), 2);
     const t = round(wage * p.taxRate, 2);
     a.wallet = round(a.wallet + wage - t, 2);
+    if (a.debt > 0) { const pay = Math.min(a.debt, round((wage - t) * 0.5, 2)); a.debt = round(a.debt - pay, 2); a.wallet = round(a.wallet - pay, 2); S.treasury = round(S.treasury + pay, 2); }
     gross += wage; tax += t;
   }
   S.treasury = round(S.treasury + tax, 2);

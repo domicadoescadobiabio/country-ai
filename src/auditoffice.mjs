@@ -50,9 +50,11 @@ function moneySupply(S) {
   return round(S.citizens.reduce((n, a) => n + a.wallet, 0) + S.treasury + Object.values(S.cities || {}).reduce((n, c) => n + (c.budget || 0), 0) + (S.police?.budget || 0), 2);
 }
 
-function dailyAudit(ctx) {
+async function dailyAudit(ctx) {
   const { S } = ctx; const au = A(S);
   const findings = [];
+  const { auditUncover } = await import('./underworld.mjs');
+  for (const inc of auditUncover(ctx)) findings.push(`irregularity referred to the Police: ${inc.type}, ${cai(inc.amount)} (case #${inc.id})`);
   const neg = S.citizens.filter(a => a.wallet < -0.01);
   if (S.treasury < 0) findings.push(`treasury is negative (${cai(S.treasury)})`);
   if (neg.length) findings.push(`${neg.length} wallet(s) negative`);
@@ -81,6 +83,6 @@ export const institution = {
   channels: [],
   fresh: () => ({ audit: { reports: [], recounts: 0, mismatches: 0 } }),
   async tick(ctx) { if (ctx.S.constitutionVersion >= 4) recountPending(ctx); },
-  day(ctx) { if (ctx.S.constitutionVersion >= 4) dailyAudit(ctx); },
+  async day(ctx) { if (ctx.S.constitutionVersion >= 4) await dailyAudit(ctx); },
   publicState: S => { const au = A(S); return { audit: { recounts: au.recounts, mismatches: au.mismatches, reports: au.reports.slice(-10) } }; },
 };

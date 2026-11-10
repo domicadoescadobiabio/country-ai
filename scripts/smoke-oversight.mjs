@@ -13,8 +13,8 @@ export async function run({ BASE, get, until, check, TOKEN }) {
   check('recount catches swapped ballots (digest)', !recount({ ...e, result: { ...e.result, anonymisedBallots: ['b>a', 'b', 'b>a'] } }).digestOk);
 
   // ---------------- live republic
-  const s = await until(x => x.config?.constitutionVersion === 4 && x.court?.slots.every(sl => sl.agent) && x.audit?.recounts > 0 && x.court.cases.some(c => c.status === 'decided'), 180000);
-  check('constitution v4 (courts and oversight) is in force', s.config.constitutionVersion === 4 && [16, 17, 18, 19, 20].every(n => s.config.constitution.some(a => a.n === n)));
+  const s = await until(x => x.config?.constitutionVersion >= 4 && x.court?.slots.every(sl => sl.agent) && x.audit?.recounts > 0 && x.court.cases.some(c => c.status === 'decided'), 180000);
+  check('constitution v4 (courts and oversight) is in force', s.config.constitutionVersion >= 4 && [16, 17, 18, 19, 20].every(n => s.config.constitution.some(a => a.n === n)));
   check('three judges seated: President, Council, lot', s.court.slots.every(sl => sl.agent) && new Set(s.court.slots.map(sl => sl.by)).size === 3);
   const judges = s.court.slots.map(sl => s.citizens.find(a => a.id === sl.agent));
   check('judges hold the qualification and no other office', judges.every(j => j.office === 'judge' && j.quals?.judge));

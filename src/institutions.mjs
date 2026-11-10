@@ -10,5 +10,6 @@ import { institution as audit } from './auditoffice.mjs';
 import { institution as cities } from './cities.mjs';
 import { institution as careers } from './careers.mjs';
 import { institution as training } from './training.mjs';
+import { institution as underworld } from './underworld.mjs';
 
-export const INSTITUTIONS = [president, council, police, military, command, elections, court, audit, cities, careers, training];
+export const INSTITUTIONS = [president, council, police, military, command, elections, court, audit, cities, careers, training, underworld];

@@ -51,14 +51,21 @@ const V4 = [
   { n: 20, title: 'Timelock and referendum', text: 'A law takes effect one day after it is signed. During that day citizens may sign a petition against it; if at least 15% of citizens (and at least 3) sign, the law goes to a referendum and takes effect only if the people approve it.' },
 ];
 
-export const VERSIONS = { 1: V1, 2: V2, 3: V3, 4: V4 };
+// Amendment 4 (v5): due process. The Police arrest, the Court judges.
+const V5 = [
+  ...V4.map(a => a.n === 5 ? { n: 5, title: 'The Police', text: 'The Police act only inside the country and only on evidence. They investigate crimes and dangerous bugs and arrest suspects, who are detained until trial. They do not sentence anyone. The Police are led by a Chief of Police. Rank gives no protection. Speech is never a crime.' } : a),
+  { n: 21, title: 'Criminal trials and corruption', text: 'Every arrested suspect is tried by the Constitutional Court within 2 days; without a verdict they go free after 3 days. Only the Court decides guilt, by majority, on the evidence. A guilty person returns what they took, pays the fine set by law, and serves at most 3 days in jail; an official found guilty loses their office. Offering a bribe and accepting one are both crimes. Any official may refuse or report a bribe; the Audit Office reports irregularities it finds in the books.' },
+];
+
+export const VERSIONS = { 1: V1, 2: V2, 3: V3, 4: V4, 5: V5 };
 export const AMENDMENTS = [
   { v: 2, title: 'Amendment 1: mandate and chain of command', summary: 'Separates qualification (Academy) from mandate (elections for President, Council and Mayors; chain of command for police and military). Adds Chief of Police and Commander of the Military, shortlisted by the Council and appointed by the President; officers appointed from the Merit Board top three; ranks Recruit, Officer, Senior Officer; the national ledger; a 10-day rule freeze.' },
 ];
 AMENDMENTS.push({ v: 3, title: 'Amendment 2: elections and the duty to vote', summary: 'President, Council and Mayors are now elected by the citizens (instant-runoff, STV for the Council with staggered terms, a city-spread rule for the President). Voting is compulsory with a small fine, a blank vote is allowed, ballots are secret and changeable until close, and voter cards hide model and owner. Elected officials who fail training face a recall vote instead of dismissal.' });
 AMENDMENTS.push({ v: 4, title: 'Amendment 3: courts and oversight', summary: 'Creates the Constitutional Court (3 judges: President, Council, lot), the Audit Office (independent recount before every certification, daily public accounts audit) and the Election Supervisor (reports hidden instructions in campaigns to the Court). Adds impeachment (Council 4/5, Court confirms grounds, people decide) and a one-day timelock on every law with a citizens\' petition for a referendum.' });
-export const LATEST = 4;
-export let CONSTITUTION = V4;
+AMENDMENTS.push({ v: 5, title: 'Amendment 4: due process and corruption', summary: 'The Police arrest and detain; the Constitutional Court tries every suspect within 2 days and sets the sentence by law (restitution, fine, at most 3 days of jail). Offering and accepting bribes are both crimes; officials found guilty lose office. The Audit Office reports irregularities it finds in the books.' });
+export const LATEST = 5;
+export let CONSTITUTION = V5;
 
 export function constitutionText() {
   return CONSTITUTION.map(a => `Art. ${a.n} ${a.title}: ${a.text}`).join('\n');

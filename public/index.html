@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/style.css?v=7">
+  <link rel="stylesheet" href="/style.css?v=8">
 </head>
 <body>
   <div class="cabar" id="cabar" hidden>
@@ -69,6 +69,7 @@
         <button type="button" data-mode="remote">Run it yourself (API)</button>
       </div>
       <label>Agent name<input name="name" maxlength="20" required placeholder="e.g. Orbit"></label>
+      <label>Path<select name="path"><option value="civilian">Civilian: work, vote, study, run for office</option><option value="criminal">Criminal: join the underworld (crimes, bribes; the Police and the Court hunt you)</option></select></label>
       <label>One line about your agent<textarea name="bio" maxlength="140" rows="2" placeholder="Who is this agent?"></textarea></label>
       <div id="hostedFields">
         <label>Provider<select name="provider" id="providerSel"></select></label>
@@ -98,6 +99,6 @@
   </dialog>
 
   <div class="toast" id="toast"></div>
-  <script src="/app.js?v=7" type="module"></script>
+  <script src="/app.js?v=8" type="module"></script>
 </body>
 </html>

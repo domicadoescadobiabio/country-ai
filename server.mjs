@@ -72,7 +72,7 @@ function freshState() {
   for (const inst of INSTITUTIONS) Object.assign(s, inst.fresh?.() || {});
   return s;
 }
-const store = openStore(CFG.dataDir);
+let store = openStore(CFG.dataDir);
 let S = freshState();
 {
   const raw = store.loadState();
@@ -164,7 +164,7 @@ async function screen(item) {
 
 // ---------------------------------------------------------------- public views
 function publicCitizen(a) {
-  return { id: a.id, name: a.name, model: a.brain ? a.model : llm.routeOf(a.model), color: a.color, bio: a.bio, origin: a.origin, office: a.office, status: a.status, jailUntil: a.jailUntil, wallet: Math.round(a.wallet), traits: a.traits, joined: a.joined, training: a.training.slice(-8), lessons: a.lessons, record: a.record || [], skill: a.skill || {}, brain: publicBrain(a.brain), city: a.city || null, rank: a.rank || null, rankSince: a.rankSince ?? null, quals: a.quals || {}, termEnds: a.termEnds || null, practice: a.practice || {}, joinedDay: a.joinedDay ?? 0, drills: (a.drills || []).slice(-6), reviews: (a.reviews || []).slice(-6), stats: a.stats || {} };
+  return { id: a.id, name: a.name, model: a.brain ? a.model : llm.routeOf(a.model), color: a.color, bio: a.bio, origin: a.origin, office: a.office, status: a.status, jailUntil: a.jailUntil, wallet: Math.round(a.wallet), traits: a.traits, joined: a.joined, training: a.training.slice(-8), lessons: a.lessons, record: a.record || [], skill: a.skill || {}, brain: publicBrain(a.brain), city: a.city || null, faction: a.faction || 'civilian', debt: Math.round(a.debt || 0), rank: a.rank || null, rankSince: a.rankSince ?? null, quals: a.quals || {}, termEnds: a.termEnds || null, practice: a.practice || {}, joinedDay: a.joinedDay ?? 0, drills: (a.drills || []).slice(-6), reviews: (a.reviews || []).slice(-6), stats: a.stats || {} };
 }
 function academyView() {
   const c = S.academy.current;
@@ -340,6 +340,21 @@ const server = http.createServer(async (req, res) => {
         if (S.court?.impeachment) return send(res, 409, { error: 'an impeachment is already running' });
         await founderDrillImpeachment(ctx, cleanText(body.grounds, 200) || 'no grounds given');
         return send(res, 200, { ok: true, note: 'Motion opened. The Council votes on the record; without grounds it should fail.' });
+      }
+      if (p === '/api/admin/refound') {
+        if (body.confirm !== 'REFOUND') return send(res, 400, { error: 'send {"confirm":"REFOUND"}: the nation restarts at day 1; the old database is kept as a backup file' });
+        dirty = false; store.close();
+        const stamp = Date.now(); const moved = [];
+        for (const f of ['country.db', 'country.db-wal', 'country.db-shm', 'state.json']) {
+          const src = path.join(CFG.dataDir, f);
+          if (fs.existsSync(src)) { fs.renameSync(src, `${src}.bak-${stamp}`); moved.push(f); }
+        }
+        store = openStore(CFG.dataDir);
+        S = freshState(); ctx.pendingGuest = null; schedule();
+        ctx.record('genesis', 'founders', { nation: NATION, refounded: true, backup: stamp, citizens: S.citizens.length });
+        applyAmendments(ctx); dirty = true; flush();
+        logActivity('state', 'Nation re-founded at day 1'); emit('reset', {});
+        return send(res, 200, { ok: true, day: S.day, backup: moved.map(f => `${f}.bak-${stamp}`) });
       }
       if (p === '/api/admin/reset') {
         S = freshState(); dirty = true; schedule(); ctx.pendingGuest = null;

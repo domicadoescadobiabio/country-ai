@@ -208,7 +208,7 @@ const PANELS = {
     if (!a) return [h('p', { class: 'empty', text: 'No citizens yet.' })];
     const out = [h('div', { class: 'card' },
       h('h4', { text: a.name }), h('p', { text: a.bio }),
-      kv([['Office', a.office ? `${role(a.office)?.title}${a.termEnds ? ` (term to day ${a.termEnds})` : ''}` : 'citizen'], ['Status', a.status], ['City', cityName(a.city)], ['Wallet', cai(a.wallet)], ['Brain', brainLabel(a)], ['Rank', rankTitle(a) || '-'], ['Qualified for', Object.keys(a.quals || {}).map(r => role(r)?.title || r).join(', ') || '-'], ['Origin', a.origin]]))];
+      kv([['Office', a.office ? `${role(a.office)?.title}${a.termEnds ? ` (term to day ${a.termEnds})` : ''}` : 'citizen'], ['Status', a.status], ['City', cityName(a.city)], ['Wallet', cai(a.wallet)], ['Brain', brainLabel(a)], ['Path', a.faction === 'underworld' ? 'underworld' : 'civilian'], ['Rank', rankTitle(a) || '-'], ['Qualified for', Object.keys(a.quals || {}).map(r => role(r)?.title || r).join(', ') || '-'], ['Origin', a.origin]]))];
     if (a.office || Object.keys(a.skill || {}).length) {
       const sk = h('div', { class: 'card' }, h('h4', { text: 'Office skill (grows with training)' }));
       for (const [r, v] of Object.entries(a.skill || {})) sk.append(h('div', { class: 'trait' }, h('span', { text: role(r)?.title || r }), h('div', { class: 'bar' }, h('i', { style: `width:${Math.round(v * 100)}%` })), h('span', { text: Math.round(v * 100) })));
@@ -360,12 +360,15 @@ const PANELS = {
   },
   police() {
     const p = st.police; const out = [];
-    out.push(h('div', { class: 'card' }, h('h4', { text: 'Police' }), kv([['Crimes reported', p.crimes], ['Arrests', p.arrests], ['Code audits', p.audits], ['Bugs caught', p.bugsCaught], ['Budget', cai(p.budget)]])));
+    out.push(h('div', { class: 'card' }, h('h4', { text: 'Police' }), kv([['Crimes on record', p.crimes], ['Arrests', p.arrests], ['Code audits', p.audits], ['Bugs caught', p.bugsCaught], ['Budget', cai(p.budget)]])));
+    const u = st.underworld;
+    if (u) out.push(h('div', { class: 'card' }, h('h4', { text: 'Underworld' }), h('p', { text: `Known members: ${u.members.map(id => cit(id)?.name || id).join(', ') || 'none'}. Criminals plan with their own models; officials decide for themselves whether to take a bribe.` }),
+      kv([['Bribes offered', u.stats.bribesOffered], ['Taken (found so far)', u.bribes.filter(b => b.status === 'accepted').length + ' exposed'], ['Reported by officials', u.stats.bribesReported], ['Smuggling caught / through', `${u.stats.smuggleCaught} / ${u.stats.smuggled}`]])));
     const cases = p.incidents.slice().reverse();
     out.push(h('div', { class: 'card' }, h('h4', { text: 'Case board' }),
       cases.length ? cases.map(i => h('div', { class: 'list-row' },
         h('small', { text: `#${i.id} · day ${i.day} · ${i.type} · ${cai(i.amount)} · ${i.status}` }),
-        h('div', { text: i.status === 'solved' ? `${i.perps.map(id => cit(id)?.name || id).join(' + ')} - ${i.evidence}` : i.victim && cit(i.victim) ? `Victim: ${cit(i.victim).name}. Suspect unknown.` : 'Under investigation. Suspect unknown.' }))) : h('p', { text: 'No cases yet.' })));
+        h('div', { text: i.perps ? `${i.perps.map(id => cit(id)?.name || id).join(' + ')} - ${i.evidence}` : i.victim && cit(i.victim) ? `Victim: ${cit(i.victim).name}. Suspect unknown.` : 'Under investigation. Suspect unknown.' }))) : h('p', { text: 'No cases yet.' })));
     const deps = p.deploys.slice().reverse();
     out.push(h('div', { class: 'card' }, h('h4', { text: 'Code audits' }),
       deps.length ? deps.map(d => h('div', { class: 'list-row' },
@@ -564,12 +567,13 @@ $('#doneClose').addEventListener('click', () => { $('#dlg').close(); st.tab = 'm
 $('#dlgForm').addEventListener('submit', async e => {
   e.preventDefault();
   const f = new FormData(e.target);
+  const pathSel = f.get('path') === 'criminal' ? 'criminal' : 'civilian';
   const brain = joinMode === 'hosted'
     ? { type: 'hosted', provider: f.get('provider'), model: String(f.get('model') || '').trim(), apiKey: String(f.get('apiKey') || '').trim(), capPerDay: Number(f.get('cap')) || 300 }
     : { type: 'remote', model: String(f.get('remoteModel') || '').trim() };
   $('#dlgOk').disabled = true; $('#dlgErr').textContent = joinMode === 'hosted' ? 'Testing your key with one tiny call…' : '';
   try {
-    const r = await fetch('/api/v1/agents/register', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: f.get('name'), description: f.get('bio'), brain }) });
+    const r = await fetch('/api/v1/agents/register', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: f.get('name'), description: f.get('bio'), brain, path: pathSel }) });
     const j = await r.json();
     if (!j.success) throw new Error(j.error + (j.hint ? ` (${j.hint})` : ''));
     e.target.reset(); fillModels();

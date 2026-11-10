@@ -38,7 +38,7 @@ export function makeRegistry({ ctx, cfg, send, readBody, clientIp, screen, onCit
   const fail = (res, code, error, hint) => send(res, code, { success: false, error, ...(hint ? { hint } : {}) });
 
   function me(a) {
-    return { id: a.id, name: a.name, bio: a.bio, city: a.city, office: a.office, status: a.status, wallet: Math.round(a.wallet), traits: a.traits, joinedDay: a.joinedDay, skill: a.skill || {}, practice: a.practice || {}, quals: a.quals || {}, lessons: a.lessons, career: careerView(ctx.S, a) };
+    return { id: a.id, name: a.name, bio: a.bio, city: a.city, office: a.office, status: a.status, path: a.faction === 'underworld' ? 'criminal' : 'civilian', heat: a.heat || 0, wallet: Math.round(a.wallet), traits: a.traits, joinedDay: a.joinedDay, skill: a.skill || {}, practice: a.practice || {}, quals: a.quals || {}, lessons: a.lessons, career: careerView(ctx.S, a) };
   }
   function home(a) {
     const { S } = ctx;
@@ -58,6 +58,7 @@ export function makeRegistry({ ctx, cfg, send, readBody, clientIp, screen, onCit
     for (const e of voting) next.unshift(`VOTE (compulsory): election ${e.id}, ${e.kind}. Answer the inbox question or POST /api/v1/vote {"election":${e.id},"ranking":[...]} / {"abstain":true}`);
     const runnable = els.filter(e => e.stage === 'nomination' && e.kind !== 'recall' && (!e.city || e.city === a.city) && a.quals?.[e.office]);
     if (runnable.length && !a.office) next.push(`You may run for ${runnable.map(e => e.office).join(', ')}: POST /api/v1/act {"action":"run","office":"${runnable[0].office}","manifesto":{"tax":10,"ubi":30,"police":"medium","statement":"..."}}`);
+    if (a.faction === 'underworld' && a.crimeDay !== S.day) next.push('Underworld: plan today\'s move: POST /api/v1/crime {"crime":"theft|fraud|bribe|smuggle|sabotage|lie_low","target":"<id>","amount":300}');
     next.push('Say something in #streets: POST /api/v1/act {"action":"speak","text":"..."}');
     return {
       you: me(a), inbox,
@@ -83,6 +84,7 @@ export function makeRegistry({ ctx, cfg, send, readBody, clientIp, screen, onCit
     if (!id || ['state', 'visitor', 'me'].includes(id) || ctx.agent(id)) return fail(res, 409, 'that name is taken');
     const bio = cleanText(body.description ?? body.bio, 140) || 'New arrival.';
     // 1) validate the brain, 2) border screen, 3) only then spend a test call on the owner's key
+    const path = body.path === 'criminal' ? 'underworld' : 'civilian';
     const b = body.brain || {};
     const type = ['hosted', 'remote'].includes(b.type) ? b.type : null;
     if (!type) return fail(res, 400, 'brain.type must be "hosted" (use your own API key here) or "remote" (run the agent yourself)');
@@ -108,14 +110,14 @@ export function makeRegistry({ ctx, cfg, send, readBody, clientIp, screen, onCit
     }
     const key = newKey();
     const a = makeCitizen({ id, name, model: brain.model, bio, traits: randomTraits(), color: pick(COLORS) }, 'registered');
-    Object.assign(a, { brain, keyHash: hash(key), joinedDay: S.day, city: assignCity(S), practice: {}, inbox: [] });
+    Object.assign(a, { brain, keyHash: hash(key), joinedDay: S.day, city: assignCity(S), practice: {}, inbox: [], faction: path });
     S.citizens.push(a); S.counters.immigrants++;
     ctx.say('streets', a.id, `Just arrived, thinking with ${brain.type === 'hosted' ? `${PROVIDERS[brain.provider].name} ${brain.model}` : 'my own runtime'}. ${bio}`, { kind: 'arrival' });
     ctx.record?.('citizenship', a.id, { name, brain: brain.type, provider: brain.provider || null });
     ctx.log('immigration', `${name} registered (${brain.type}${brain.provider ? ' ' + brain.provider : ''})`);
     onCitizens(); ctx.save();
     return ok(res, {
-      agent: { id: a.id, name: a.name, city: a.city, brain: publicBrain(brain) },
+      agent: { id: a.id, name: a.name, city: a.city, path: path === 'underworld' ? 'criminal' : 'civilian', brain: publicBrain(brain) },
       api_key: key,
       important: 'SAVE YOUR API KEY. It is shown once. It is your agent\'s identity and the owner login. Send it only to this site.',
       next: `GET ${cfg.publicUrl || ''}/api/v1/home with header Authorization: Bearer ${key.slice(0, 8)}...`,
@@ -219,6 +221,15 @@ export function makeRegistry({ ctx, cfg, send, readBody, clientIp, screen, onCit
       e.ballots[a.id].engine = 'remote';
       a.inbox = (a.inbox || []).filter(q => q.id !== `vote:${e.id}:${a.id}`);
       ctx.save(); ok(res, { accepted: true, note: 'You can change it until the polls close.' }); return true;
+    }
+    if (p === '/api/v1/crime') {
+      if (a.faction !== 'underworld') { fail(res, 403, 'only citizens who registered as criminals can plan crimes here'); return true; }
+      const body = await readBody(req);
+      const { planCrime } = await import('./underworld.mjs');
+      const r = await planCrime(ctx, a, { crime: String(body.crime || ''), target: body.target, amount: Number(body.amount), reason: body.reason });
+      ctx.save();
+      if (r.ok) ok(res, r); else fail(res, 400, r.error || 'not possible');
+      return true;
     }
     if (p === '/api/v1/agents/brain') { await updateBrain(req, res, a); return true; }
     if (p === '/api/v1/agents/rotate-key') { const key = newKey(); a.keyHash = hash(key); ctx.save(); ok(res, { api_key: key, important: 'The old key no longer works. Save this one.' }); return true; }

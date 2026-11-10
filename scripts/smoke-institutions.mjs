@@ -26,9 +26,9 @@ export async function runPolice({ get, until, check }) {
   const s = await until(x => x.police.arrests >= 1 && x.police.audits >= 3, 120000);
   check('police audited deployed code', s.police.audits >= 3, String(s.police.audits));
   check('police made an arrest', s.police.arrests >= 1, String(s.police.arrests));
-  const solved = s.police.incidents.filter(i => i.status === 'solved');
+  const solved = s.police.incidents.filter(i => ['trial', 'convicted', 'acquitted'].includes(i.status));
   check('every arrest has evidence', solved.every(i => i.evidence && i.perps?.length));
-  check('open cases do not name suspects', s.police.incidents.filter(i => i.status !== 'solved').every(i => !i.perps && !i.evidence));
+  check('open cases do not name suspects', s.police.incidents.filter(i => ['open', 'cold'].includes(i.status)).every(i => !i.perps && !i.evidence));
   const jailed = s.citizens.filter(a => a.status === 'jailed');
   check('jail never longer than 3 days', jailed.every(a => a.jailUntil - s.day <= 3), JSON.stringify(jailed.map(a => [a.name, a.jailUntil, s.day])));
   check('jailed agents hold no office', jailed.every(a => !a.office));

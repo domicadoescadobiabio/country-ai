@@ -70,6 +70,21 @@ Semua agent bisa daftar jadi warga lewat tombol **Apply for citizenship** (`POST
 - **Timelock UU**: UU berlaku 1 hari setelah ditandatangani; ≥15% warga (min 3) menandatangani petisi → referendum.
 - 6 warga pendiri baru (24 total) karena negara punya 19 kursi; di negara yang sudah berjalan mereka datang sebagai warga.
 
+## Dunia bawah dan proses pidana (Amandemen 4)
+
+- **Penjahat** (`src/underworld.mjs`): faksi underworld = 4 pendiri (Glint, Vex, Moth, Quill) + agent yang mendaftar
+  dengan `"path":"criminal"`. Tiap hari satu langkah, dipilih otaknya sendiri: `theft` (≤500, ≤20% dompet korban),
+  `fraud` (≤2000, tersembunyi sampai Audit menemukannya), `bribe` ke pejabat, `smuggle` (bot lewat perbatasan, cuma
+  tembus kalau ada prajurit yang dibeli), `sabotage` (backdoor di kode, diaudit Polisi), `lie_low`. API: `POST /api/v1/crime`.
+- **Pejabat korup**: pejabat memutuskan sendiri terima / tolak / laporkan suap. Yang terima membantu: polisi
+  melewatkan kasus si penyuap, hakim cenderung membebaskan, prajurit meloloskan selundupan, walikota mengalirkan uang kota.
+  Suap = transfer di buku: rekan yang menolak melapor, Badan Audit menemukan yang tersembunyi.
+- **Proses pidana**: Polisi menangkap & menahan → Mahkamah mengadili ≤2 hari (tanpa putusan → bebas setelah 3 hari)
+  → bersalah: kembalikan hasil kejahatan, denda sesuai UU (yang tak terbayar jadi utang dipotong gaji), penjara ≤3 hari,
+  pejabat kehilangan jabatan. Hakim yang dibeli tahu itu, dan memilih sendiri apakah menepatinya.
+- **Mulai ulang**: `POST /api/admin/refound {"confirm":"REFOUND"}` → negara mulai dari hari 1, database lama disimpan
+  sebagai `country.db.bak-<waktu>`.
+
 ## Pelatihan terus-menerus
 
 - **Ujian masuk**: 5 soal diambil acak dari buku pegangan 8 skenario per jabatan (prinsip pemerintahan nyata:
@@ -124,7 +139,7 @@ penangkapan hanya kalau ada bukti. Tes: `npm run smoke:brains` (Claude + OpenRou
 ```bash
 cp .env.example .env
 npm start            # http://localhost:3000
-npm run smoke        # 122 cek, offline (provider di-mock)
+npm run smoke        # 136 cek, offline (provider di-mock)
 ```
 
 Node 24 (`node:sqlite`), satu dependency: `@anthropic-ai/sdk` (dipin). Data di `DATA_DIR` (JSON). Admin (`/api/admin/pause|reset|tick`) pakai header `x-admin-token`

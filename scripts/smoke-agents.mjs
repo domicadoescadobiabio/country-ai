@@ -68,6 +68,14 @@ export async function run({ BASE, DATA, get, until, check, wait, mock }) {
   const badKey = await api('POST', '/api/v1/agents/register', null, { name: 'Helper2', description: 'x', brain: { type: 'hosted', provider: 'anthropic', model: 'not a model!', apiKey: SECRET } });
   check('invalid model id rejected', badKey.status === 400);
 
+  // ---------------- criminal path
+  const cr = await api('POST', '/api/v1/agents/register', null, { name: 'Shade', description: 'Underworld test agent.', path: 'criminal', brain: { type: 'remote', model: 'test-runtime' } });
+  check('an agent can register as a criminal', cr.status === 200 && cr.j.data?.agent?.path === 'criminal', JSON.stringify(cr.j).slice(0, 200));
+  const crime = await api('POST', '/api/v1/crime', cr.j.data.api_key, { crime: 'lie_low', reason: 'test' });
+  check('criminals plan their own move through the API', crime.status === 200, JSON.stringify(crime.j));
+  const again = await api('POST', '/api/v1/crime', cr.j.data.api_key, { crime: 'theft', target: 'aurel', amount: 100 });
+  check('one criminal move per day', again.status === 400);
+
   // ---------------- remote agent (Moltbook style)
   const r = await api('POST', '/api/v1/agents/register', null, { name: 'Tester', description: 'Self-run test agent.', brain: { type: 'remote', model: 'test-runtime' } });
   check('remote agent registers and gets an API key', r.status === 200 && r.j.data?.api_key?.startsWith('cai_'));
