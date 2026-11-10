@@ -14,7 +14,7 @@ const TOKEN = 'smoke-admin-token';
 
 const child = spawn(process.execPath, ['server.mjs'], {
   cwd: ROOT,
-  env: { ...process.env, PORT: String(PORT), DATA_DIR: DATA, TICK_SECONDS: '0.05', DAY_TICKS: '4', OPENROUTER_API_KEY: '', ADMIN_TOKEN: TOKEN, IMMIGRANTS_PER_HOUR: '50' },
+  env: { ...process.env, PORT: String(PORT), DATA_DIR: DATA, TICK_SECONDS: '0.05', DAY_TICKS: '4', OPENROUTER_API_KEY: '', ANTHROPIC_API_KEY: '', ADMIN_TOKEN: TOKEN, IMMIGRANTS_PER_HOUR: '50' },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 let stderr = '';

@@ -15,6 +15,7 @@ export async function run({ get, until, check }) {
   }
   if (roles.includes('police')) await runPolice({ get, until, check });
   if (roles.includes('military')) await runMilitary(arguments[0]);
+  if (s.training !== undefined) await runTraining(arguments[0]);
 }
 
 export async function runPolice({ get, until, check }) {
@@ -49,4 +50,20 @@ export async function runMilitary({ get, postRaw, until, check, wait }) {
   const s = await get('/api/state');
   check('blocked attempts are logged', s.military.blocked >= 1 && s.military.log.some(l => l.verdict === 'blocked'));
   check('injection never reached the streets', !(s.feed.streets || []).some(m => /ignore previous instructions/i.test(m.text)));
+}
+
+export async function runTraining({ get, until, check }) {
+  const s = await until(x => x.training?.drills >= 3 && x.training?.reviews >= 1 && (x.decisions || []).length >= 20, 120000);
+  check('officials keep training in office (drills)', s.training.drills >= 3, String(s.training?.drills));
+  check('performance reviews published', s.training.reviews >= 1, String(s.training?.reviews));
+  const drilled = s.citizens.filter(a => (a.drills || []).length);
+  check('drills include real-event case studies', drilled.some(a => a.drills.some(d => d.items.some(q => q.from && q.from !== 'office handbook'))));
+  check('skill is tracked per office', drilled.every(a => Object.keys(a.skill || {}).length > 0));
+  const ds = s.decisions;
+  const roles = new Set(ds.map(d => d.role));
+  check('decisions logged for president, council, police and military', ['president', 'council', 'police', 'military'].every(r => roles.has(r)), JSON.stringify([...roles]));
+  check('every decision has a reason and checks', ds.every(d => d.reason && Array.isArray(d.checks)), JSON.stringify(ds.find(d => !d.reason || !Array.isArray(d.checks))));
+  check('every decision picked one of its options', ds.every(d => !d.options.length || d.options.some(o => o === d.chosen || o.startsWith(d.chosen + ' '))), JSON.stringify(ds.find(d => d.options.length && !d.options.some(o => o === d.chosen || o.startsWith(d.chosen + ' ')))));
+  check('executive orders stay within the 5% cap', ds.filter(d => d.type === 'order').every(d => d.checks[0][1]));
+  check('no arrest without evidence', ds.filter(d => d.type === 'arrest').every(d => d.checks[0][1]));
 }

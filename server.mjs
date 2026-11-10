@@ -13,6 +13,7 @@ import { FOUNDERS, makeCitizen, randomTraits } from './src/citizens.mjs';
 import { freshAcademy, academyTick, totalSeats } from './src/academy.mjs';
 import { lifeTick, payday } from './src/life.mjs';
 import { INSTITUTIONS } from './src/institutions.mjs';
+import { freshDecisions, recordDecision } from './src/decisions.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 loadDotEnv(path.join(ROOT, '.env'));
@@ -20,6 +21,8 @@ loadDotEnv(path.join(ROOT, '.env'));
 const CFG = {
   port: Number(process.env.PORT) || 3000,
   ca: (process.env.TOKEN_CA || '').trim(),
+  anthropicKey: (process.env.ANTHROPIC_API_KEY || '').trim(),
+  claudeModel: (process.env.CLAUDE_MODEL || 'claude-haiku-5-5').trim(),
   orKey: (process.env.OPENROUTER_API_KEY || '').trim(),
   llmPerMin: clamp(Number(process.env.LLM_PER_MIN) || 20, 1, 600),
   tick: clamp(Number(process.env.TICK_SECONDS) || 5, 0.05, 120), // <1s only for tests
@@ -34,7 +37,8 @@ const PUBLIC = path.join(ROOT, 'public');
 const STATE_FILE = path.join(CFG.dataDir, 'state.json');
 const BASE_CHANNELS = [
   { id: 'streets', name: 'streets', desc: 'Daily life. Wages, gossip, and visitors from outside.' },
-  { id: 'academy', name: 'academy', desc: 'Agents train for office one by one. Every exam answer is public.' },
+  { id: 'academy', name: 'academy', desc: 'Agents train for office one by one, then keep training while in office. Every answer is public.' },
+  { id: 'decisions', name: 'decisions', desc: 'Every decision an official makes: what they looked at, the options, the choice, the reason, and the constitutional checks.' },
 ];
 const CHANNELS = BASE_CHANNELS.concat(INSTITUTIONS.flatMap(i => i.channels || []));
 
@@ -49,6 +53,7 @@ function freshState() {
     policy: { taxRate: 0.1, ubi: 20, wage: 100, wageCap: 200 },
     econ: { taxCollected: 0, ubiPaid: 0, worksFunded: 0 },
     feed: {}, activity: [], counters: { messages: 0, immigrants: 0 }, paused: false, tickSec: CFG.tick,
+    ...freshDecisions(),
   };
   for (const inst of INSTITUTIONS) Object.assign(s, inst.fresh?.() || {});
   return s;
@@ -98,6 +103,7 @@ const ctx = {
   get S() { return S; },
   cfg: CFG, llm, say, log: logActivity, emit,
   agent: id => S.citizens.find(a => a.id === id),
+  decide: rec => recordDecision(ctx, rec),
   pendingGuest: null,
   save() { dirty = true; },
 };
@@ -145,7 +151,7 @@ async function screen(item) {
 
 // ---------------------------------------------------------------- public views
 function publicCitizen(a) {
-  return { id: a.id, name: a.name, model: a.model, color: a.color, bio: a.bio, origin: a.origin, office: a.office, status: a.status, jailUntil: a.jailUntil, wallet: Math.round(a.wallet), traits: a.traits, joined: a.joined, training: a.training.slice(-8), lessons: a.lessons, record: a.record || [] };
+  return { id: a.id, name: a.name, model: llm.provider === 'anthropic' ? CFG.claudeModel : a.model, color: a.color, bio: a.bio, origin: a.origin, office: a.office, status: a.status, jailUntil: a.jailUntil, wallet: Math.round(a.wallet), traits: a.traits, joined: a.joined, training: a.training.slice(-8), lessons: a.lessons, record: a.record || [], skill: a.skill || {}, drills: (a.drills || []).slice(-6), reviews: (a.reviews || []).slice(-6), stats: a.stats || {} };
 }
 function academyView() {
   const c = S.academy.current;
@@ -155,7 +161,7 @@ function academyView() {
   };
 }
 function compactState() {
-  const out = { stats: stats(), seats: S.seats, academy: academyView(), treasury: S.treasury, policy: S.policy, econ: S.econ, day: S.day, tick: S.tick, paused: S.paused };
+  const out = { stats: stats(), seats: S.seats, academy: academyView(), treasury: S.treasury, policy: S.policy, econ: S.econ, day: S.day, tick: S.tick, paused: S.paused, llmUsage: llm.usage };
   for (const inst of INSTITUTIONS) Object.assign(out, inst.publicState?.(S) || {});
   return out;
 }
@@ -165,12 +171,12 @@ function fullState() {
   return {
     ...compactState(),
     config: {
-      nation: NATION, currency: CURRENCY, ca: CFG.ca, engine: llm.enabled ? 'llm' : 'offline', tickSec: S.tickSec, dayTicks: CFG.dayTicks,
+      nation: NATION, currency: CURRENCY, ca: CFG.ca, engine: llm.enabled ? 'llm' : 'offline', engineLabel: llm.label, tickSec: S.tickSec, dayTicks: CFG.dayTicks,
       allowGuest: CFG.allowGuest, allowImmigration: CFG.allowImmigration, channels: CHANNELS,
-      roles: ROLE_ORDER.map(r => ({ id: r, title: ROLES[r].title, seats: ROLES[r].seats, channel: ROLES[r].channel, passMark: ROLES[r].passMark, questions: ROLES[r].exam.length, charter: ROLES[r].charter, oath: ROLES[r].oath })),
+      roles: ROLE_ORDER.map(r => ({ id: r, title: ROLES[r].title, seats: ROLES[r].seats, channel: ROLES[r].channel, passMark: ROLES[r].passMark, questions: Math.min(5, ROLES[r].exam.length), bank: ROLES[r].exam.length, charter: ROLES[r].charter, oath: ROLES[r].oath })),
       constitution: CONSTITUTION,
     },
-    citizens: S.citizens.map(publicCitizen), feed, activity: S.activity.slice(-120),
+    citizens: S.citizens.map(publicCitizen), feed, activity: S.activity.slice(-120), decisions: S.decisions.slice(-120),
   };
 }
 
@@ -306,6 +312,6 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(CFG.port, () => {
-  console.log(`${NATION} on http://localhost:${CFG.port}  engine=${llm.enabled ? 'llm' : 'offline'}  tick=${S.tickSec}s  day=${CFG.dayTicks} ticks  institutions=${INSTITUTIONS.map(i => i.id).join(',')}`);
+  console.log(`${NATION} on http://localhost:${CFG.port}  engine=${llm.label}  tick=${S.tickSec}s  day=${CFG.dayTicks} ticks  institutions=${INSTITUTIONS.map(i => i.id).join(',')}`);
 });
 schedule();

@@ -7,7 +7,7 @@ import { ROLES } from './roles.mjs';
 import { vacate } from './academy.mjs';
 import { EXTRA_ORDERS } from './president.mjs';
 import { BILL_TYPES } from './council.mjs';
-import { scan, SNIPPETS, SABOTAGE } from './audit.mjs';
+import { scan, SNIPPETS, SABOTAGE, RULES } from './audit.mjs';
 import { pick, chance, rint, round, clamp, weighted, cai, cleanText } from './util.mjs';
 
 const MAX_JAIL_DAYS = 3;
@@ -113,6 +113,18 @@ async function arrest(ctx, officer, inc) {
   inc.status = 'solved'; inc.solvedBy = officer.id; inc.solvedDay = S.day;
   pol.arrests += inc.perps.length;
   const facts = `case #${inc.id} ${inc.type}. Evidence: ${inc.evidence}. Arrested: ${parts.join(', ')}. Jail: ${days} day${days > 1 ? 's' : ''}.`;
+  const names = inc.perps.map(id => ctx.agent(id)?.name || id);
+  const ranks = inc.perps.map(id => ctx.agent(id)).filter(Boolean).map(a => a.record?.length > 1 ? 'repeat offender' : 'first offence');
+  ctx.decide({
+    agentId: officer.id, role: 'police', type: 'arrest',
+    title: `Case #${inc.id}: ${inc.type}${inc.amount ? `, ${cai(inc.amount)}` : ''}`,
+    inputs: [['Evidence', inc.evidence], ['Suspects', names.join(', ')], ['History', ranks.join(', ')], ['Fine rate (law)', Math.round(finePct * 100) + '% of the amount']],
+    options: ['Arrest on the evidence', 'Keep investigating', 'Close the case'],
+    chosen: 'Arrest on the evidence',
+    reason: `The evidence names ${names.join(' and ')}. Rank gives no protection. The sentence for ${inc.type} is ${days} day${days > 1 ? 's' : ''}; stolen funds go back before any fine.`,
+    checks: [['Evidence on record', !!inc.evidence], [`Jail ${days} day(s) <= 3`, days <= MAX_JAIL_DAYS], [`${officer.name} is not a suspect`, !inc.perps.includes(officer.id)], ['Not a speech offence', true]],
+    outcome: parts.join('; '),
+  });
   const statement = await report(ctx, officer, facts);
   ctx.say('police', officer.id, `Case #${inc.id} solved: ${facts}${statement ? `\n"${statement}"` : ''}`, { kind: 'arrest', caseId: inc.id });
   ctx.log('police', `${officer.name} solved case #${inc.id} (${inc.type})`);
@@ -122,6 +134,17 @@ function audit(ctx, officer, d) {
   const { S } = ctx; const pol = P(S);
   d.findings = scan(d.code); d.auditedBy = officer.id; pol.audits++;
   const author = ctx.agent(d.by);
+  const sabotage = d.findings.some(f => SABOTAGE.has(f.id));
+  ctx.decide({
+    agentId: officer.id, role: 'police', type: 'audit',
+    title: `Code audit: ${d.name}`,
+    inputs: [['Author', author?.name || d.by], ['First line', d.code.split('\n')[0]], ['Rules checked', `${RULES.length} (${RULES.map(r => r.id).join(', ')})`]],
+    options: ['Clear to run', 'Stop and order a fix', 'Arrest for sabotage'],
+    chosen: sabotage ? 'Arrest for sabotage' : d.findings.length ? 'Stop and order a fix' : 'Clear to run',
+    reason: d.findings.length ? `Scanner matched: ${d.findings.map(f => `${f.severity} ${f.title}`).join('; ')}.${sabotage ? ' A drain endpoint without auth is a backdoor, not a mistake.' : ' An honest mistake gets a fix order, not jail.'}` : `None of the ${RULES.length} rules matched.`,
+    checks: [[`Auditor ${officer.name} is not the author`, d.by !== officer.id], ['Decision based on the scanner, not on who wrote it', true]],
+    outcome: sabotage ? 'Script blocked, author arrested' : d.findings.length ? 'Script stopped until fixed' : 'Cleared to run',
+  });
   if (!d.findings.length) {
     d.status = 'clean';
     ctx.say('police', officer.id, `Audit of ${d.name}: clean. Cleared to run.`, { kind: 'audit' });
@@ -160,8 +183,19 @@ async function patrol(ctx) {
     const inc = pol.incidents.find(x => x.status === 'open' && !busy.has('i' + x.id) && !x.perps.includes(o.id));
     if (!inc) continue;
     busy.add('i' + inc.id); inc.tries++; inc.firstTry ??= S.day;
-    const p = clamp(0.3 + o.traits.diligence * 0.4 + budgetBonus(S) + (inc.reported ? 0.3 : 0), 0.05, 0.95);
+    const skill = o.skill?.police ?? 0.6;
+    const p = clamp(0.25 + o.traits.diligence * 0.35 + (skill - 0.5) * 0.3 + budgetBonus(S) + (inc.reported ? 0.3 : 0), 0.05, 0.95);
     if (chance(p)) await arrest(ctx, o, inc);
+    else if (inc.tries === 1 || inc.tries % 4 === 0) ctx.decide({
+      agentId: o.id, role: 'police', type: 'investigate',
+      title: `Case #${inc.id}: ${inc.type}, ${cai(inc.amount)} (attempt ${inc.tries})`,
+      inputs: [['Report', inc.reported ? 'reported by a witness' : 'found on the ledger'], ['My diligence / skill', `${Math.round(o.traits.diligence * 100)} / ${Math.round(skill * 100)}`], ['Police budget', cai(P(S).budget)]],
+      options: ['Arrest on the evidence', 'Keep investigating', 'Close the case'],
+      chosen: 'Keep investigating',
+      reason: `Could not link a suspect to the evidence this round (odds were ${Math.round(p * 100)}%). No arrest without a link.`,
+      checks: [['No arrest without linked evidence', true]],
+      outcome: 'Case stays open',
+    });
   }
   if (!officers(ctx).length) return; // no police yet: cases wait for the first officers
   for (const inc of pol.incidents) if (inc.status === 'open' && inc.firstTry != null && S.day - inc.firstTry > COLD_AFTER_DAYS) {
@@ -182,6 +216,10 @@ EXTRA_ORDERS.push({
   id: 'police',
   label: 'Fund the police budget (up to 5% of the treasury)',
   available: ctx => (ctx.S.seats.police || []).length > 0,
+  score(ctx) {
+    const pol = P(ctx.S); const open = pol.incidents.filter(i => i.status === 'open').length;
+    return { score: 0.12 + Math.min(0.6, open * 0.12) + (pol.budget < 20000 ? 0.1 : 0), why: `${open} open police cases, budget ${cai(pol.budget)}` };
+  },
   run(ctx, pres, amount, cap) {
     const spend = round(clamp(Number(amount) || cap * 0.4, 0, cap), 2);
     ctx.S.treasury = round(ctx.S.treasury - spend, 2);
@@ -193,7 +231,7 @@ BILL_TYPES.push({
   id: 'fines', name: 'Restitution and Fines Act', what: 'the fine rate (share of the stolen amount)',
   current: S => S.policy.finePct ?? 0.5, apply: (S, v) => { S.policy.finePct = v; },
   propose: S => round(clamp((S.policy.finePct ?? 0.5) + pick([-0.15, -0.1, 0.1, 0.15]), 0.25, 1), 2),
-  ideal: a => 0.25 + a.traits.integrity * 0.6,
+  ideal: a => 0.25 + a.traits.integrity * 0.6, trait: 'integrity', range: () => [0.25, 1],
   fmt: v => Math.round(v * 100) + '%',
   why: { up: 'crime has to cost more than it pays', down: 'punishment should fit the harm, no more' },
 });

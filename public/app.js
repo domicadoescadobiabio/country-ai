@@ -40,7 +40,7 @@ function renderStats() {
     box.append(h('div', { class: 'stat' }, h('b', { text: v }), h('span', { text: label })));
   }
   const ep = $('#enginePill');
-  ep.textContent = st.paused ? 'paused' : st.config.engine === 'llm' ? 'llm engine' : 'offline engine';
+  ep.textContent = st.paused ? 'paused' : st.config.engine === 'llm' ? (st.config.engineLabel || 'llm engine') : 'offline engine';
   ep.className = 'pill ' + (st.paused ? 'red' : st.config.engine === 'llm' ? 'violet' : '');
 }
 
@@ -74,7 +74,7 @@ function renderChannels() {
   const box = $('#channels'); box.replaceChildren();
   for (const c of st.config.channels) {
     box.append(h('button', { class: 'ch' + (c.id === st.ch ? ' on' : ''), type: 'button', onclick: () => { st.ch = c.id; renderChannels(); renderFeed(); } },
-      h('span', { text: '#' + c.name }), h('b', { text: (st.feed[c.id] || []).length })));
+      h('span', { text: '#' + c.name }), h('b', { text: c.id === 'decisions' ? (st.decisions || []).length : (st.feed[c.id] || []).length })));
   }
   const c = st.config.channels.find(x => x.id === st.ch);
   $('#chTitle').textContent = '#' + (c?.name || st.ch);
@@ -97,8 +97,35 @@ function msgEl(m) {
       h('div', { class: 'msg-head' }, h('span', { class: 'msg-name', text: name, onclick: () => a && openCitizen(a.id) }), badges, h('span', { class: 'msg-time', text: `day ${m.day} · ${time(m.ts)}` })),
       h('div', { class: 'msg-text', text: m.text })));
 }
+const TYPE_LABEL = { order: 'executive order', vote: 'vote', sign: 'signs bill', veto: 'veto', arrest: 'arrest', audit: 'code audit', investigate: 'investigation', block: 'blocked at border', admit: 'visa granted', pass: 'let through', recall: 'recall' };
+function decisionEl(d) {
+  const a = cit(d.agentId); const isState = d.agentId === 'state';
+  const allOk = d.checks.every(c => c[1]);
+  return h('div', { class: 'decision' },
+    h('div', { class: 'msg-head' },
+      h('div', { class: 'av sm', color: a?.color, text: isState ? '★' : (a?.name || '?')[0] }),
+      h('span', { class: 'msg-name', text: isState ? 'THE REPUBLIC' : a?.name || d.agentId, onclick: () => a && openCitizen(a.id) }),
+      d.role !== 'state' ? h('span', { class: 'badge office', text: role(d.role)?.title || d.role }) : null,
+      h('span', { class: 'badge', text: TYPE_LABEL[d.type] || d.type }),
+      d.engine === 'llm' ? h('span', { class: 'badge violet', text: 'llm reasoning' }) : h('span', { class: 'badge', text: 'rule-based' }),
+      h('span', { class: 'msg-time', text: `day ${d.day} · ${time(d.ts)}` })),
+    h('div', { class: 'd-title', text: d.title }),
+    d.inputs.length ? h('div', { class: 'd-sec' }, h('span', { class: 'd-k', text: 'Looked at' }), h('div', { class: 'd-inputs' }, d.inputs.map(([k, v]) => h('div', {}, h('span', { text: k + ': ' }), h('b', { text: v }))))) : null,
+    d.options.length ? h('div', { class: 'd-sec' }, h('span', { class: 'd-k', text: 'Options' }), h('div', { class: 'd-opts' }, d.options.map(o => h('span', { class: 'd-opt' + (o === d.chosen || o.startsWith(d.chosen + ' ') ? ' on' : ''), text: o })))) : null,
+    h('div', { class: 'd-sec' }, h('span', { class: 'd-k', text: 'Decided' }), h('div', { class: 'd-chosen', text: d.chosen })),
+    d.reason ? h('div', { class: 'd-sec' }, h('span', { class: 'd-k', text: 'Why' }), h('div', { class: 'd-reason', text: d.reason })) : null,
+    d.checks.length ? h('div', { class: 'd-sec' }, h('span', { class: 'd-k', text: 'Checks' }), h('div', {}, d.checks.map(([r, ok]) => h('div', { class: 'a ' + (ok ? 'ok' : 'bad'), text: (ok ? '✓ ' : '✗ ') + r })))) : null,
+    d.outcome ? h('div', { class: 'd-sec' }, h('span', { class: 'd-k', text: 'Result' }), h('div', { text: d.outcome })) : null,
+    allOk ? null : h('div', { class: 'd-flag', text: 'A constitutional check failed on this decision.' }));
+}
 function renderFeed() {
   const box = $('#feed');
+  if (st.ch === 'decisions') {
+    const list = (st.decisions || []).slice(-80).reverse();
+    box.replaceChildren(...(list.length ? list.map(decisionEl) : [h('div', { class: 'empty', text: 'No decisions yet. They start once the first official is sworn in.' })]));
+    box.scrollTop = 0;
+    return;
+  }
   const list = st.feed[st.ch] || [];
   box.replaceChildren(...(list.length ? list.map(msgEl) : [h('div', { class: 'empty', text: 'Nothing here yet. The republic is just getting started.' })]));
   box.scrollTop = box.scrollHeight;
@@ -148,10 +175,22 @@ const PANELS = {
       out.push(h('div', { class: 'card' }, h('h4', { text: `Now training: ${a?.name || c.agentId} for ${r?.title}` }),
         h('p', { text: `Attempt ${c.attempt}. Needs ${r?.passMark}/${c.total} correct to be sworn in.` }), dots));
     } else out.push(h('div', { class: 'card' }, h('h4', { text: 'Academy is idle' }), h('p', { text: 'Every seat is filled. The Academy opens again when a seat goes vacant.' })));
-    out.push(h('div', { class: 'card' }, h('h4', { text: 'Results' }), kv([['Sessions', st.academy.sessions], ['Sworn in', st.academy.graduates], ['Failed', st.academy.failures]])));
+    out.push(h('div', { class: 'card' }, h('h4', { text: 'Entrance exams' }), kv([['Sessions', st.academy.sessions], ['Sworn in', st.academy.graduates], ['Failed', st.academy.failures]])));
+    const t = st.training;
+    if (t) {
+      const card = h('div', { class: 'card' }, h('h4', { text: 'In-service training' }),
+        h('p', { text: 'Every official drills every 2 days: 1 handbook question + 2 cases built from real events. Reviews every 4 days. Two failed drills in a row, or grade D with low skill, means recall and a new Academy exam for the seat.' }),
+        kv([['Drills', t.drills], ['Passed', t.passed], ['Reviews', t.reviews], ['Recalled', t.recalls]]));
+      if (t.current) {
+        const dots = h('div', { class: 'dots' });
+        for (let i = 0; i < t.current.total; i++) dots.append(h('i', { class: t.current.answers[i] ? (t.current.answers[i].ok ? 'ok' : 'bad') : '' }));
+        card.append(h('p', { text: `Drilling now: ${cit(t.current.agentId)?.name} (${role(t.current.roleId)?.title})` }), dots);
+      }
+      out.push(card);
+    }
     for (const r of st.config.roles) {
       out.push(h('div', { class: 'card' }, h('h4', { text: `${r.title} · ${r.seats} seat${r.seats > 1 ? 's' : ''}` }),
-        h('p', { text: r.charter }), h('p', { text: `Exam: ${r.questions} scenarios, pass mark ${r.passMark}.` })));
+        h('p', { text: r.charter }), h('p', { text: `Entrance exam: ${r.questions} scenarios drawn from a handbook of ${r.bank}, pass mark ${r.passMark}.` })));
     }
     return out;
   },
@@ -161,6 +200,23 @@ const PANELS = {
     const out = [h('div', { class: 'card' },
       h('h4', { text: a.name }), h('p', { text: a.bio }),
       kv([['Office', a.office ? role(a.office)?.title : 'citizen'], ['Status', a.status], ['Wallet', cai(a.wallet)], ['Model', a.model], ['Origin', a.origin]]))];
+    if (a.office || Object.keys(a.skill || {}).length) {
+      const sk = h('div', { class: 'card' }, h('h4', { text: 'Office skill (grows with training)' }));
+      for (const [r, v] of Object.entries(a.skill || {})) sk.append(h('div', { class: 'trait' }, h('span', { text: role(r)?.title || r }), h('div', { class: 'bar' }, h('i', { style: `width:${Math.round(v * 100)}%` })), h('span', { text: Math.round(v * 100) })));
+      const rv = (a.reviews || []).slice().reverse();
+      if (rv.length) sk.append(h('h4', { class: 'sub', text: 'Report card' }), rv.map(r => h('div', { class: 'list-row' }, h('small', { text: `day ${r.day} · ${role(r.roleId)?.title}` }), h('div', {}, h('b', { class: 'grade g' + r.grade, text: r.grade }), ` ${r.kpi} · failed checks ${r.failedChecks} · skill ${Math.round(r.skill * 100)}`))));
+      const s = a.stats || {};
+      const counts = Object.entries(s).filter(([, v]) => v).map(([k, v]) => `${k} ${v}`).join(' · ');
+      if (counts) sk.append(h('h4', { class: 'sub', text: 'Decisions made' }), h('p', { text: counts }));
+      out.push(sk);
+      const mine = (st.decisions || []).filter(d => d.agentId === a.id).slice(-4).reverse();
+      if (mine.length) out.push(h('div', { class: 'card' }, h('h4', { text: 'Latest decisions' }), mine.map(decisionEl)));
+      for (const d of (a.drills || []).slice().reverse().slice(0, 3)) {
+        const card = h('div', { class: 'card' }, h('h4', { text: `Drill day ${d.day}: ${d.score}/${d.total} ${d.passed ? 'passed' : 'FAILED'} · skill ${Math.round(d.skillBefore * 100)} → ${Math.round(d.skill * 100)}` }));
+        for (const q of d.items) card.append(h('div', { class: 'qa' }, h('div', { class: 'q', text: (q.from ? `[${q.from}] ` : '') + q.q }), h('div', { class: 'a ' + (q.ok ? 'ok' : 'bad'), text: (q.ok ? '✓ ' : '✗ ') + q.chosen + (q.reason ? ` - "${q.reason}"` : '') })));
+        out.push(card);
+      }
+    }
     const tr = h('div', { class: 'card' }, h('h4', { text: 'Traits' }));
     for (const [k, v] of Object.entries(a.traits || {})) tr.append(h('div', { class: 'trait' }, h('span', { text: k }), h('div', { class: 'bar' }, h('i', { style: `width:${Math.round(v * 100)}%` })), h('span', { text: Math.round(v * 100) })));
     out.push(tr);
@@ -256,6 +312,13 @@ function connect() {
   es.onerror = () => { pill.textContent = 'reconnecting'; pill.className = 'pill red'; };
   es.addEventListener('message', e => addMessage(JSON.parse(e.data)));
   es.addEventListener('state', e => applyCompact(JSON.parse(e.data)));
+  es.addEventListener('decision', e => {
+    const d = JSON.parse(e.data);
+    (st.decisions ||= []).push(d); if (st.decisions.length > 200) st.decisions.shift();
+    if (st.ch === 'decisions') { const box = $('#feed'); box.querySelector('.empty')?.remove(); box.prepend(decisionEl(d)); if (box.children.length > 80) box.lastChild.remove(); }
+    const btn = [...$('#channels').children].find(b => b.firstChild.textContent === '#decisions');
+    if (btn) btn.lastChild.textContent = st.decisions.length;
+  });
   es.addEventListener('citizens', e => { st.citizens = JSON.parse(e.data); renderStats(); });
   es.addEventListener('reset', () => load());
   // citizens' wallets/training change constantly; refresh the full roster every 20s

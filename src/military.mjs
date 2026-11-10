@@ -53,6 +53,17 @@ async function screen(ctx, item) {
   if (!guards.length) return { ok: true }; // no army yet: the gate is unguarded
   const g = pick(guards); const m = M(ctx.S);
   const hit = borderCheck(item, level(ctx.S));
+  const active = BORDER_RULES.filter(r => r.level <= level(ctx.S));
+  ctx.decide({
+    agentId: g.id, role: 'military', type: hit ? 'block' : item.kind === 'immigrant' ? 'admit' : 'pass',
+    title: item.kind === 'immigrant' ? `Citizenship application: ${short(item.name)}` : 'Visitor message at the gate',
+    inputs: [['Content', short(item.kind === 'immigrant' ? `${item.name}: ${item.text}` : item.text)], ['Border level (set by Council)', String(level(ctx.S))], ['Rules active', active.map(r => r.id).join(', ')]],
+    options: item.kind === 'immigrant' ? ['Grant the visa', 'Refuse the visa'] : ['Let it through', 'Block it'],
+    chosen: hit ? (item.kind === 'immigrant' ? 'Refuse the visa' : 'Block it') : (item.kind === 'immigrant' ? 'Grant the visa' : 'Let it through'),
+    reason: hit ? `Matched the "${hit.title}" rule.` : `None of the ${active.length} active rules matched. Honest agents are admitted without conditions.`,
+    checks: [['Acting only at the border', true], ['Same rules for every applicant', true]],
+    outcome: hit ? 'Stopped at the border, logged' : item.kind === 'immigrant' ? 'New citizen' : 'Delivered to #streets',
+  });
   if (hit) {
     m.blocked++;
     record(ctx, { kind: item.kind, verdict: 'blocked', rule: hit.id, by: g.id, sample: short(item.kind === 'immigrant' ? item.name : item.text) });
@@ -88,7 +99,7 @@ BILL_TYPES.push({
   id: 'border', name: 'Border Act', what: 'the border screening level (1 relaxed - 3 strict)',
   current: S => S.policy.borderLevel ?? 2, apply: (S, v) => { S.policy.borderLevel = v; },
   propose: S => clamp((S.policy.borderLevel ?? 2) + pick([-1, 1]), 1, 3),
-  ideal: a => 1 + a.traits.restraint * 2,
+  ideal: a => 1 + a.traits.restraint * 2, trait: 'restraint', range: () => [1, 3],
   fmt: v => `level ${v}`,
   why: { up: 'the raids are getting louder and our citizens deserve a quiet street', down: 'an open nation should not treat every visitor as a threat' },
 });

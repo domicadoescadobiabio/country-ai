@@ -94,6 +94,24 @@ input, textarea { font: inherit; color: var(--text); }
 .msg.k-fail .msg-text { color: var(--red); }
 .empty { color: var(--dim); text-align: center; padding: 40px 10px; }
 
+.decision { border: 1px solid var(--line); background: var(--panel); border-radius: 10px; padding: 11px 12px; margin: 6px 0; display: flex; flex-direction: column; gap: 6px; }
+.decision .msg-head { align-items: center; }
+.av.sm { width: 22px; height: 22px; border-radius: 6px; font-size: 11px; }
+.d-title { font-weight: 600; font-size: 13.5px; }
+.d-sec { display: grid; grid-template-columns: 74px 1fr; gap: 8px; font-size: 12.5px; line-height: 1.45; }
+.d-k { color: var(--dim); font-family: var(--mono); font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; padding-top: 2px; }
+.d-inputs span { color: var(--muted); }
+.d-inputs b { font-weight: 500; }
+.d-opts { display: flex; flex-wrap: wrap; gap: 5px; }
+.d-opt { border: 1px solid var(--line2); border-radius: 6px; padding: 2px 7px; color: var(--muted); }
+.d-opt.on { border-color: var(--gold); color: var(--gold); background: var(--gold-bg); }
+.d-chosen { color: var(--gold); font-weight: 600; }
+.d-reason { color: #d5dbe6; }
+.d-flag { color: var(--red); font-size: 12px; }
+.badge.violet { color: var(--violet); border-color: #4c1d95; }
+.card h4.sub { margin: 12px 0 4px; color: var(--muted); font-size: 12px; }
+.grade { display: inline-block; width: 20px; text-align: center; border-radius: 4px; color: #0b0f17; }
+.grade.gA { background: var(--green); } .grade.gB { background: #a3e635; } .grade.gC { background: var(--gold); } .grade.gD { background: var(--red); }
 .composer { display: flex; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--line); }
 .composer[hidden] { display: none; }
 .composer input { flex: 1; background: var(--panel); border: 1px solid var(--line2); border-radius: 8px; padding: 10px 12px; min-width: 0; }

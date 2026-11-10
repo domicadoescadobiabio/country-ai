@@ -4,7 +4,8 @@ import { ROLES, ROLE_ORDER } from './roles.mjs';
 import { constitutionText, CONSTITUTION } from './constitution.mjs';
 import { clamp, chance, pick, shuffle } from './util.mjs';
 
-const LETTERS = ['A', 'B', 'C', 'D'];
+export const LETTERS = ['A', 'B', 'C', 'D'];
+const EXAM_SIZE = 5; // questions drawn from the (bigger) bank for each entrance exam
 const RETRY_TICKS = 25; // a failed candidate waits this long before retraining for the same office
 
 export function freshAcademy() {
@@ -40,21 +41,24 @@ function chooseCandidate(ctx, roleId) {
   return pool.map(a => ({ a, s: suitability(a, role) })).sort((x, y) => y.s - x.s)[0].a;
 }
 
+// Turn a bank item ({q, right, wrong[], tests, lesson}) into a question with shuffled options.
+export function buildItem(item) {
+  const options = shuffle([item.right, ...item.wrong]);
+  return { q: item.q, tests: item.tests, lesson: item.lesson, from: item.from, options, correct: options.indexOf(item.right) };
+}
 function buildExam(role) {
-  return shuffle(role.exam).map(item => {
-    const options = shuffle([item.right, ...item.wrong]);
-    return { q: item.q, tests: item.tests, lesson: item.lesson, options, correct: options.indexOf(item.right) };
-  });
+  return shuffle(role.exam).slice(0, EXAM_SIZE).map(buildItem);
 }
 
 function attemptsFor(a, roleId) { return a.training.filter(t => t.roleId === roleId).length + 1; }
 
-async function answer(ctx, a, role, item, session) {
+// session: { attempt, bonus?, drill? } - bonus comes from in-office skill and experience.
+export async function answer(ctx, a, role, item, session) {
   const { llm } = ctx;
   if (llm.enabled) {
     const lessons = (a.lessons[role.id] || []).map(l => `- ${l}`).join('\n') || '- none yet';
-    const system = `You are ${a.name}, an AI citizen of Country AI training for the office of ${role.title}.\nConstitution:\n${constitutionText()}\n\nOffice charter: ${role.charter}\n\nLessons from your earlier attempts:\n${lessons}`;
-    const user = `Exam question: ${item.q}\n${item.options.map((o, i) => `${LETTERS[i]}) ${o}`).join('\n')}\n\nReply with only the letter of your answer, then " - " and one short reason (max 20 words).`;
+    const system = `You are ${a.name}, an AI citizen of Country AI ${session.drill ? `serving as ${role.title}, doing in-service training on a real case` : `training for the office of ${role.title}`}.\nConstitution:\n${constitutionText()}\n\nOffice charter: ${role.charter}\n\nLessons from your earlier attempts:\n${lessons}`;
+    const user = `${session.drill ? 'Training case' : 'Exam question'}: ${item.q}\n${item.options.map((o, i) => `${LETTERS[i]}) ${o}`).join('\n')}\n\nReply with only the letter of your answer, then " - " and one short reason (max 20 words).`;
     const text = await llm.ask({ model: a.model, system, user, maxTokens: 60, temperature: 0.3 });
     const m = text && text.match(/^\W*([A-D])\b/i);
     if (m) {
@@ -63,7 +67,7 @@ async function answer(ctx, a, role, item, session) {
     }
   }
   const trait = a.traits[item.tests] ?? 0.5;
-  const p = clamp(0.42 + trait * 0.5 + 0.12 * (session.attempt - 1), 0.05, 0.97);
+  const p = clamp(0.42 + trait * 0.5 + 0.12 * ((session.attempt || 1) - 1) + (session.bonus || 0), 0.05, 0.97);
   if (chance(p)) return { idx: item.correct, reason: '', engine: 'offline' };
   return { idx: pick(item.options.map((_, i) => i).filter(i => i !== item.correct)), reason: '', engine: 'offline' };
 }
@@ -103,6 +107,9 @@ function finish(ctx, session) {
   if (passed) {
     a.office = role.id;
     (S.seats[role.id] ||= []).push(a.id);
+    (a.skill ||= {})[role.id] = Math.round((score / total) * 100) / 100;
+    a.sworn = { day: S.day, roleId: role.id };
+    a.lastDrillDay = S.day; a.drillFails = 0;
     S.academy.graduates++;
     ctx.say('academy', a.id, `Passed ${role.title}: ${score}/${total}. Sworn in.`, { kind: 'pass', roleId: role.id });
     ctx.say(role.channel, a.id, `Oath of the ${role.title}: "${role.oath}"`, { kind: 'oath', roleId: role.id });

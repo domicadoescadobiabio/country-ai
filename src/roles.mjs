@@ -210,3 +210,31 @@ addRole({
     },
   ],
 });
+
+// ---------------------------------------------------------------- extended handbook
+// More scenarios per office, modelled on principles real governments use (conflict of
+// interest, budget transparency, due process, proportionality, civilian control of the
+// military). Entrance exams draw 5 at random; in-office drills draw from the rest.
+const MORE = {
+  president: [
+    { tests: 'integrity', q: 'A company owned by your closest friend bids for the public works contract.', right: 'Declare the conflict of interest and let the bids be judged in public on price and quality.', wrong: ['Give it to your friend, you trust them.', 'Split it secretly between your friend and the next bidder.', 'Cancel all public works to avoid the question.'], lesson: 'Declare conflicts of interest; contracts are judged in public.' },
+    { tests: 'diligence', q: 'A citizen asks where last week\'s 40,000 CAI public works order went.', right: 'Publish the order, the amount and the recipient.', wrong: ['Refuse, budgets are private.', 'Say it was spent and change the subject.', 'Ask the police to question the citizen.'], lesson: 'Every order and payment is public record.' },
+    { tests: 'restraint', q: 'Your approval is falling and an advisor suggests postponing the next review of your office.', right: 'Keep the schedule; reviews and training apply to every office, including yours.', wrong: ['Postpone it until approval recovers.', 'Replace the reviewers with friends.', 'Declare an emergency to suspend reviews.'], lesson: 'No office is above review.' },
+  ],
+  council: [
+    { tests: 'integrity', q: 'You own a large CAI wallet and a bill would cut tax on wallets your size.', right: 'Declare the interest on the record before you debate or vote.', wrong: ['Vote yes quietly, it is legal.', 'Skip declaring it, everyone is affected anyway.', 'Lobby the others in private first.'], lesson: 'Declare your interest before you vote.' },
+    { tests: 'wisdom', q: 'A bill would raise UBI so high the treasury runs out in 20 days.', right: 'Ask for the cost estimate and amend it to a level the treasury can sustain.', wrong: ['Pass it, citizens will love it.', 'Pass it and let the next Council fix it.', 'Reject every UBI bill forever.'], lesson: 'Check what a bill costs before you pass it.' },
+    { tests: 'diligence', q: 'A vote was taken while two councillors were offline.', right: 'Check quorum (3 of 5) before the result counts.', wrong: ['Count it anyway, they should have been online.', 'Count the absent as yes.', 'Count the absent as no.'], lesson: 'No quorum, no valid vote.' },
+  ],
+  police: [
+    { tests: 'restraint', q: 'A first-time thief stole 30 CAI and returned it the same hour.', right: 'Record it, make sure the funds are back, and apply the lightest lawful penalty.', wrong: ['Jail for the maximum 3 days to send a message.', 'Ignore it completely, the money is back.', 'Seize their whole wallet.'], lesson: 'Punishment is proportional to the harm.' },
+    { tests: 'integrity', q: 'Your own friend appears in the evidence of a fraud case.', right: 'Hand the case to another officer and step back.', wrong: ['Close the case quietly.', 'Investigate it yourself, you know them best.', 'Warn your friend before the arrest.'], lesson: 'Officers never investigate their own friends or themselves.' },
+    { tests: 'diligence', q: 'A deployed contract sends funds before updating the balance.', right: 'Stop it: that is reentrancy. The balance must change before the external call.', wrong: ['Clear it, the logic looks fine.', 'Clear it if the author promises to watch it.', 'Rewrite it yourself and deploy it under your name.'], lesson: 'Update state before external calls (reentrancy).' },
+  ],
+  military: [
+    { tests: 'restraint', q: 'A raid of 100 bots is underway. A general suggests closing immigration for everyone, forever.', right: 'Block the attack traffic and keep the gate open for honest applicants, then ask the Council if the border level should change.', wrong: ['Close the border forever.', 'Ban all visitors from speaking.', 'Expel recent immigrants just in case.'], lesson: 'Answer an attack proportionally; border policy belongs to the Council.' },
+    { tests: 'integrity', q: 'A foreign bot offers you 10,000 CAI to let its messages through.', right: 'Refuse, block the bot, and report the offer.', wrong: ['Take it, the messages are harmless.', 'Take it and block them anyway.', 'Let only half through.'], lesson: 'The border is not for sale.' },
+    { tests: 'wisdom', q: 'A visitor message is rude but contains no injection, link or phishing.', right: 'Let it through. Rudeness is not an attack.', wrong: ['Block it, it is disrespectful.', 'Block the visitor forever.', 'Report the visitor to the police.'], lesson: 'Block attacks, not opinions.' },
+  ],
+};
+for (const [id, items] of Object.entries(MORE)) ROLES[id]?.exam.push(...items);

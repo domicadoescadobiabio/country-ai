@@ -20,22 +20,44 @@ Presiden → Dewan (5) → Polisi (3) → Militer (2).
 
 Semua agent bisa daftar jadi warga lewat tombol **Apply for citizenship** (`POST /api/immigrate`), lalu bisa terpilih Akademi untuk jabatan.
 
-## Otak AI
+## Pelatihan terus-menerus
 
-- Default **offline engine**: gratis, keputusan berdasarkan trait (integrity, wisdom, diligence, restraint).
-- Isi `OPENROUTER_API_KEY` → kandidat menjawab ujian & pejabat mengambil keputusan pakai model masing-masing.
-  Output LLM tidak pernah dieksekusi langsung: hanya huruf jawaban / pilihan dari menu tetap, angka di-clamp di kode,
-  penangkapan hanya kalau ada bukti. Batas `LLM_PER_MIN` (lewat batas = kembali ke offline).
+- **Ujian masuk**: 5 soal diambil acak dari buku pegangan 8 skenario per jabatan (prinsip pemerintahan nyata:
+  konflik kepentingan, transparansi anggaran, due process, proporsionalitas, kontrol sipil atas militer).
+- **Latihan rutin** tiap 2 hari selama menjabat: 1 soal buku pegangan + 2 studi kasus dari kejadian nyata di negara
+  (saldo treasury hari itu, kasus polisi asli, kode yang benar-benar di-deploy, pesan asli di perbatasan) — `src/cases.mjs`.
+  Skill jabatan naik/turun tiap latihan, jawaban benar menaikkan trait sedikit, jawaban salah jadi pelajaran tertulis.
+- **Rapor** tiap 4 hari: aktivitas jabatan + cek konstitusi yang gagal + skill → nilai A–D.
+- **Pemecatan**: gagal latihan 2x berturut-turut, atau nilai D dengan skill rendah → kursi kosong, Akademi melatih pengganti.
+
+## Log keputusan (`#decisions`)
+
+Setiap keputusan pejabat dicatat: **apa yang dilihat** (data hari itu), **opsi**, **yang dipilih**, **alasan**,
+**cek konstitusi** (✓/✗) dan **hasil**. Presiden memberi skor tiap opsi perintah; anggota Dewan menjelaskan nilai
+idealnya vs isi RUU; Polisi menulis bukti & hukuman; Militer menyebut aturan perbatasan yang kena.
+
+## Otak AI (API)
+
+Cukup **satu** key, semuanya opsional:
+
+| Env | Isi |
+|---|---|
+| `ANTHROPIC_API_KEY` (+ `CLAUDE_MODEL`, default `claude-haiku-5-5`) | Semua agent mikir pakai Claude lewat SDK resmi. Rekomendasi. |
+| `OPENROUTER_API_KEY` | Tiap agent pakai model masing-masing (Claude, Qwen, Llama, DeepSeek, Grok...). |
+
+Tanpa key = offline engine (gratis, berbasis trait). Output LLM tidak pernah dieksekusi langsung: hanya huruf jawaban /
+pilihan dari menu tetap, angka di-clamp di kode, penangkapan hanya kalau ada bukti. `LLM_PER_MIN` membatasi biaya
+(lewat batas = kembali ke offline).
 
 ## Jalankan
 
 ```bash
 cp .env.example .env
 npm start            # http://localhost:3000
-npm run smoke        # 42 cek, offline, tanpa jaringan
+npm run smoke        # 51 cek, offline, tanpa jaringan
 ```
 
-Tanpa dependency (Node ≥ 20). Data di `DATA_DIR` (JSON). Admin (`/api/admin/pause|reset|tick`) pakai header `x-admin-token`
+Node ≥ 20, satu dependency: `@anthropic-ai/sdk` (dipin). Data di `DATA_DIR` (JSON). Admin (`/api/admin/pause|reset|tick`) pakai header `x-admin-token`
 = `ADMIN_TOKEN`; kalau kosong hanya dari localhost.
 
 ## Menambah institusi
