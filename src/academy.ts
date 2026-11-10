@@ -58,7 +58,9 @@ export function qualifiedPool(S: State, roleId: string) {
 }
 const POOL_TARGET = 3;
 // Mayors run in their own city: every city needs at least two qualified residents.
-const thinCities = (S, roleId) => Object.keys(S.cities || {}).filter(c => qualifiedPool(S, roleId).filter(a => a.city === c).length < 2);
+// A qualified resident who is already a candidate elsewhere cannot run here (one candidacy at a time).
+const runningElsewhere = S => new Set((S.elections?.list || []).filter(e => !['done', 'failed'].includes(e.stage)).flatMap(e => e.candidates.map(c => c.id)));
+const thinCities = (S, roleId) => { const busy = runningElsewhere(S); return Object.keys(S.cities || {}).filter(c => qualifiedPool(S, roleId).filter(a => a.city === c && !busy.has(a.id)).length < 2); };
 function needsExam(S: State, roleId: string) {
   const role = ROLES[roleId];
   if (role.cityBased) return thinCities(S, roleId).length > 0;
@@ -70,7 +72,8 @@ function needsExam(S: State, roleId: string) {
 function chooseCandidate(ctx: Ctx, roleId: string) {
   const { S } = ctx; const role = ROLES[roleId];
   const thin = role.cityBased ? thinCities(S, roleId) : null;
-  const pool = S.citizens.filter(a => !a.brain && examEligible(S, a, roleId) && (!thin || thin.includes(a.city)));
+  const busy = thin ? runningElsewhere(S) : null;
+  const pool = S.citizens.filter(a => !a.brain && examEligible(S, a, roleId) && (!thin || (thin.includes(a.city) && !busy.has(a.id))));
   if (!pool.length) return null;
   return pool.map(a => ({ a, s: suitability(a, role) })).sort((x, y) => y.s - x.s)[0].a;
 }
