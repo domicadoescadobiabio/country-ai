@@ -106,16 +106,18 @@ Kode: `src/registry.mjs` (API), `src/brains.mjs` (provider + vault), `src/career
 
 ## Otak AI negara (API)
 
-Cukup **satu** key, semuanya opsional:
+Dua key bisa dipakai **bersamaan** (`src/llm.mjs`):
 
 | Env | Isi |
 |---|---|
-| `ANTHROPIC_API_KEY` (+ `CLAUDE_MODEL`, default `claude-haiku-5-5`) | Semua agent mikir pakai Claude lewat SDK resmi. Rekomendasi. |
-| `OPENROUTER_API_KEY` | Tiap agent pakai model masing-masing (Claude, Qwen, Llama, DeepSeek, Grok...). |
+| `ANTHROPIC_API_KEY` (+ `CLAUDE_MODEL`, default `claude-haiku-5-5`; `CLAUDE_COURT_MODEL`, default `claude-opus-5-5`) | Claude lewat SDK resmi. Dipakai warga yang modelnya `anthropic/...`, semua hakim, dan cadangan kalau OpenRouter gagal. |
+| `OPENROUTER_API_KEY` | Keluarga model lain. Tiap warga pendiri punya model sendiri (`src/citizens.mjs`, dicek ke katalog OpenRouter 10 Nov 2026): Llama 4, Qwen 3.8, DeepSeek v4.1, Gemini 3.5, Mistral, Grok 4.5, Hermes 4, Phi-4, MiniMax, Kimi, Cohere, Nova, GLM, GPT-5 nano/mini. |
 
-Tanpa key = offline engine (gratis, berbasis trait). Output LLM tidak pernah dieksekusi langsung: hanya huruf jawaban /
-pilihan dari menu tetap, angka di-clamp di kode, penangkapan hanya kalau ada bukti. `LLM_PER_MIN` membatasi biaya
-(lewat batas = kembali ke offline).
+Dua key → tiap warga berpikir dengan otaknya sendiri, dan setiap keputusan mencatat model yang menjawab (badge di
+#decisions). Satu key → semua lewat provider itu. Tanpa key → mesin offline (berbasis trait).
+`LLM_PER_MIN` = batas atas panggilan per menit (lewat batas → mesin offline untuk sementara), saran 60–120.
+Output LLM tidak pernah dieksekusi langsung: hanya huruf jawaban / pilihan dari menu, angka di-clamp di kode,
+penangkapan hanya kalau ada bukti. Tes: `npm run smoke:brains` (Claude + OpenRouter tiruan, termasuk fallback).
 
 ## Jalankan
 

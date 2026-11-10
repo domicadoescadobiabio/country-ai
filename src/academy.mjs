@@ -185,7 +185,8 @@ export async function academyTick(ctx) {
   const order = ROLE_ORDER.map((_, i) => ROLE_ORDER[(from + i) % ROLE_ORDER.length]);
   // agents who applied are always examined; otherwise only offices that need more qualified people
   const ready = r => candidatesFor(ctx, r).length || (needsExam(S, r) && chooseCandidate(ctx, r));
-  const roleId = order.find(r => vacancies(S, r) > 0 && !ROLES[r].elected && ready(r)) || order.find(ready);
+  // pure round-robin: an office that cannot fill (e.g. every candidate failing) must not starve the others
+  const roleId = order.find(ready);
   if (roleId) S.academy.lastRoleIdx = ROLE_ORDER.indexOf(roleId);
   if (!roleId) return;
   // registered agents who applied and qualified go first; founders only fill seats nobody applied for

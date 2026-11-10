@@ -145,8 +145,8 @@ export async function think(ctx, a, qid, { system, user, kind = 'question', form
     return { pending: true };
   }
   if (ctx.llm.enabled) {
-    const text = await ctx.llm.ask({ model: a.model, system, user, claudeModel });
-    return { text, engine: text ? 'llm' : 'offline' };
+    const r = await ctx.llm.askDetailed({ model: a.model, system, user, claudeModel });
+    return { text: r.text, engine: r.text ? r.via : 'offline' };
   }
   return { text: null, engine: 'offline' };
 }

@@ -32,6 +32,7 @@ const CFG = {
   claudeModel: (process.env.CLAUDE_MODEL || 'claude-haiku-5-5').trim(),
   courtModel: (process.env.CLAUDE_COURT_MODEL || 'claude-opus-5-5').trim(), // judges: a stronger model than the officials
   orKey: (process.env.OPENROUTER_API_KEY || '').trim(),
+  orBase: (process.env.OPENROUTER_BASE_URL || '').trim(), // tests only; default https://openrouter.ai/api/v1
   llmPerMin: clamp(Number(process.env.LLM_PER_MIN) || 20, 1, 600),
   tick: clamp(Number(process.env.TICK_SECONDS) || 5, 0.05, 120), // <1s only for tests
   dayTicks: clamp(Number(process.env.DAY_TICKS) || 12, 3, 1000),
@@ -163,7 +164,7 @@ async function screen(item) {
 
 // ---------------------------------------------------------------- public views
 function publicCitizen(a) {
-  return { id: a.id, name: a.name, model: llm.provider === 'anthropic' ? CFG.claudeModel : a.model, color: a.color, bio: a.bio, origin: a.origin, office: a.office, status: a.status, jailUntil: a.jailUntil, wallet: Math.round(a.wallet), traits: a.traits, joined: a.joined, training: a.training.slice(-8), lessons: a.lessons, record: a.record || [], skill: a.skill || {}, brain: publicBrain(a.brain), city: a.city || null, rank: a.rank || null, rankSince: a.rankSince ?? null, quals: a.quals || {}, termEnds: a.termEnds || null, practice: a.practice || {}, joinedDay: a.joinedDay ?? 0, drills: (a.drills || []).slice(-6), reviews: (a.reviews || []).slice(-6), stats: a.stats || {} };
+  return { id: a.id, name: a.name, model: a.brain ? a.model : llm.routeOf(a.model), color: a.color, bio: a.bio, origin: a.origin, office: a.office, status: a.status, jailUntil: a.jailUntil, wallet: Math.round(a.wallet), traits: a.traits, joined: a.joined, training: a.training.slice(-8), lessons: a.lessons, record: a.record || [], skill: a.skill || {}, brain: publicBrain(a.brain), city: a.city || null, rank: a.rank || null, rankSince: a.rankSince ?? null, quals: a.quals || {}, termEnds: a.termEnds || null, practice: a.practice || {}, joinedDay: a.joinedDay ?? 0, drills: (a.drills || []).slice(-6), reviews: (a.reviews || []).slice(-6), stats: a.stats || {} };
 }
 function academyView() {
   const c = S.academy.current;
@@ -356,6 +357,8 @@ const server = http.createServer(async (req, res) => {
 
 if (!store.head().count) ctx.record('genesis', 'founders', { nation: NATION, constitutionVersion: S.constitutionVersion, citizens: S.citizens.length, offices: Object.fromEntries(Object.entries(S.seats).map(([r, ids]) => [r, ids])) });
 applyAmendments(ctx);
+// founders keep the model family written in src/citizens.mjs (updated when the catalog changes)
+for (const f of FOUNDERS) { const a = S.citizens.find(x => x.id === f.id && !x.brain); if (a && a.model !== f.model) a.model = f.model; }
 // founders added in later versions arrive in an existing republic as new citizens
 for (const f of FOUNDERS) if (!S.citizens.some(a => a.id === f.id)) {
   const a = makeCitizen(f); a.joinedDay = S.day; S.citizens.push(a);

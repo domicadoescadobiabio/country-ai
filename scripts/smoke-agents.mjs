@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ROLES } from '../src/roles.mjs';
 import '../src/cities.mjs'; // registers the Mayor office
+import '../src/court.mjs'; // registers the Judge office
 import { ledgerAll } from './smoke-elections.mjs';
 
 const LETTERS = ['A', 'B', 'C', 'D'];

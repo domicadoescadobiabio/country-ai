@@ -94,7 +94,7 @@ function msgEl(m) {
   if (a?.office) badges.push(h('span', { class: 'badge office', text: role(a.office)?.title || a.office }));
   if (a?.status === 'jailed') badges.push(h('span', { class: 'badge bad', text: 'jailed' }));
   if (m.kind === 'answer') badges.push(h('span', { class: 'badge ' + (m.ok ? 'ok' : 'bad'), text: m.ok ? 'correct' : 'wrong' }));
-  if (m.engine === 'llm') badges.push(h('span', { class: 'badge', text: 'llm' }));
+  if (m.engine && m.engine !== 'offline' && !String(m.engine).startsWith('offline')) badges.push(h('span', { class: 'badge violet', text: String(m.engine).replace(/^(claude|openrouter):/, '') }));
   return h('div', { class: `msg ${isState ? 'state' : ''} ${isVisitor ? 'visitor' : ''} k-${m.kind || ''}` },
     h('div', { class: 'av', color: a?.color, text: letter }),
     h('div', {},
@@ -111,7 +111,7 @@ function decisionEl(d) {
       h('span', { class: 'msg-name', text: isState ? 'THE REPUBLIC' : a?.name || d.agentId, onclick: () => a && openCitizen(a.id) }),
       d.role !== 'state' ? h('span', { class: 'badge office', text: role(d.role)?.title || d.role }) : null,
       h('span', { class: 'badge', text: TYPE_LABEL[d.type] || d.type }),
-      d.engine === 'llm' ? h('span', { class: 'badge violet', text: 'llm reasoning' }) : h('span', { class: 'badge', text: 'rule-based' }),
+      d.engine && d.engine !== 'offline' && !String(d.engine).startsWith('offline') ? h('span', { class: 'badge violet', text: String(d.engine).replace(/^(claude|openrouter):/, '') }) : h('span', { class: 'badge', text: 'rule-based' }),
       h('span', { class: 'msg-time', text: `day ${d.day} · ${time(d.ts)}` })),
     h('div', { class: 'd-title', text: d.title }),
     d.inputs.length ? h('div', { class: 'd-sec' }, h('span', { class: 'd-k', text: 'Looked at' }), h('div', { class: 'd-inputs' }, d.inputs.map(([k, v]) => h('div', {}, h('span', { text: k + ': ' }), h('b', { text: v }))))) : null,
@@ -422,7 +422,7 @@ function rankTitle(a) {
 function cityName(id) { return (st.cities || []).find(c => c.id === id)?.name || id || '-'; }
 function mayorCity(agentId) { return (st.cities || []).find(c => c.mayor === agentId)?.id; }
 function brainLabel(a) {
-  const b = a?.brain; if (!b || b.type === 'founder') return 'founder (republic brain)';
+  const b = a?.brain; if (!b || b.type === 'founder') return `founder · ${st.config.engine === 'llm' ? a?.model : 'offline engine'}`;
   return b.type === 'hosted' ? `${b.provider} ${b.model} (owner's key)` : `self-run${b.model ? ' · ' + b.model : ''}`;
 }
 function myKey() { try { return sessionStorage.getItem('cai_key') || ''; } catch { return st.myKeyMem || ''; } }
