@@ -14,7 +14,7 @@ export function makeLLM(cfg, log) {
   const calls = [];
   const hasClaude = !!cfg.anthropicKey, hasOR = !!cfg.orKey;
   const provider = hasClaude && hasOR ? 'mixed' : hasClaude ? 'anthropic' : hasOR ? 'openrouter' : null;
-  const claude = hasClaude ? new Anthropic({ apiKey: cfg.anthropicKey, maxRetries: 1, timeout: 30000 }) : null;
+  const claude = hasClaude ? new Anthropic({ apiKey: cfg.anthropicKey, maxRetries: 1, timeout: 120000 }) : null;
   const orBase = (cfg.orBase || 'https://openrouter.ai/api/v1').replace(/\/$/, '');
   const usage = { calls: 0, inputTokens: 0, outputTokens: 0, errors: 0, claude: 0, openrouter: 0, fallbacks: 0 };
 
@@ -26,16 +26,14 @@ export function makeLLM(cfg, log) {
     return true;
   }
 
-  async function askClaude({ system, user, model }) {
+  // Opus/Sonnet 5.5: adaptive thinking (always on), effort by task, and the server-side fallback
+  // for safety-classifier declines (beta). Haiku has no server-side fallback, so it is never sent there.
+  async function askClaude({ system, user, model, effort = 'low' }) {
     try {
-      const r = await claude.messages.create({
-        model,
-        // room for adaptive thinking plus a short answer; effort low keeps it brief
-        max_tokens: 1024,
-        output_config: { effort: 'low' },
-        system,
-        messages: [{ role: 'user', content: user }],
-      });
+      const params = { model, max_tokens: 8000, output_config: { effort }, system, messages: [{ role: 'user', content: user }] };
+      const r = /haiku/.test(model)
+        ? await claude.messages.create(params)
+        : await claude.beta.messages.create({ ...params, betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' });
       usage.inputTokens += r.usage?.input_tokens || 0;
       usage.outputTokens += r.usage?.output_tokens || 0;
       usage.claude++;
@@ -51,14 +49,14 @@ export function makeLLM(cfg, log) {
     }
   }
 
-  async function askOpenRouter({ model, system, user, maxTokens }) {
-    const ac = new AbortController(); const t = setTimeout(() => ac.abort(), 25000);
+  async function askOpenRouter({ model, system, user, maxTokens, effort = 'low' }) {
+    const ac = new AbortController(); const t = setTimeout(() => ac.abort(), 90000);
     try {
       const r = await fetch(`${orBase}/chat/completions`, {
         method: 'POST', signal: ac.signal,
         headers: { 'content-type': 'application/json', authorization: `Bearer ${cfg.orKey}`, 'X-Title': 'Country AI' },
         // reasoning models: think a little, return only the answer; leave room so the answer is not cut off
-        body: JSON.stringify({ model, max_tokens: Math.max(maxTokens, 700), reasoning: { effort: 'low', exclude: true }, messages: [{ role: 'system', content: system }, { role: 'user', content: user }] }),
+        body: JSON.stringify({ model, max_tokens: Math.max(maxTokens, 6000), reasoning: { effort, exclude: true }, messages: [{ role: 'system', content: system }, { role: 'user', content: user }] }),
       });
       if (!r.ok) throw new Error(`openrouter ${r.status} (${model})`);
       const j = await r.json();
@@ -74,20 +72,21 @@ export function makeLLM(cfg, log) {
   }
 
   // Which brain answers: { text, via } where via names the provider and model actually used.
-  async function askDetailed({ model = '', system, user, maxTokens = 160, claudeModel = null }) {
+  // effort: 'low' for exam answers and chat, 'medium' for decisions, votes and rulings
+  async function askDetailed({ model = '', system, user, maxTokens = 160, claudeModel = null, effort = 'low' }) {
     if (!provider || !budgetOk()) return { text: null, via: 'offline' };
     usage.calls++;
     const claudeId = claudeModel || (/^claude-/.test(model) ? model : cfg.claudeModel);
     const wantsClaude = hasClaude && (claudeModel || !hasOR || /^anthropic\//.test(model) || /^claude-/.test(model) || !model);
     if (wantsClaude) {
-      const text = cleanText(await askClaude({ system, user, model: claudeId }), 900);
+      const text = cleanText(await askClaude({ system, user, model: claudeId, effort }), 900);
       return { text: text || null, via: `claude:${claudeId}` };
     }
-    let text = cleanText(await askOpenRouter({ model, system, user, maxTokens }), 900);
+    let text = cleanText(await askOpenRouter({ model, system, user, maxTokens, effort }), 900);
     if (text) return { text, via: `openrouter:${model}` };
     if (hasClaude) { // OpenRouter failed: the agent still thinks, with Claude
       usage.fallbacks++;
-      text = cleanText(await askClaude({ system, user, model: cfg.claudeModel }), 900);
+      text = cleanText(await askClaude({ system, user, model: cfg.claudeModel, effort }), 900);
       return { text: text || null, via: `claude:${cfg.claudeModel} (fallback)` };
     }
     return { text: null, via: 'offline' };

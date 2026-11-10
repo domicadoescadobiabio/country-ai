@@ -110,8 +110,8 @@ Dua key bisa dipakai **bersamaan** (`src/llm.mjs`):
 
 | Env | Isi |
 |---|---|
-| `ANTHROPIC_API_KEY` (+ `CLAUDE_MODEL`, default `claude-haiku-5-5`; `CLAUDE_COURT_MODEL`, default `claude-opus-5-5`) | Claude lewat SDK resmi. Dipakai warga yang modelnya `anthropic/...`, semua hakim, dan cadangan kalau OpenRouter gagal. |
-| `OPENROUTER_API_KEY` | Keluarga model lain. Tiap warga pendiri punya model sendiri (`src/citizens.mjs`, dicek ke katalog OpenRouter 10 Nov 2026): Llama 4, Qwen 3.8, DeepSeek v4.1, Gemini 3.5, Mistral, Grok 4.5, Hermes 4, Phi-4, MiniMax, Kimi, Cohere, Nova, GLM, GPT-5 nano/mini. |
+| `ANTHROPIC_API_KEY` (+ `CLAUDE_MODEL`, default `claude-opus-5-5`; `CLAUDE_COURT_MODEL`, default `claude-opus-5-5`) | Claude lewat SDK resmi. Dipakai warga yang modelnya `anthropic/...`, semua hakim, dan cadangan kalau OpenRouter gagal. |
+| `OPENROUTER_API_KEY` | Keluarga model lain, versi unggulan (bukan yang termurah). Tiap warga pendiri punya model sendiri (`src/citizens.mjs`, dicek ke katalog OpenRouter 10 Nov 2026): GPT-6.1 Sol Pro / Terra Pro, Gemini 4 Argon, Qwen 3.8 Max Prime, DeepSeek v4 Pro, Grok 4.7 / 4.6, Kimi K3.1 Pro / K3, GLM 5.3 Prime, Mistral Large 4 / Medium 3.5, Llama 4 Maverick, Hermes 4 405B, MiniMax M3, Command A, Nova Premier; 3 warga berpikir dengan Claude Opus 5.5 langsung. |
 
 Dua key → tiap warga berpikir dengan otaknya sendiri, dan setiap keputusan mencatat model yang menjawab (badge di
 #decisions). Satu key → semua lewat provider itu. Tanpa key → mesin offline (berbasis trait).

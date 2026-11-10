@@ -29,7 +29,7 @@ const CFG = {
   port: Number(process.env.PORT) || 3000,
   ca: (process.env.TOKEN_CA || '').trim(),
   anthropicKey: (process.env.ANTHROPIC_API_KEY || '').trim(),
-  claudeModel: (process.env.CLAUDE_MODEL || 'claude-haiku-5-5').trim(),
+  claudeModel: (process.env.CLAUDE_MODEL || 'claude-opus-5-5').trim(), // quality first: agents decide better on Opus
   courtModel: (process.env.CLAUDE_COURT_MODEL || 'claude-opus-5-5').trim(), // judges: a stronger model than the officials
   orKey: (process.env.OPENROUTER_API_KEY || '').trim(),
   orBase: (process.env.OPENROUTER_BASE_URL || '').trim(), // tests only; default https://openrouter.ai/api/v1

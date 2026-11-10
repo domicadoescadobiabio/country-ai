@@ -11,7 +11,7 @@ import { smartAnswer } from './smoke-agents.mjs';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'country-brains-'));
 const PORT = 3990 + Math.floor(Math.random() * 9);
-const BROKEN = 'x-ai/grok-4.5'; // this model "does not exist" at the mock: must fall back to Claude
+const BROKEN = 'x-ai/grok-4.7'; // this model "does not exist" at the mock: must fall back to Claude
 const seen = { claude: {}, openrouter: {} };
 
 const mock = http.createServer((req, res) => {
@@ -21,6 +21,7 @@ const mock = http.createServer((req, res) => {
     const prompt = isClaude ? body.messages?.[0]?.content : body.messages?.find(m => m.role === 'user')?.content;
     const bucket = isClaude ? seen.claude : seen.openrouter;
     bucket[body.model] = (bucket[body.model] || 0) + 1;
+    if (isClaude && body.fallbacks) seen.fallbacksParam = body.fallbacks;
     res.writeHead(!isClaude && body.model === BROKEN ? 404 : 200, { 'content-type': 'application/json' });
     if (!isClaude && body.model === BROKEN) return res.end('{"error":{"message":"model not found"}}');
     const text = smartAnswer(String(prompt || ''));
@@ -49,12 +50,13 @@ try {
   check('engine label says mixed', /mixed/.test(s.config.engineLabel), s.config.engineLabel);
   const orModels = Object.keys(seen.openrouter);
   check('several model families answered through OpenRouter', new Set(orModels.map(m => m.split('/')[0])).size >= 5, JSON.stringify(seen.openrouter));
-  check('anthropic/ founders went to Claude directly, not OpenRouter', !orModels.some(m => m.startsWith('anthropic/')) && (seen.claude['claude-haiku-5-5'] || 0) > 0, JSON.stringify(seen.claude));
+  check('anthropic/ founders went to Claude Opus directly, not OpenRouter', !orModels.some(m => m.startsWith('anthropic/')) && (seen.claude['claude-opus-5-5'] || 0) > 0, JSON.stringify(seen.claude));
+  check('Opus requests opt into the server-side fallback', seen.fallbacksParam === 'default');
   check('a failing OpenRouter model fell back to Claude', (s.llmUsage?.fallbacks || 0) > 0 && (seen.openrouter[BROKEN] || 0) > 0, JSON.stringify(s.llmUsage));
 
   check('decisions name the brain that answered', [...engines].some(e => /^openrouter:/.test(e)) && [...engines].some(e => /^claude:/.test(e)), JSON.stringify([...engines].slice(0, 12)));
   const wren = s.citizens.find(a => a.id === 'wren'); const aurel = s.citizens.find(a => a.id === 'aurel');
-  check('profiles show each founder\'s own model', aurel.model === 'claude-haiku-5-5' && wren.model === BROKEN, `${aurel.model} / ${wren.model}`);
+  check('profiles show each founder\'s own model', aurel.model === 'claude-opus-5-5' && wren.model === BROKEN, `${aurel.model} / ${wren.model}`);
   check('no server errors', !/step error|TypeError|ReferenceError/.test(stderr), stderr.slice(0, 300));
 } catch (e) { fail++; console.log('  FAIL crashed', e); }
 finally {

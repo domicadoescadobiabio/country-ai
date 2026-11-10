@@ -45,7 +45,7 @@ function openKey(enc) {
 async function callAnthropic(apiKey, model, system, user) {
   const client = new Anthropic({ apiKey, maxRetries: 0, timeout: TIMEOUT_MS });
   try {
-    const r = await client.messages.create({ model, max_tokens: 1024, output_config: { effort: 'low' }, system, messages: [{ role: 'user', content: user }] });
+    const r = await client.messages.create({ model, max_tokens: 8000, output_config: { effort: 'low' }, system, messages: [{ role: 'user', content: user }] });
     if (r.stop_reason === 'refusal') return { error: 'refused' };
     return { text: r.content.filter(b => b.type === 'text').map(b => b.text).join(' '), inTok: r.usage?.input_tokens || 0, outTok: r.usage?.output_tokens || 0 };
   } catch (e) {
@@ -145,7 +145,8 @@ export async function think(ctx, a, qid, { system, user, kind = 'question', form
     return { pending: true };
   }
   if (ctx.llm.enabled) {
-    const r = await ctx.llm.askDetailed({ model: a.model, system, user, claudeModel });
+    const effort = ['decision', 'vote'].includes(kind) || claudeModel ? 'medium' : 'low';
+    const r = await ctx.llm.askDetailed({ model: a.model, system, user, claudeModel, effort });
     return { text: r.text, engine: r.text ? r.via : 'offline' };
   }
   return { text: null, engine: 'offline' };
