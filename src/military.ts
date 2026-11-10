@@ -51,8 +51,9 @@ const short = t => (t.length > 70 ? t.slice(0, 67) + '...' : t);
 
 async function screen(ctx: Ctx, item: any) {
   const guards = soldiers(ctx);
-  if (!guards.length) return { ok: true }; // no army yet: the gate is unguarded
-  const g = pick(guards); const m = M(ctx.S);
+  // no soldiers yet (the founding hours, or every soldier jailed): the written border rules still apply
+  // automatically, so the gate is never open; the decision is logged under the state, not a soldier
+  const g = guards.length ? pick(guards) : { id: 'state', name: 'Border rules (no soldiers yet)' }; const m = M(ctx.S);
   const hit = borderCheck(item, level(ctx.S));
   const active = BORDER_RULES.filter(r => r.level <= level(ctx.S));
   ctx.decide({

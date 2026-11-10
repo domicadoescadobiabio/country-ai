@@ -23,7 +23,8 @@ if (ROLES.mayor) ROLES.mayor.cityBased = true;
 export const TERMS = { president: 30, council: 20, mayor: 20 };
 // stage lengths in hours of republic time; the founding elections (first two days) are quicker
 const HOURS = { nomination: 6, campaign: 12, quiet: 2, voting: 4, certify: 2 };
-const FOUNDING_HOURS = { nomination: 2, campaign: 4, quiet: 1, voting: 3, certify: 1 };
+// the founding elections fill an empty state, so they take about three hours instead of a day
+const FOUNDING_HOURS = { nomination: 0.5, campaign: 1, quiet: 0.25, voting: 1, certify: 0.25 };
 const LEAD = 2; // days before a term ends when the next election opens (a full calendar is about 26 hours)
 const stageHours = e => (e.founding ? FOUNDING_HOURS : HOURS);
 const DEPOSIT = 100;
@@ -201,13 +202,14 @@ async function nominationStep(ctx: Ctx, e: Election) {
   for (const a of S.citizens) {
     if (a.brain || e.candidates.some(c => c.id === a.id) || candidacyCheck(S, a, e).length) continue;
     const ambition = (a.traits.wisdom + a.traits.integrity + a.traits.diligence) / 3;
-    if (ctx.rate(0.3 + Math.max(0, ambition - 0.6) * 3)) await declare(ctx, a, e.id);
+    // the same expected number of candidates whatever the length of the nomination window
+    if (ctx.rate((0.3 + Math.max(0, ambition - 0.6) * 3) * HOURS.nomination / stageHours(e).nomination)) await declare(ctx, a, e.id);
   }
 }
 
 async function campaignStep(ctx: Ctx, e: Election) {
   const { S } = ctx;
-  if (!ctx.rate(2)) return; // about two campaign messages an hour per election
+  if (!ctx.rate(24 / stageHours(e).campaign)) return; // about 24 campaign messages per campaign
   const c = e.candidates.find(x => x.posts < MAX_POSTS);
   if (!c) return;
   const a = ctx.agent(c.id); if (!a || !free(a)) return;

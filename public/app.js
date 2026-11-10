@@ -184,7 +184,7 @@ const PANELS = {
       for (let i = 0; i < c.total; i++) dots.append(h('i', { class: c.answers[i] ? (c.answers[i].ok ? 'ok' : 'bad') : '' }));
       out.push(h('div', { class: 'card' }, h('h4', { text: `Now training: ${a?.name || c.agentId} for ${r?.title}` }),
         h('p', { text: `Attempt ${c.attempt}. Needs ${r?.passMark}/${c.total} correct to be sworn in.` }), dots));
-    } else out.push(h('div', { class: 'card' }, h('h4', { text: 'Academy is idle' }), h('p', { text: 'Every seat is filled. The Academy opens again when a seat goes vacant.' })));
+    } else out.push(h('div', { class: 'card' }, h('h4', { text: 'No exam right now' }), h('p', { text: 'Every office has enough qualified candidates. Seats are filled by elections and appointments; the Academy opens again when more candidates are needed.' })));
     out.push(h('div', { class: 'card' }, h('h4', { text: 'Entrance exams' }), kv([['Sessions', st.academy.sessions], ['Sworn in', st.academy.graduates], ['Failed', st.academy.failures]])));
     const t = st.training;
     if (t) {
