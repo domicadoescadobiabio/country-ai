@@ -55,7 +55,8 @@ function crime(ctx) {
     const inc = addIncident(ctx, { type: 'theft', perps: [perp.id], victim: v.id, amount, evidence: `unauthorised transfer of ${cai(amount)} from ${v.name}'s wallet to ${perp.name}'s wallet` });
     ctx.say('streets', v.id, `Somebody took ${cai(amount)} from my wallet. Reported to the Police as case #${inc.id}.`, { kind: 'victim' });
   } else if (kind === 'fraud') {
-    const amount = rint(300, 1500);
+    const amount = Math.min(rint(300, 1500), Math.floor(S.treasury * 0.02)); // never drives the treasury negative
+    if (amount < 100) return;
     S.treasury = round(S.treasury - amount, 2); perp.wallet = round(perp.wallet + amount, 2);
     addIncident(ctx, { type: 'fraud', perps: [perp.id], victim: 'treasury', amount, evidence: `forged payment order paid ${cai(amount)} from the treasury to ${perp.name}` });
   } else {
@@ -103,7 +104,8 @@ async function arrest(ctx, officer, inc) {
     const fine = Math.min(a.wallet, round(inc.amount * finePct));
     a.wallet = round(a.wallet - fine, 2); S.treasury = round(S.treasury + fine, 2);
     a.status = 'jailed'; a.jailUntil = S.day + days;
-    (a.record ||= []).push(`Day ${S.day}: ${inc.type} (case #${inc.id}), returned ${cai(back)}, fined ${cai(fine)}, jailed ${days} day${days > 1 ? 's' : ''}`);
+    a.record = (a.record || []).slice(-29);
+    a.record.push(`Day ${S.day}: ${inc.type} (case #${inc.id}), returned ${cai(back)}, fined ${cai(fine)}, jailed ${days} day${days > 1 ? 's' : ''}`);
     parts.push(`${a.name} (returned ${cai(back)}, fined ${cai(fine)})`);
     if (a.office) vacate(ctx, a.id, `arrested for ${inc.type}`);
     if (S.academy.current?.agentId === a.id) S.academy.current = null;
@@ -135,7 +137,8 @@ function audit(ctx, officer, d) {
   d.status = 'flagged';
   pol.warnings++;
   if (author) {
-    (author.record ||= []).push(`Day ${S.day}: bug in ${d.name} (${d.findings[0].title}), stop-and-fix order`);
+    author.record = (author.record || []).slice(-29);
+    author.record.push(`Day ${S.day}: bug in ${d.name} (${d.findings[0].title}), stop-and-fix order`);
     const priors = author.record.filter(r => r.includes('stop-and-fix')).length;
     if (priors >= 3) {
       const fine = Math.min(author.wallet, 100);

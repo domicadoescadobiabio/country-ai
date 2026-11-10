@@ -98,6 +98,7 @@ function finish(ctx, session) {
   const missed = session.answers.filter(x => !x.ok).map(x => x.lesson);
   a.lessons[role.id] = [...new Set([...(a.lessons[role.id] || []), ...missed])];
   const passed = score >= role.passMark && vacancies(S, role.id) > 0;
+  if (a.training.length >= 20) a.training.splice(0, a.training.length - 19);
   a.training.push({ roleId: role.id, attempt: session.attempt, score, total, passed, ts: Date.now(), answers: session.answers });
   if (passed) {
     a.office = role.id;

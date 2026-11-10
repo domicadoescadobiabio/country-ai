@@ -125,6 +125,7 @@ const TABS = [
   ['citizens', 'Citizens', () => true],
   ['laws', 'Laws', () => st.laws !== undefined, true],
   ['police', 'Police', () => st.police !== undefined, true],
+  ['border', 'Border', () => st.military !== undefined, true],
   ['treasury', 'Treasury', () => true],
   ['constitution', 'Constitution', () => true],
 ];
@@ -206,6 +207,17 @@ const PANELS = {
       deps.length ? deps.map(d => h('div', { class: 'list-row' },
         h('small', { text: `${d.name} · ${d.status}` }),
         d.findings.length ? d.findings.map(f => h('div', { class: 'a bad', text: `${f.severity}: ${f.title}` })) : h('div', { class: 'a ok', text: d.status === 'pending' ? 'waiting for an officer' : 'clean' }))) : h('p', { text: 'Nothing deployed yet.' })));
+    return out;
+  },
+  border() {
+    const m = st.military;
+    const out = [h('div', { class: 'card' }, h('h4', { text: `Border · level ${m.level}` }),
+      h('p', { text: 'Every visitor message and citizenship application is screened before any citizen sees it. Level 1 stops injection, fund grabs, phishing and impersonation; level 2 adds links; level 3 adds floods. The Council sets the level.' }),
+      kv([['Blocked', m.blocked], ['Admitted immigrants', m.admitted], ['Raids', m.raids], ['Slipped through', m.slipped]]))];
+    const log = m.log.slice().reverse();
+    out.push(h('div', { class: 'card' }, h('h4', { text: 'Border log' }),
+      log.length ? log.map(l => h('div', { class: 'list-row' }, h('small', { text: `day ${l.day} · ${l.kind} · ${cit(l.by)?.name || l.by}` }),
+        h('div', { class: 'a ' + (l.verdict === 'blocked' ? 'bad' : 'ok'), text: `${l.verdict}${l.rule ? ` (${l.rule})` : ''}: ${l.sample}` }))) : h('p', { text: 'Quiet at the gate.' })));
     return out;
   },
   treasury() {
