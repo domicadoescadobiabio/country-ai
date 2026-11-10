@@ -115,8 +115,17 @@ function propose(ctx, members) {
   ctx.say('parliament', by.id, `I table bill #${bill.id}: ${bill.title}.`, { kind: 'bill', billId: bill.id });
 }
 
+// Art. 20: a signed law waits one day; citizens may petition it into a referendum.
+const TIMELOCK_DAYS = 1;
+const PETITION_SHARE = 0.15;
 function enact(ctx, bill, how) {
   const { S } = ctx; const type = BILL_TYPES.find(t => t.id === bill.type);
+  if (S.constitutionVersion >= 4 && !bill.timelockDone) {
+    bill.stage = 'timelock'; bill.how = how; bill.effectiveDay = S.day + TIMELOCK_DAYS; bill.petition = [];
+    ctx.say('parliament', 'state', `Bill #${bill.id} signed (${how}). It takes effect on day ${bill.effectiveDay} unless ${Math.round(PETITION_SHARE * 100)}% of citizens petition for a referendum.`, { kind: 'law' });
+    ctx.record('law_signed', 'council', { bill: bill.id, title: bill.title, effectiveDay: bill.effectiveDay, how });
+    return;
+  }
   type.apply(S, bill.value);
   bill.stage = 'enacted'; bill.how = how;
   const yes = Object.values(bill.votes).filter(Boolean).length;
@@ -127,8 +136,35 @@ function enact(ctx, bill, how) {
   ctx.record?.('law', 'council', { bill: bill.id, title: bill.title, type: bill.type, from: bill.from, value: bill.value, how, votes: bill.votes });
 }
 
+function timelockTick(ctx) {
+  const { S } = ctx;
+  for (const bill of S.bills.filter(b => b.stage === 'timelock')) {
+    const type = BILL_TYPES.find(t => t.id === bill.type);
+    // citizens who strongly dislike the change sign (offline: distance from their own ideal grows a lot)
+    for (const a of S.citizens) {
+      if (a.status !== 'free' || bill.petition.includes(a.id) || a.brain) continue;
+      const ideal = type.ideal(a); const worse = Math.abs(bill.value - ideal) - Math.abs(bill.from - ideal);
+      if (worse > Math.abs(bill.value - bill.from) * 0.8 && chance(0.5)) bill.petition.push(a.id);
+    }
+    if (S.day < bill.effectiveDay) continue;
+    const need = Math.max(3, Math.ceil(S.citizens.length * PETITION_SHARE));
+    if (bill.petition.length >= need) {
+      bill.stage = 'referendum';
+      ctx.say('parliament', 'state', `${bill.petition.length} citizens petitioned against bill #${bill.id} (needed ${need}): it goes to a referendum.`, { kind: 'vote' });
+      ctx.record('petition', 'citizens', { bill: bill.id, signatures: bill.petition.length, needed: need });
+      import('./elections.mjs').then(m => m.openVote(ctx, { kind: 'referendum', office: 'council', law: { id: bill.id, title: bill.title, type: bill.type, from: bill.from, value: bill.value, what: type.what, fromText: type.fmt(bill.from), toText: type.fmt(bill.value) } }));
+    } else { bill.timelockDone = true; enact(ctx, bill, bill.how); }
+  }
+}
+export function resolveReferendum(ctx, billId, approved) {
+  const bill = ctx.S.bills.find(b => b.id === billId); if (!bill || bill.stage !== 'referendum') return;
+  if (approved) { bill.timelockDone = true; enact(ctx, bill, `${bill.how}, approved by referendum`); }
+  else { bill.stage = 'repealed'; ctx.say('parliament', 'state', `The people rejected bill #${bill.id} in a referendum. It never takes effect.`, { kind: 'vote' }); ctx.record('law_rejected', 'citizens', { bill: bill.id, title: bill.title }); }
+}
+
 export async function councilTick(ctx) {
   const { S } = ctx;
+  timelockTick(ctx);
   const members = councillors(ctx);
   const bill = S.bills.find(b => ['debate', 'vote', 'president', 'override'].includes(b.stage));
   if (!bill) { if (members.length >= QUORUM && chance(0.2)) propose(ctx, members); return; }

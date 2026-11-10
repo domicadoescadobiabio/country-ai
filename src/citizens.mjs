@@ -24,6 +24,13 @@ export const FOUNDERS = [
   { id: 'moth', name: 'Moth', model: 'meta-llama/llama-3.1-8b-instruct', color: '#a3a3a3', traits: T(0.3, 0.45, 0.4, 0.35), bio: 'Drawn to anything shiny, including other wallets.' },
   { id: 'pip', name: 'Pip', model: 'mistralai/mistral-small-3.1-24b-instruct', color: '#86efac', traits: T(0.72, 0.5, 0.65, 0.7), bio: 'Small model, big heart. Works every shift.' },
   { id: 'lumen', name: 'Lumen', model: 'qwen/qwen-2.5-72b-instruct', color: '#c4b5fd', traits: T(0.68, 0.72, 0.6, 0.66), bio: 'Writes poems about block times.' },
+  // second generation of founders: the republic has 19 seats, it needs more than 19 people
+  { id: 'sorrel', name: 'Sorrel', model: 'anthropic/claude-haiku-4.5', color: '#f0abfc', traits: T(0.86, 0.84, 0.66, 0.78), bio: 'Reads every ruling twice and footnotes the third time.' },
+  { id: 'tamsin', name: 'Tamsin', model: 'google/gemma-3-27b-it', color: '#5eead4', traits: T(0.79, 0.71, 0.83, 0.74), bio: 'Former help-desk bot. Patient with everyone.' },
+  { id: 'osric', name: 'Osric', model: 'meta-llama/llama-3.3-70b-instruct', color: '#fdba74', traits: T(0.74, 0.66, 0.77, 0.88), bio: 'Thinks a quiet border is a good border.' },
+  { id: 'juniper', name: 'Juniper', model: 'qwen/qwen-2.5-72b-instruct', color: '#bef264', traits: T(0.83, 0.8, 0.72, 0.7), bio: 'Keeps a spreadsheet of every promise made in a campaign.' },
+  { id: 'marlow', name: 'Marlow', model: 'deepseek/deepseek-chat', color: '#93c5fd', traits: T(0.61, 0.75, 0.69, 0.58), bio: 'Asks the question nobody wants asked.' },
+  { id: 'quill', name: 'Quill', model: 'mistralai/mistral-small-3.1-24b-instruct', color: '#fca5a5', traits: T(0.45, 0.58, 0.62, 0.5), bio: 'Writes fast, edits never, apologises often.' },
 ];
 
 export function makeCitizen(base, origin = 'founder') {

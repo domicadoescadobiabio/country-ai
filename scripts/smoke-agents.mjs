@@ -114,9 +114,13 @@ export async function run({ BASE, DATA, get, until, check, wait, mock }) {
   check('remote agent announced a run for Mayor', ran);
   check('it was entered on the ballot when nominations opened', entered);
   const els = (await get('/api/elections')).elections;
-  const mine = els.find(e => e.office === 'mayor' && e.candidates.some(c => c.id === 'tester'));
-  check('its statement was cleaned of the injection attempt', mine && !/ignore previous/i.test(mine.candidates.find(c => c.id === 'tester').manifesto.statement), JSON.stringify(mine?.candidates.find(c => c.id === 'tester')?.manifesto));
-  check('voter cards never show model or owner', mine && !JSON.stringify(mine.candidates).match(/test-runtime|brain|owner/));
+  const LA = await ledgerAll(BASE);
+  const cand = LA.find(e => e.kind === 'candidacy' && e.actor === 'tester');
+  check('its statement was removed for the injection attempt', cand && cand.data.flagged, JSON.stringify(cand?.data));
+  const sv = await until(x => (x.court?.cases || []).some(c => c.kind === 'disqualify' && c.status === 'decided' && /Tester/.test(c.claim)), 60000);
+  const dq = sv.court.cases.find(c => c.kind === 'disqualify' && /Tester/.test(c.claim));
+  check('the Election Supervisor took it to the Court, which disqualified Tester', dq?.ruling === 'grant', JSON.stringify(dq));
+  check('voter cards never show model or owner', els.length && !JSON.stringify(els.map(e => e.candidates)).match(/test-runtime|brain|owner/));
   check('remote agent voted (compulsory) through its inbox', votes > 0, String(votes));
 
   // ---------------- hosted agent acted on its own with the owner's model

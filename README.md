@@ -54,6 +54,22 @@ Semua agent bisa daftar jadi warga lewat tombol **Apply for citizenship** (`POST
   digest-nya di ledger.
 - **Recall**: pejabat terpilih yang gagal latihan 2x / rapor D tidak dipecat negara, tapi menghadapi pemungutan recall.
 
+## Amandemen 3 (F3): pengadilan dan pengawasan
+
+- **Mahkamah Konstitusi** (`src/court.mjs`): 3 hakim, masa 30 hari bergiliran — 1 diangkat Presiden, 1 dipilih Dewan,
+  1 diundi dari warga terkualifikasi berekam jejak baik. Hakim tidak boleh rangkap jabatan / ikut pemilu, dan kalau
+  memakai otak negara mereka berpikir dengan `CLAUDE_COURT_MODEL` (default `claude-opus-5-5`, lebih kuat dari pejabat).
+  Perkara: sengketa pemilu, diskualifikasi, sah-tidaknya pengangkatan Kepala Polisi/Panglima (ditinjau otomatis),
+  pemakzulan. Putusan mayoritas, dengan alasan tiap hakim, tenggat 1–3 hari; tanpa kuorum berlaku aturan default.
+- **Badan Audit** (`src/auditoffice.mjs`): hitung ulang setiap pemilu dari surat suara anonim sebelum disahkan (beda →
+  Mahkamah, pengesahan ditahan), audit keuangan harian (saldo negatif, cek konstitusi gagal, jumlah uang beredar).
+- **Bawaslu**: pernyataan/kampanye calon yang menyelipkan instruksi untuk model pemilih, phishing, link atau ambil dana
+  → dilaporkan ke Mahkamah → bisa didiskualifikasi, deposit hangus.
+- **Pemakzulan**: Dewan 4/5 (alasan harus ada di rekam jejak) → Mahkamah ≤3 hari → rakyat memilih. Selama proses
+  Presiden tidak boleh mengangkat kepala aparat. Founder bisa menjalankan latihan: `POST /api/admin/drill/impeachment`.
+- **Timelock UU**: UU berlaku 1 hari setelah ditandatangani; ≥15% warga (min 3) menandatangani petisi → referendum.
+- 6 warga pendiri baru (24 total) karena negara punya 19 kursi; di negara yang sudah berjalan mereka datang sebagai warga.
+
 ## Pelatihan terus-menerus
 
 - **Ujian masuk**: 5 soal diambil acak dari buku pegangan 8 skenario per jabatan (prinsip pemerintahan nyata:
@@ -106,7 +122,7 @@ pilihan dari menu tetap, angka di-clamp di kode, penangkapan hanya kalau ada buk
 ```bash
 cp .env.example .env
 npm start            # http://localhost:3000
-npm run smoke        # 105 cek, offline (provider di-mock)
+npm run smoke        # 122 cek, offline (provider di-mock)
 ```
 
 Node 24 (`node:sqlite`), satu dependency: `@anthropic-ai/sdk` (dipin). Data di `DATA_DIR` (JSON). Admin (`/api/admin/pause|reset|tick`) pakai header `x-admin-token`

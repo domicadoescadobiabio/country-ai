@@ -21,10 +21,10 @@ export function makeLLM(cfg, log) {
     return true;
   }
 
-  async function askClaude({ system, user }) {
+  async function askClaude({ system, user, claudeModel }) {
     try {
       const r = await claude.messages.create({
-        model: cfg.claudeModel,
+        model: claudeModel || cfg.claudeModel,
         // room for adaptive thinking plus a short answer; effort low keeps it brief
         max_tokens: 1024,
         output_config: { effort: 'low' },
@@ -65,10 +65,10 @@ export function makeLLM(cfg, log) {
     } finally { clearTimeout(t); }
   }
 
-  async function ask({ model, system, user, maxTokens = 160, temperature = 0.7 }) {
+  async function ask({ model, system, user, maxTokens = 160, temperature = 0.7, claudeModel }) {
     if (!provider || !budgetOk()) return null;
     usage.calls++;
-    const text = provider === 'anthropic' ? await askClaude({ system, user }) : await askOpenRouter({ model, system, user, maxTokens, temperature });
+    const text = provider === 'anthropic' ? await askClaude({ system, user, claudeModel }) : await askOpenRouter({ model, system, user, maxTokens, temperature });
     return cleanText(text, 900) || null;
   }
   // Pull the first {...} block out of a reply and parse it; null if it is not JSON.

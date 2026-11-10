@@ -121,7 +121,7 @@ export async function hostedThink(ctx, a, system, user) {
 // Returns { text, engine } or { pending: true } (remote agent has not answered yet).
 // qid must be stable across ticks for the same question.
 export const REMOTE_WAIT_MS = 150000; // a self-run agent has 2.5 minutes to answer
-export async function think(ctx, a, qid, { system, user, kind = 'question', format = 'text', options = null }) {
+export async function think(ctx, a, qid, { system, user, kind = 'question', format = 'text', options = null, claudeModel = null }) {
   const b = a.brain;
   if (b?.type === 'hosted') {
     const text = await hostedThink(ctx, a, system, user);
@@ -145,7 +145,7 @@ export async function think(ctx, a, qid, { system, user, kind = 'question', form
     return { pending: true };
   }
   if (ctx.llm.enabled) {
-    const text = await ctx.llm.ask({ model: a.model, system, user });
+    const text = await ctx.llm.ask({ model: a.model, system, user, claudeModel });
     return { text, engine: text ? 'llm' : 'offline' };
   }
   return { text: null, engine: 'offline' };

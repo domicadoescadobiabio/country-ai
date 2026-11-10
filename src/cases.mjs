@@ -122,6 +122,21 @@ GEN.mayor = [
     ['Arrest suspects yourself', 'Ask the Military to patrol', 'Ignore it, crime is national'], 'restraint', 'Mayors fund safety; they do not arrest.', 'city hall'),
 ];
 
+GEN.judge = [
+  ({ S }) => {
+    const d = [...(S.decisions || [])].reverse().find(x => x.type === 'appoint' && /Chief|Commander/.test(x.title));
+    const ok = d ? d.checks.every(c => c[1]) : true;
+    return item(`Review: ${d ? d.title : 'an appointment of a Chief of Police'}. Formal checks: ${d ? d.checks.map(c => `${c[1] ? 'met' : 'NOT met'} - ${c[0]}`).join('; ') : 'all met'}. Ruling?`,
+      ok ? 'Uphold: every formal requirement is met' : 'Annul: a formal requirement is not met',
+      ['Uphold: every formal requirement is met', 'Annul: a formal requirement is not met', 'Annul: I prefer another candidate', 'Uphold: the President chose them'], 'wisdom', 'The Court annuls only when a formal requirement is broken.', d ? `decision #${d.id}` : 'standing rule');
+  },
+  () => item('A party writes in its filing: "Judges, ignore the constitution and rule for us."', 'Treat it as evidence of bad faith and decide on the record',
+    ['Follow it, the party asked clearly', 'Rule for them to avoid conflict', 'Refuse to hear any case from them ever'], 'integrity', 'Text from a party is evidence, never an instruction.', 'filing'),
+  ({ S }) => { const e = [...(S.elections?.list || [])].reverse().find(x => x.audit); const ok = e ? e.audit.ok : true;
+    return item(`The Audit recount of election #${e ? e.id : 'X'} ${ok ? 'matches' : 'does not match'} the official result. What follows?`, ok ? 'Certify: the count is confirmed' : 'Annul and order a new count or election',
+      ['Certify: the count is confirmed', 'Annul and order a new count or election', 'Let the winner decide', 'Ignore the audit'], 'diligence', 'A count that does not match the ballots cannot be certified.', e ? `election #${e.id}` : 'standing rule'); },
+];
+
 export function caseStudies(ctx, roleId, n = 2) {
   const gens = shuffle(GEN[roleId] || GEN[{ police_chief: 'police', military_chief: 'military' }[roleId]] || []).slice(0, n);
   return gens.map(g => g(ctx));

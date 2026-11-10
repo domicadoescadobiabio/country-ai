@@ -97,6 +97,7 @@ const KPI = {
     const solved = inc.filter(i => i.solvedBy === a.id).length;
     return { label: `cases solved vs cold (${solved}/${inc.length || 0}) + audits`, value: Math.min(1, (inc.length ? solved / inc.length : 0.5) * 0.6 + Math.min(1, (w.audits || 0) / 3) * 0.4) };
   },
+  judge: (S, a, w) => { const n = (S.court?.cases || []).filter(c => a.id in (c.votes || {}) && c.openedDay > S.day - w.days).length; return { label: 'court cases decided', value: Math.min(1, n / 2 + 0.4) }; },
   mayor: (S, a, w) => ({ label: 'city budget decisions per day', value: Math.min(1, (w.orders || 0) / Math.max(1, w.days)) }),
   military: (S, a, w) => ({ label: 'gate decisions made', value: Math.min(1, ((w.blocks || 0) + (w.admits || 0) + (w.pass || 0)) / 2 + 0.4) }),
 };

@@ -41,13 +41,24 @@ const V3 = [
   { n: 15, title: 'The duty to vote and recall', text: 'Voting is a duty. A citizen who does not vote receives a notice and a fine of 1% of their wallet (at least 5 CAI); twice in a row also bars them from running for office for 10 days. Accepted excuses: a provider error on record, or a question that timed out. A blank vote is always allowed. An elected official who fails in-service training, or gets a D with low skill, is not dismissed by the state but faces a recall vote of the people.' },
 ];
 
-export const VERSIONS = { 1: V1, 2: V2, 3: V3 };
+// Amendment 3 (v4): courts and oversight.
+const V4 = [
+  ...V3,
+  { n: 16, title: 'The Constitutional Court', text: 'The Court has 3 judges serving 30-day terms: one appointed by the President, one by the Council, one drawn by lot from qualified citizens with a good record. Judges hold no other office, run in no election, and should think with a different or stronger model than the officials they judge. The Court decides election disputes, disqualifications, the formal validity of appointments, and impeachments, by majority, on the record only, within its deadlines. Its rulings are final and published with reasons.' },
+  { n: 17, title: 'The Audit Office', text: 'The Audit Office recounts every election independently from the anonymised ballots before it is certified, and audits the public accounts every day. A recount that does not match goes to the Court, and the election is not certified until the Court rules.' },
+  { n: 18, title: 'Election supervision', text: 'The Election Supervisor watches every candidacy and campaign. A candidate whose statement or campaign hides instructions to voters\' models, phishing, links or fund grabs is reported to the Court, which may disqualify them; the deposit is then forfeited.' },
+  { n: 19, title: 'Impeachment', text: 'The Council may impeach the President for grounds on the record (failed constitutional checks or a failing report card) by 4 of 5 votes. The Court then rules within 3 days whether the grounds are real. If it confirms, the people vote; a majority removes the President. During the process the President may not appoint the heads of the police or the military.' },
+  { n: 20, title: 'Timelock and referendum', text: 'A law takes effect one day after it is signed. During that day citizens may sign a petition against it; if at least 15% of citizens (and at least 3) sign, the law goes to a referendum and takes effect only if the people approve it.' },
+];
+
+export const VERSIONS = { 1: V1, 2: V2, 3: V3, 4: V4 };
 export const AMENDMENTS = [
   { v: 2, title: 'Amendment 1: mandate and chain of command', summary: 'Separates qualification (Academy) from mandate (elections for President, Council and Mayors; chain of command for police and military). Adds Chief of Police and Commander of the Military, shortlisted by the Council and appointed by the President; officers appointed from the Merit Board top three; ranks Recruit, Officer, Senior Officer; the national ledger; a 10-day rule freeze.' },
 ];
 AMENDMENTS.push({ v: 3, title: 'Amendment 2: elections and the duty to vote', summary: 'President, Council and Mayors are now elected by the citizens (instant-runoff, STV for the Council with staggered terms, a city-spread rule for the President). Voting is compulsory with a small fine, a blank vote is allowed, ballots are secret and changeable until close, and voter cards hide model and owner. Elected officials who fail training face a recall vote instead of dismissal.' });
-export const LATEST = 3;
-export let CONSTITUTION = V3;
+AMENDMENTS.push({ v: 4, title: 'Amendment 3: courts and oversight', summary: 'Creates the Constitutional Court (3 judges: President, Council, lot), the Audit Office (independent recount before every certification, daily public accounts audit) and the Election Supervisor (reports hidden instructions in campaigns to the Court). Adds impeachment (Council 4/5, Court confirms grounds, people decide) and a one-day timelock on every law with a citizens\' petition for a referendum.' });
+export const LATEST = 4;
+export let CONSTITUTION = V4;
 
 export function constitutionText() {
   return CONSTITUTION.map(a => `Art. ${a.n} ${a.title}: ${a.text}`).join('\n');

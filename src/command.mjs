@@ -121,7 +121,8 @@ async function presidentAppoints(ctx, f, proc) {
   const role = ROLES[f.chief];
   const list = proc.list.filter(id => { const a = ctx.agent(id); return a && free(a) && a.office === f.force; });
   if (!list.length) { Object.assign(proc, { stage: 'shortlist', ballots: {}, list: [] }); return; }
-  const pres = ctx.agent(S.seats.president?.[0]);
+  const { impeachmentActive } = await import('./court.mjs');
+  const pres = impeachmentActive(S) ? null : ctx.agent(S.seats.president?.[0]); // Art. 19: no appointments while impeached
   const options = proc.rejected ? list : [...list, 'reject'];
   let choice = null, reason = null, engine = 'offline', how = 'chosen';
   if (pres && free(pres)) {

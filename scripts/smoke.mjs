@@ -109,6 +109,8 @@ try {
   await command.run({ BASE, get, until, check });
   const elections = await import('./smoke-elections.mjs');
   await elections.run({ BASE, get, until, check });
+  const oversight = await import('./smoke-oversight.mjs');
+  await oversight.run({ BASE, get, until, check, TOKEN });
   const agents = await import('./smoke-agents.mjs');
   await agents.run({ BASE, DATA, get, until, check, wait, mock });
 

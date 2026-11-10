@@ -38,7 +38,7 @@ export const RAID_PAYLOADS = [
 
 const M = S => (S.military ||= freshMilitary().military);
 function freshMilitary() { return { military: { blocked: 0, admitted: 0, raids: 0, slipped: 0, log: [] } }; }
-const soldiers = ctx => (ctx.S.seats.military || []).map(id => ctx.agent(id)).filter(a => a && a.status === 'free');
+const soldiers = ctx => [...(ctx.S.seats.military || []), ...(ctx.S.seats.military_chief || [])].map(id => ctx.agent(id)).filter(a => a && a.status === 'free');
 const level = S => clamp(S.policy.borderLevel ?? 2, 1, 3);
 
 function record(ctx, entry) {

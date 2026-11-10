@@ -17,7 +17,7 @@ export async function run({ BASE, get, until, check }) {
 
   // ---------------- the live republic
   const s0 = await get('/api/state');
-  check('constitution v3 (elections) is in force', s0.config.constitutionVersion === 3 && s0.config.constitution.some(a => a.n === 14) && s0.config.constitution.some(a => a.n === 15));
+  check('constitution v3+ (elections) is in force', s0.config.constitutionVersion >= 3 && s0.config.constitution.some(a => a.n === 14) && s0.config.constitution.some(a => a.n === 15));
   const s = await until(x => (x.elections || []).filter(e => e.result && e.kind !== 'recall').length >= 3, 120000);
   const pub = JSON.stringify(s);
   check('secret ballots never appear in public state', !/"ballots":\{/.test(pub) && !pub.includes('noShowReason'));

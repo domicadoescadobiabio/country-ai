@@ -101,7 +101,7 @@ function msgEl(m) {
       h('div', { class: 'msg-head' }, h('span', { class: 'msg-name', text: name, onclick: () => a && openCitizen(a.id) }), badges, h('span', { class: 'msg-time', text: `day ${m.day} · ${time(m.ts)}` })),
       h('div', { class: 'msg-text', text: m.text })));
 }
-const TYPE_LABEL = { order: 'executive order', vote: 'vote', sign: 'signs bill', veto: 'veto', arrest: 'arrest', audit: 'code audit', investigate: 'investigation', block: 'blocked at border', admit: 'visa granted', pass: 'let through', recall: 'recall', election: 'election result', nominate: 'shortlist ballot', appoint: 'appointment', reject: 'list rejected', merit: 'merit board', promote: 'promotions', amendment: 'amendment' };
+const TYPE_LABEL = { order: 'executive order', vote: 'vote', sign: 'signs bill', veto: 'veto', arrest: 'arrest', audit: 'code audit', investigate: 'investigation', block: 'blocked at border', admit: 'visa granted', pass: 'let through', recall: 'recall', election: 'election result', ruling: 'court ruling', audit: 'audit report', nominate: 'shortlist ballot', appoint: 'appointment', reject: 'list rejected', merit: 'merit board', promote: 'promotions', amendment: 'amendment' };
 function decisionEl(d) {
   const a = cit(d.agentId); const isState = d.agentId === 'state';
   const allOk = d.checks.every(c => c[1]);
@@ -157,6 +157,7 @@ const TABS = [
   ['citizen', 'Citizen', () => true],
   ['citizens', 'Citizens', () => true],
   ['elections', 'Elections', () => st.elections !== undefined, true],
+  ['court', 'Court', () => st.court !== undefined, true],
   ['laws', 'Laws', () => st.laws !== undefined, true],
   ['police', 'Police', () => st.police !== undefined, true],
   ['border', 'Border', () => st.military !== undefined, true],
@@ -164,7 +165,7 @@ const TABS = [
   ['ledger', 'Ledger', () => true],
   ['constitution', 'Constitution', () => true],
 ];
-const STAGE = { debate: 'in debate', vote: 'voting', president: 'on the President\'s desk', override: 'override vote', enacted: 'law', rejected: 'rejected', vetoed: 'vetoed' };
+const STAGE = { debate: 'in debate', vote: 'voting', president: 'on the President\'s desk', override: 'override vote', enacted: 'law', rejected: 'rejected', vetoed: 'vetoed', timelock: 'signed, waiting one day (petition open)', referendum: 'in a referendum', repealed: 'rejected by the people' };
 function renderTabs() {
   const box = $('#tabs'); box.replaceChildren();
   for (const [id, label, show] of TABS) if (show()) box.append(h('button', { type: 'button', class: st.tab === id ? 'on' : '', text: label, onclick: () => { st.tab = id; renderTabs(); renderPanel(); } }));
@@ -293,6 +294,27 @@ const PANELS = {
       h('div', {}, h('b', { text: c.name }), ` · health ${c.health}/100 · budget ${cai(c.budget)}`)))));
     return out;
   },
+  court() {
+    const k = st.court; const au = st.audit; const out = [];
+    out.push(h('div', { class: 'card' }, h('h4', { text: 'Constitutional Court' }),
+      h('p', { text: '3 judges, 30-day terms: one appointed by the President, one by the Council, one drawn by lot. They decide election disputes, disqualifications, the formal validity of appointments and impeachments, on the record only.' }),
+      k.slots.map(s => h('div', { class: 'list-row' }, h('small', { text: s.by === 'lot' ? 'drawn by lot' : `appointed by the ${s.by}` }), h('div', { text: cit(s.agent)?.name || 'vacant' })))));
+    if (k.impeachment) out.push(h('div', { class: 'card' }, h('h4', { text: `Impeachment: President ${cit(k.impeachment.target)?.name} · ${k.impeachment.stage}` }), h('p', { text: k.impeachment.grounds }), h('p', { text: Object.entries(k.impeachment.votes).map(([id, v]) => `${cit(id)?.name}: ${v}`).join(', ') || 'Council voting…' })));
+    const cases = k.cases.slice().reverse();
+    out.push(h('div', { class: 'card' }, h('h4', { text: `Cases (${cases.length})` }), cases.length ? cases.map(c => h('div', { class: 'list-row' },
+      h('small', { text: `#${c.id} · ${c.kind} · day ${c.openedDay} · ${c.status === 'open' ? `open until day ${c.deadline}` : `ruling: ${c.ruling}${c.quorum === false ? ' (no quorum)' : ''}`}` }),
+      h('div', { text: c.claim }),
+      c.evidence.map(e => h('div', { class: 'q', text: '· ' + e })),
+      Object.entries(c.votes).map(([id, v]) => h('div', { class: 'a ' + (['uphold', 'deny', 'reject'].includes(v.ruling) ? 'ok' : 'bad'), text: `${cit(id)?.name}: ${v.ruling} - ${v.reason}` })))) : h('p', { text: 'No cases yet.' })));
+    if (au) {
+      const r = au.reports[au.reports.length - 1];
+      out.push(h('div', { class: 'card' }, h('h4', { text: 'Audit Office' }),
+        h('p', { text: 'Recounts every election from the anonymised ballots before certification and audits the public accounts daily.' }),
+        kv([['Election recounts', au.recounts], ['Mismatches sent to Court', au.mismatches], ['Last daily audit', r ? `day ${r.day}: ${r.findings.length ? r.findings.length + ' finding(s)' : 'clean'}` : '-'], ['Money supply', r ? cai(r.supply) : '-']]),
+        r?.findings?.length ? r.findings.map(f => h('div', { class: 'a bad', text: f })) : null));
+    }
+    return out;
+  },
   elections() {
     const list = (st.elections || []).slice().reverse();
     const out = [h('div', { class: 'card' }, h('h4', { text: 'Election Commission' }),
@@ -322,6 +344,7 @@ const PANELS = {
   },
   laws() {
     const out = [];
+    for (const b of (st.bills || []).filter(x => ['timelock', 'referendum'].includes(x.stage))) out.push(h('div', { class: 'card' }, h('h4', { text: `Bill #${b.id} · ${STAGE[b.stage]}` }), h('p', { text: `${b.title}${b.effectiveDay ? ` · effective day ${b.effectiveDay}` : ''} · petition ${(b.petition || []).length} signature(s)` })));
     const live = (st.bills || []).find(b => ['debate', 'vote', 'president', 'override'].includes(b.stage));
     if (live) {
       const card = h('div', { class: 'card' }, h('h4', { text: `Bill #${live.id} · ${STAGE[live.stage]}` }), h('p', { text: live.title }));

@@ -18,6 +18,7 @@ import { initVault, vaultReady, publicBrain } from './src/brains.mjs';
 import { makeRegistry } from './src/registry.mjs';
 import { openStore } from './src/db.mjs';
 import { publicElection } from './src/elections.mjs';
+import { founderDrillImpeachment } from './src/court.mjs';
 import { applyAmendments } from './src/constitution.mjs';
 import { requirement, TERMS } from './src/careers.mjs';
 
@@ -29,6 +30,7 @@ const CFG = {
   ca: (process.env.TOKEN_CA || '').trim(),
   anthropicKey: (process.env.ANTHROPIC_API_KEY || '').trim(),
   claudeModel: (process.env.CLAUDE_MODEL || 'claude-haiku-5-5').trim(),
+  courtModel: (process.env.CLAUDE_COURT_MODEL || 'claude-opus-5-5').trim(), // judges: a stronger model than the officials
   orKey: (process.env.OPENROUTER_API_KEY || '').trim(),
   llmPerMin: clamp(Number(process.env.LLM_PER_MIN) || 20, 1, 600),
   tick: clamp(Number(process.env.TICK_SECONDS) || 5, 0.05, 120), // <1s only for tests
@@ -332,6 +334,12 @@ const server = http.createServer(async (req, res) => {
         S.tickSec = clamp(Number(body.seconds) || CFG.tick, 1, 120); schedule(); dirty = true;
         return send(res, 200, { tickSec: S.tickSec });
       }
+      if (p === '/api/admin/drill/impeachment') {
+        if (!S.seats.president?.length) return send(res, 409, { error: 'no President in office' });
+        if (S.court?.impeachment) return send(res, 409, { error: 'an impeachment is already running' });
+        await founderDrillImpeachment(ctx, cleanText(body.grounds, 200) || 'no grounds given');
+        return send(res, 200, { ok: true, note: 'Motion opened. The Council votes on the record; without grounds it should fail.' });
+      }
       if (p === '/api/admin/reset') {
         S = freshState(); dirty = true; schedule(); ctx.pendingGuest = null;
         applyAmendments(ctx); ctx.record('refounded', 'founders', { reason: 'admin reset' });
@@ -348,6 +356,12 @@ const server = http.createServer(async (req, res) => {
 
 if (!store.head().count) ctx.record('genesis', 'founders', { nation: NATION, constitutionVersion: S.constitutionVersion, citizens: S.citizens.length, offices: Object.fromEntries(Object.entries(S.seats).map(([r, ids]) => [r, ids])) });
 applyAmendments(ctx);
+// founders added in later versions arrive in an existing republic as new citizens
+for (const f of FOUNDERS) if (!S.citizens.some(a => a.id === f.id)) {
+  const a = makeCitizen(f); a.joinedDay = S.day; S.citizens.push(a);
+  say('streets', a.id, `Just arrived as one of the second generation of founders. ${a.bio}`, { kind: 'arrival' });
+  ctx.record('citizenship', a.id, { name: a.name, founder: true });
+}
 
 server.listen(CFG.port, () => {
   console.log(`node ${process.version} store=${store.kind} ledger=${store.head().count}`);
