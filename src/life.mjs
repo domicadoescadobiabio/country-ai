@@ -3,15 +3,17 @@ import { ROLES, ROLE_ORDER } from './roles.mjs';
 import { STREET_LINES, STREET_LINES_GOV, GUEST_REPLIES, pickLine } from './citizens.mjs';
 import { pick, chance, cai, round } from './util.mjs';
 import { constitutionText } from './constitution.mjs';
+import { cityWageFactor } from './cities.mjs';
 
 export function payday(ctx) {
   const { S } = ctx; const p = S.policy;
   let gross = 0, tax = 0;
   for (const a of S.citizens) {
     if (a.status !== 'free') continue;
-    const t = round(p.wage * p.taxRate, 2);
-    a.wallet = round(a.wallet + p.wage - t, 2);
-    gross += p.wage; tax += t;
+    const wage = round(p.wage * cityWageFactor(S, a), 2);
+    const t = round(wage * p.taxRate, 2);
+    a.wallet = round(a.wallet + wage - t, 2);
+    gross += wage; tax += t;
   }
   S.treasury = round(S.treasury + tax, 2);
   S.econ.taxCollected = round(S.econ.taxCollected + tax, 2);

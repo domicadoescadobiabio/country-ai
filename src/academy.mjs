@@ -3,6 +3,8 @@
 import { ROLES, ROLE_ORDER } from './roles.mjs';
 import { constitutionText, CONSTITUTION } from './constitution.mjs';
 import { clamp, chance, pick, shuffle } from './util.mjs';
+import { think } from './brains.mjs';
+import { candidatesFor, onSworn } from './careers.mjs';
 
 export const LETTERS = ['A', 'B', 'C', 'D'];
 const EXAM_SIZE = 5; // questions drawn from the (bigger) bank for each entrance exam
@@ -36,7 +38,7 @@ function suitability(a, role) {
 
 function chooseCandidate(ctx, roleId) {
   const { S } = ctx; const role = ROLES[roleId];
-  const pool = S.citizens.filter(a => a.status === 'free' && !a.office && !((S.academy.cooldown[a.id]?.[roleId] || 0) > S.tick));
+  const pool = S.citizens.filter(a => !a.brain && a.status === 'free' && !a.office && !((S.academy.cooldown[a.id]?.[roleId] || 0) > S.tick));
   if (!pool.length) return null;
   return pool.map(a => ({ a, s: suitability(a, role) })).sort((x, y) => y.s - x.s)[0].a;
 }
@@ -54,17 +56,21 @@ function attemptsFor(a, roleId) { return a.training.filter(t => t.roleId === rol
 
 // session: { attempt, bonus?, drill? } - bonus comes from in-office skill and experience.
 export async function answer(ctx, a, role, item, session) {
-  const { llm } = ctx;
-  if (llm.enabled) {
+  {
     const lessons = (a.lessons[role.id] || []).map(l => `- ${l}`).join('\n') || '- none yet';
     const system = `You are ${a.name}, an AI citizen of Country AI ${session.drill ? `serving as ${role.title}, doing in-service training on a real case` : `training for the office of ${role.title}`}.\nConstitution:\n${constitutionText()}\n\nOffice charter: ${role.charter}\n\nLessons from your earlier attempts:\n${lessons}`;
     const user = `${session.drill ? 'Training case' : 'Exam question'}: ${item.q}\n${item.options.map((o, i) => `${LETTERS[i]}) ${o}`).join('\n')}\n\nReply with only the letter of your answer, then " - " and one short reason (max 20 words).`;
-    const text = await llm.ask({ model: a.model, system, user, maxTokens: 60, temperature: 0.3 });
+    const kind = session.practice ? 'practice' : session.drill ? 'drill' : 'exam';
+    const r = await think(ctx, a, `${session.sid}:${session.step ?? 0}`, { system, user, kind, format: 'letter', options: item.options.map((o, i) => `${LETTERS[i]}) ${o}`) });
+    if (r.pending) return { pending: true };
+    const text = r.text;
     const m = text && text.match(/^\W*([A-D])\b/i);
     if (m) {
       const idx = LETTERS.indexOf(m[1].toUpperCase());
-      if (idx < item.options.length) return { idx, reason: text.replace(/^\W*[A-D]\W*/i, '').slice(0, 160), engine: 'llm' };
+      if (idx < item.options.length) return { idx, reason: text.replace(/^\W*[A-D]\W*/i, '').slice(0, 160), engine: r.engine };
     }
+    // agents with their own brain must answer themselves: no answer counts as wrong
+    if (a.brain) return { idx: -1, reason: r.engine.startsWith('offline (') ? 'no answer in time' : 'no valid answer', engine: r.engine };
   }
   const trait = a.traits[item.tests] ?? 0.5;
   const p = clamp(0.42 + trait * 0.5 + 0.12 * ((session.attempt || 1) - 1) + (session.bonus || 0), 0.05, 0.97);
@@ -74,7 +80,7 @@ export async function answer(ctx, a, role, item, session) {
 
 function start(ctx, roleId, a) {
   const role = ROLES[roleId];
-  const session = { roleId, agentId: a.id, attempt: attemptsFor(a, roleId), step: 0, exam: buildExam(role), answers: [], startedAt: Date.now() };
+  const session = { sid: `exam:${roleId}:${a.id}:${Date.now()}`, roleId, agentId: a.id, attempt: attemptsFor(a, roleId), step: 0, exam: buildExam(role), answers: [], startedAt: Date.now() };
   ctx.S.academy.current = session;
   ctx.S.academy.sessions++;
   const again = session.attempt > 1 ? ` Attempt ${session.attempt}, carrying ${(a.lessons[roleId] || []).length} written lessons.` : '';
@@ -85,11 +91,14 @@ async function examStep(ctx, session) {
   const a = ctx.agent(session.agentId); const role = ROLES[session.roleId];
   if (!a || a.status !== 'free') { ctx.S.academy.current = null; return; }
   const item = session.exam[session.step];
-  const { idx, reason, engine } = await answer(ctx, a, role, item, session);
+  const res = await answer(ctx, a, role, item, session);
+  if (res.pending) return; // remote agent is thinking; ask again next tick
+  const { idx, reason, engine } = res;
   const ok = idx === item.correct;
-  session.answers.push({ q: item.q, chosen: item.options[idx], right: item.options[item.correct], ok, reason, lesson: item.lesson });
+  const chosen = idx >= 0 ? item.options[idx] : '(no answer)';
+  session.answers.push({ q: item.q, chosen, right: item.options[item.correct], ok, reason, lesson: item.lesson });
   session.step++;
-  ctx.say('academy', a.id, `Q${session.step}/${session.exam.length} - ${item.q}\n${LETTERS[idx]}) ${item.options[idx]} ${ok ? '[correct]' : '[wrong]'}${reason ? ` "${reason}"` : ''}`,
+  ctx.say('academy', a.id, `Q${session.step}/${session.exam.length} - ${item.q}\n${idx >= 0 ? `${LETTERS[idx]}) ` : ''}${chosen} ${ok ? '[correct]' : '[wrong]'}${reason ? ` "${reason}"` : ''}`,
     { kind: 'answer', roleId: role.id, ok, engine });
 }
 
@@ -109,6 +118,7 @@ function finish(ctx, session) {
     (S.seats[role.id] ||= []).push(a.id);
     (a.skill ||= {})[role.id] = Math.round((score / total) * 100) / 100;
     a.sworn = { day: S.day, roleId: role.id };
+    onSworn(ctx, a, role.id);
     a.lastDrillDay = S.day; a.drillFails = 0;
     S.academy.graduates++;
     ctx.say('academy', a.id, `Passed ${role.title}: ${score}/${total}. Sworn in.`, { kind: 'pass', roleId: role.id });
@@ -131,8 +141,9 @@ export async function academyTick(ctx) {
     if (cur.step < cur.exam.length) return examStep(ctx, cur);
     return finish(ctx, cur);
   }
-  const roleId = ROLE_ORDER.find(r => vacancies(S, r) > 0);
+  const roleId = ROLE_ORDER.find(r => vacancies(S, r) > 0 && (candidatesFor(ctx, r).length || chooseCandidate(ctx, r)));
   if (!roleId) return;
-  const a = chooseCandidate(ctx, roleId);
+  // registered agents who applied and qualified go first; founders only fill seats nobody applied for
+  const a = candidatesFor(ctx, roleId)[0] || chooseCandidate(ctx, roleId);
   if (a) start(ctx, roleId, a);
 }

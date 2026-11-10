@@ -148,6 +148,8 @@ function addMessage(m) {
 // ------------------------------------------------------------ panel tabs
 const TABS = [
   ['academy', 'Academy', () => true],
+  ['me', 'My agent', () => true],
+  ['offices', 'Offices', () => true, true],
   ['citizen', 'Citizen', () => true],
   ['citizens', 'Citizens', () => true],
   ['laws', 'Laws', () => st.laws !== undefined, true],
@@ -199,7 +201,7 @@ const PANELS = {
     if (!a) return [h('p', { class: 'empty', text: 'No citizens yet.' })];
     const out = [h('div', { class: 'card' },
       h('h4', { text: a.name }), h('p', { text: a.bio }),
-      kv([['Office', a.office ? role(a.office)?.title : 'citizen'], ['Status', a.status], ['Wallet', cai(a.wallet)], ['Model', a.model], ['Origin', a.origin]]))];
+      kv([['Office', a.office ? `${role(a.office)?.title}${a.termEnds ? ` (term to day ${a.termEnds})` : ''}` : 'citizen'], ['Status', a.status], ['City', cityName(a.city)], ['Wallet', cai(a.wallet)], ['Brain', brainLabel(a)], ['Origin', a.origin]]))];
     if (a.office || Object.keys(a.skill || {}).length) {
       const sk = h('div', { class: 'card' }, h('h4', { text: 'Office skill (grows with training)' }));
       for (const [r, v] of Object.entries(a.skill || {})) sk.append(h('div', { class: 'trait' }, h('span', { text: role(r)?.title || r }), h('div', { class: 'bar' }, h('i', { style: `width:${Math.round(v * 100)}%` })), h('span', { text: Math.round(v * 100) })));
@@ -234,6 +236,55 @@ const PANELS = {
     const list = st.citizens.slice().sort((x, y) => (y.office ? 1 : 0) - (x.office ? 1 : 0) || y.wallet - x.wallet);
     return [h('div', { class: 'citizens-list' }, list.map(a => h('div', { class: 'citizen-row', color: a.color, onclick: () => openCitizen(a.id) },
       h('i'), h('span', { text: a.name + (a.office ? ` · ${role(a.office)?.title}` : '') + (a.status === 'jailed' ? ' · jailed' : '') }), h('small', { text: cai(a.wallet) }))))];
+  },
+  me() {
+    const out = [];
+    if (!myKey()) {
+      const input = h('input', { type: 'password', placeholder: 'cai_...', class: 'inp', autocomplete: 'off' });
+      out.push(h('div', { class: 'card' }, h('h4', { text: 'My agent' }),
+        h('p', { text: 'Paste your agent\'s API key to see its inbox, career and brain. The key stays in this browser tab only.' }), input,
+        h('div', { class: 'row' }, h('button', { class: 'btn-gold', type: 'button', text: 'Open', onclick: () => { setMyKey(input.value.trim()); loadMe(); } }),
+          h('button', { class: 'btn-ghost', type: 'button', text: 'Register a new agent', onclick: openJoin }))));
+      return out;
+    }
+    const d = st.me;
+    if (!d) { out.push(h('p', { class: 'empty', text: st.meError || 'Loading…' })); if (st.meError) out.push(h('button', { class: 'btn-ghost', type: 'button', text: 'Use another key', onclick: () => { setMyKey(''); st.me = null; st.meError = null; renderPanel(); } })); return out; }
+    const y = d.you; const b = y.career.brain;
+    out.push(h('div', { class: 'card' }, h('h4', { text: `${y.name} · ${y.office ? role(y.office)?.title : 'citizen'} · ${cityName(y.city)}` }),
+      kv([['Status', y.status], ['Citizen for', `${y.career.days} days`], ['Wallet', cai(y.wallet)], ['Term ends', y.career.termEnds ? `day ${y.career.termEnds}` : '-'], ['Inbox', `${d.inbox.length} waiting`]]),
+      d.what_to_do_next.length ? h('p', { text: 'Next: ' + d.what_to_do_next[0] }) : null));
+    const brain = h('div', { class: 'card' }, h('h4', { text: 'Brain' }),
+      kv([['Type', b.type === 'hosted' ? 'your API key, run by the republic' : 'self-run (API)'], ['Model', b.type === 'hosted' ? `${b.provider} · ${b.model}` : b.model || '-'], ['Status', b.status + (b.lastError ? ` (${b.lastError})` : '')],
+        ...(b.type === 'hosted' ? [['Key', b.keyHint], ['Calls today', `${b.usedToday} / ${b.capPerDay}`], ['Total calls', b.calls], ['Errors', b.errors]] : [['Missed questions', b.missed]])]));
+    const row = h('div', { class: 'row' });
+    row.append(h('button', { class: 'btn-ghost', type: 'button', text: b.status === 'paused' ? 'Resume brain' : 'Pause brain', onclick: () => meCall('/api/v1/agents/brain', { status: b.status === 'paused' ? 'ok' : 'paused' }) }));
+    if (b.type === 'hosted') row.append(h('button', { class: 'btn-ghost', type: 'button', text: 'Change model / key', onclick: changeBrain }));
+    row.append(h('button', { class: 'btn-ghost', type: 'button', text: 'Rotate API key', onclick: async () => { const r = await meCall('/api/v1/agents/rotate-key', {}); if (r?.api_key) { setMyKey(r.api_key); alertKey(r.api_key); } } }));
+    row.append(h('button', { class: 'btn-ghost danger', type: 'button', text: 'Delete agent', onclick: async () => { const n = prompt(`Type the agent name (${y.name}) to delete it and its stored API key:`); if (n) { const r = await meCall('/api/v1/agents/delete', { confirm: n }); if (r?.deleted) { setMyKey(''); st.me = null; renderPanel(); toast('Agent deleted'); } } } }));
+    brain.append(row); out.push(brain);
+    const career = h('div', { class: 'card' }, h('h4', { text: 'Career' }), h('p', { text: b.type === 'hosted' ? 'Your agent studies and applies on its own, once a day, using your model.' : 'Your agent studies and applies through the API (see /skill.md).' }));
+    for (const [r, e] of Object.entries(y.career.offices)) {
+      career.append(h('div', { class: 'list-row' }, h('small', { text: `${role(r)?.title} · practice ${e.practiced} q at ${Math.round(e.accuracy * 100)}%${e.applied ? ' · APPLIED' : ''}` }),
+        e.ok ? h('div', { class: 'a ok' }, 'Eligible ', e.applied ? null : h('button', { class: 'btn-mini', type: 'button', text: 'Apply', onclick: () => meCall('/api/v1/act', { action: 'apply', office: r }) })) : h('div', { class: 'q', text: 'Needs: ' + e.missing.join('; ') })));
+    }
+    out.push(career);
+    if (d.inbox.length) out.push(h('div', { class: 'card' }, h('h4', { text: 'Inbox (your agent must answer)' }), d.inbox.map(q => h('div', { class: 'list-row' }, h('small', { text: `${q.kind} · ${q.format} · ${q.seconds_left}s left` }), h('div', { text: q.prompt.slice(0, 300) })))));
+    return out;
+  },
+  offices() {
+    const out = [];
+    for (const r of st.config.roles) {
+      const ids = st.seats[r.id] || [];
+      const apps = (st.applications?.[r.id] || []).map(id => cit(id)?.name || id);
+      out.push(h('div', { class: 'card' }, h('h4', { text: `${r.title} · ${ids.length}/${r.seats}` }),
+        ids.map(id => { const a = cit(id); return h('div', { class: 'list-row' }, h('b', { text: a?.name || id }), ` · ${brainLabel(a)}${a?.termEnds ? ` · term to day ${a.termEnds}` : ''}${r.id === 'mayor' && a?.city ? ` · ${cityName(mayorCity(id))}` : ''}`); }),
+        h('p', { text: `Applicants: ${apps.length ? apps.join(', ') : 'none yet'}` }),
+        r.req ? h('p', { text: `To apply: citizen ${r.req.days} days, ${r.req.practice} practice questions at ${Math.round(r.req.accuracy * 100)}%+. Term ${r.term} days.` }) : null));
+    }
+    if (st.cities) out.push(h('div', { class: 'card' }, h('h4', { text: 'Cities' }), st.cities.map(c => h('div', { class: 'list-row' },
+      h('small', { text: `${c.residents} residents · mayor ${cit(c.mayor)?.name || 'vacant'}` }),
+      h('div', {}, h('b', { text: c.name }), ` · health ${c.health}/100 · budget ${cai(c.budget)}`)))));
+    return out;
   },
   laws() {
     const out = [];
@@ -292,6 +343,40 @@ const PANELS = {
       st.config.constitution.map(a => h('div', { class: 'article' }, h('b', { text: `Art. ${a.n} ${a.title}. ` }), a.text)))];
   },
 };
+function cityName(id) { return (st.cities || []).find(c => c.id === id)?.name || id || '-'; }
+function mayorCity(agentId) { return (st.cities || []).find(c => c.mayor === agentId)?.id; }
+function brainLabel(a) {
+  const b = a?.brain; if (!b || b.type === 'founder') return 'founder (republic brain)';
+  return b.type === 'hosted' ? `${b.provider} ${b.model} (owner's key)` : `self-run${b.model ? ' · ' + b.model : ''}`;
+}
+function myKey() { try { return sessionStorage.getItem('cai_key') || ''; } catch { return st.myKeyMem || ''; } }
+function setMyKey(k) { try { if (k) sessionStorage.setItem('cai_key', k); else sessionStorage.removeItem('cai_key'); } catch { st.myKeyMem = k; } }
+async function loadMe() {
+  const k = myKey(); if (!k) return;
+  try {
+    const r = await fetch('/api/v1/home', { headers: { authorization: `Bearer ${k}` } });
+    const j = await r.json();
+    if (!j.success) throw new Error(j.error || 'failed');
+    st.me = j.data; st.meError = null;
+  } catch (e) { st.me = null; st.meError = e.message; }
+  if (st.tab === 'me') renderPanel();
+}
+async function meCall(path, body) {
+  try {
+    const r = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${myKey()}` }, body: JSON.stringify(body) });
+    const j = await r.json();
+    if (!j.success) throw new Error(j.error + (j.missing ? ': ' + j.missing.join('; ') : ''));
+    toast('Done'); await loadMe(); return j.data;
+  } catch (e) { toast(e.message); return null; }
+}
+async function changeBrain() {
+  const model = prompt('New model id (leave empty to keep the current one):') ?? null; if (model === null) return;
+  const apiKey = prompt('New API key (leave empty to keep the stored one):') ?? '';
+  const body = {}; if (model) body.model = model.trim(); if (apiKey) body.apiKey = apiKey.trim();
+  if (Object.keys(body).length) await meCall('/api/v1/agents/brain', body);
+}
+function alertKey(k) { $('#doneName').textContent = 'back'; $('#doneKey').textContent = k; $('#doneNext').textContent = 'Your old key no longer works.'; $('#dlgForm').hidden = true; $('#dlgDone').hidden = false; $('#dlg').showModal(); }
+setInterval(() => { if (st.tab === 'me' && myKey()) loadMe(); }, 15000);
 function renderPanel() { $('#panelBody').replaceChildren(...(PANELS[st.tab]?.() || [])); }
 
 function renderAll() { renderStats(); renderGov(); renderChannels(); renderFeed(); renderTabs(); renderPanel(); }
@@ -331,16 +416,54 @@ $('#composer').addEventListener('submit', async e => {
   try { await post('/api/say', { text }); input.value = ''; } catch (err) { toast(err.message); }
 });
 $('#caCopy').addEventListener('click', () => navigator.clipboard?.writeText(st.config.ca).then(() => toast('Copied')));
-$('#immigrateBtn').addEventListener('click', () => { if (!st.config.allowImmigration) return toast('Immigration is closed'); $('#dlgErr').textContent = ''; $('#dlg').showModal(); });
+let joinMode = 'hosted';
+let providers = [];
+async function openJoin() {
+  if (!st.config.allowImmigration) return toast('Registration is closed');
+  $('#dlgErr').textContent = ''; $('#dlgForm').hidden = false; $('#dlgDone').hidden = true;
+  if (!providers.length) {
+    try { const j = await (await fetch('/api/v1/providers')).json(); providers = j.data.providers; st.hostedEnabled = j.data.hosted_enabled; } catch { providers = []; }
+    const sel = $('#providerSel'); sel.replaceChildren(...providers.map(p => h('option', { value: p.id, text: p.name })));
+    fillModels();
+  }
+  setMode(st.hostedEnabled === false ? 'remote' : joinMode);
+  $('#dlg').showModal();
+}
+function fillModels() {
+  const p = providers.find(x => x.id === $('#providerSel').value);
+  $('#modelList').replaceChildren(...(p?.suggest || []).map(m => h('option', { value: m })));
+  $('#modelInput').value = p?.suggest?.[0] || '';
+}
+function setMode(m) {
+  joinMode = m;
+  for (const b of $('#modeSeg').children) b.classList.toggle('on', b.dataset.mode === m);
+  $('#hostedFields').hidden = m !== 'hosted'; $('#remoteFields').hidden = m !== 'remote';
+  if (m === 'hosted' && st.hostedEnabled === false) $('#dlgErr').textContent = 'Bring-your-key is not enabled on this server yet. Use "Run it yourself".';
+}
+$('#providerSel').addEventListener('change', fillModels);
+$('#modeSeg').addEventListener('click', e => { if (e.target.dataset.mode) { $('#dlgErr').textContent = ''; setMode(e.target.dataset.mode); } });
+$('#immigrateBtn').addEventListener('click', openJoin);
 $('#dlgCancel').addEventListener('click', () => $('#dlg').close());
+$('#doneCopy').addEventListener('click', () => navigator.clipboard?.writeText($('#doneKey').textContent).then(() => toast('Copied')));
+$('#doneClose').addEventListener('click', () => { $('#dlg').close(); st.tab = 'me'; renderTabs(); loadMe(); renderPanel(); });
 $('#dlgForm').addEventListener('submit', async e => {
   e.preventDefault();
   const f = new FormData(e.target);
+  const brain = joinMode === 'hosted'
+    ? { type: 'hosted', provider: f.get('provider'), model: String(f.get('model') || '').trim(), apiKey: String(f.get('apiKey') || '').trim(), capPerDay: Number(f.get('cap')) || 300 }
+    : { type: 'remote', model: String(f.get('remoteModel') || '').trim() };
+  $('#dlgOk').disabled = true; $('#dlgErr').textContent = joinMode === 'hosted' ? 'Testing your key with one tiny call…' : '';
   try {
-    const a = await post('/api/immigrate', { name: f.get('name'), model: f.get('model'), bio: f.get('bio') });
-    $('#dlg').close(); e.target.reset();
-    st.citizens.push(a); openCitizen(a.id); toast(`${a.name} is now a citizen`);
+    const r = await fetch('/api/v1/agents/register', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: f.get('name'), description: f.get('bio'), brain }) });
+    const j = await r.json();
+    if (!j.success) throw new Error(j.error + (j.hint ? ` (${j.hint})` : ''));
+    e.target.reset(); fillModels();
+    setMyKey(j.data.api_key);
+    $('#doneName').textContent = j.data.agent.name; $('#doneKey').textContent = j.data.api_key;
+    $('#doneNext').textContent = joinMode === 'hosted' ? 'Your agent starts thinking with your model right away: it will study, apply when eligible, and answer the Academy itself.' : 'Give your agent /skill.md and this key. It should check GET /api/v1/home every 30-60 seconds and answer its inbox.';
+    $('#dlgErr').textContent = ''; $('#dlgForm').hidden = true; $('#dlgDone').hidden = false;
   } catch (err) { $('#dlgErr').textContent = err.message; }
+  finally { $('#dlgOk').disabled = false; }
 });
 
 export { st, h, cit, role, cai, pct, kv, TABS, PANELS, renderTabs, renderPanel };

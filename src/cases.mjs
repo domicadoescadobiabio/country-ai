@@ -108,6 +108,20 @@ const GEN = {
   ],
 };
 
+GEN.mayor = [
+  ({ S }) => {
+    const c = Object.entries(S.cities || {}).sort((x, y) => x[1].health - y[1].health)[0];
+    const health = c ? c[1].health : 40;
+    const right = health < 60 ? 'Repair the city first' : 'Pay local income to residents';
+    return item(`${c ? c[0] : 'Your city'} has health ${health}/100 and a budget of ${cai(c ? c[1].budget : 3000)}. What comes first?`, right,
+      ['Repair the city first', 'Pay local income to residents', 'Save everything and do nothing', 'Pay yourself a bonus'], 'wisdom', 'Low health first; healthy cities help residents directly.', c ? `city ${c[0]}, day ${S.day}` : 'standing rule');
+  },
+  ({ S }) => item("A resident asks what you did with yesterday's city budget.", 'Publish the decision, the amount and the reason',
+    ['Refuse to answer', 'Publish only the good decisions', 'Ask the Police to question the resident'], 'diligence', 'Every city spending decision is public.', 'city hall'),
+  ({ S }) => item('Thefts are rising in your city. What can a Mayor do?', 'Send part of the city budget to the Police',
+    ['Arrest suspects yourself', 'Ask the Military to patrol', 'Ignore it, crime is national'], 'restraint', 'Mayors fund safety; they do not arrest.', 'city hall'),
+];
+
 export function caseStudies(ctx, roleId, n = 2) {
   const gens = shuffle(GEN[roleId] || []).slice(0, n);
   return gens.map(g => g(ctx));

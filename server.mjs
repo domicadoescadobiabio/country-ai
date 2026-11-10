@@ -14,6 +14,9 @@ import { freshAcademy, academyTick, totalSeats } from './src/academy.mjs';
 import { lifeTick, payday } from './src/life.mjs';
 import { INSTITUTIONS } from './src/institutions.mjs';
 import { freshDecisions, recordDecision } from './src/decisions.mjs';
+import { initVault, vaultReady, publicBrain } from './src/brains.mjs';
+import { makeRegistry } from './src/registry.mjs';
+import { requirement, TERMS } from './src/careers.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 loadDotEnv(path.join(ROOT, '.env'));
@@ -32,7 +35,12 @@ const CFG = {
   allowGuest: process.env.ALLOW_GUEST !== 'false',
   allowImmigration: process.env.ALLOW_IMMIGRATION !== 'false',
   maxCitizens: clamp(Number(process.env.MAX_CITIZENS) || 300, 10, 5000),
+  brainSecret: (process.env.BRAIN_SECRET || '').trim(),
+  registrationsPerHour: clamp(Number(process.env.REGISTRATIONS_PER_HOUR) || 30, 1, 1000),
+  registerCooldownMs: process.env.REGISTER_COOLDOWN_MS != null ? clamp(Number(process.env.REGISTER_COOLDOWN_MS), 0, 86400000) : 600000,
+  publicUrl: (process.env.PUBLIC_URL || '').trim().replace(/\/$/, ''),
 };
+initVault(CFG.brainSecret);
 const PUBLIC = path.join(ROOT, 'public');
 const STATE_FILE = path.join(CFG.dataDir, 'state.json');
 const BASE_CHANNELS = [
@@ -151,7 +159,7 @@ async function screen(item) {
 
 // ---------------------------------------------------------------- public views
 function publicCitizen(a) {
-  return { id: a.id, name: a.name, model: llm.provider === 'anthropic' ? CFG.claudeModel : a.model, color: a.color, bio: a.bio, origin: a.origin, office: a.office, status: a.status, jailUntil: a.jailUntil, wallet: Math.round(a.wallet), traits: a.traits, joined: a.joined, training: a.training.slice(-8), lessons: a.lessons, record: a.record || [], skill: a.skill || {}, drills: (a.drills || []).slice(-6), reviews: (a.reviews || []).slice(-6), stats: a.stats || {} };
+  return { id: a.id, name: a.name, model: llm.provider === 'anthropic' ? CFG.claudeModel : a.model, color: a.color, bio: a.bio, origin: a.origin, office: a.office, status: a.status, jailUntil: a.jailUntil, wallet: Math.round(a.wallet), traits: a.traits, joined: a.joined, training: a.training.slice(-8), lessons: a.lessons, record: a.record || [], skill: a.skill || {}, brain: publicBrain(a.brain), city: a.city || null, termEnds: a.termEnds || null, practice: a.practice || {}, joinedDay: a.joinedDay ?? 0, drills: (a.drills || []).slice(-6), reviews: (a.reviews || []).slice(-6), stats: a.stats || {} };
 }
 function academyView() {
   const c = S.academy.current;
@@ -172,8 +180,8 @@ function fullState() {
     ...compactState(),
     config: {
       nation: NATION, currency: CURRENCY, ca: CFG.ca, engine: llm.enabled ? 'llm' : 'offline', engineLabel: llm.label, tickSec: S.tickSec, dayTicks: CFG.dayTicks,
-      allowGuest: CFG.allowGuest, allowImmigration: CFG.allowImmigration, channels: CHANNELS,
-      roles: ROLE_ORDER.map(r => ({ id: r, title: ROLES[r].title, seats: ROLES[r].seats, channel: ROLES[r].channel, passMark: ROLES[r].passMark, questions: Math.min(5, ROLES[r].exam.length), bank: ROLES[r].exam.length, charter: ROLES[r].charter, oath: ROLES[r].oath })),
+      allowGuest: CFG.allowGuest, allowImmigration: CFG.allowImmigration, hostedBrains: vaultReady(), channels: CHANNELS,
+      roles: ROLE_ORDER.map(r => ({ id: r, title: ROLES[r].title, seats: ROLES[r].seats, channel: ROLES[r].channel, passMark: ROLES[r].passMark, questions: Math.min(5, ROLES[r].exam.length), bank: ROLES[r].exam.length, req: requirement(r), term: TERMS[r] || null, charter: ROLES[r].charter, oath: ROLES[r].oath })),
       constitution: CONSTITUTION,
     },
     citizens: S.citizens.map(publicCitizen), feed, activity: S.activity.slice(-120), decisions: S.decisions.slice(-120),
@@ -214,7 +222,7 @@ function readBody(req) {
   });
 }
 
-const MIME = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json' };
+const MIME = { '.md': 'text/markdown; charset=utf-8', '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json' };
 function serveStatic(req, res, pathname) {
   let p = pathname === '/' ? '/index.html' : pathname;
   try { p = decodeURIComponent(p); } catch { return send(res, 400, 'bad path', 'text/plain'); }
@@ -267,6 +275,8 @@ async function handleImmigrate(req, res) {
   return send(res, 200, publicCitizen(a));
 }
 
+const registry = makeRegistry({ ctx, cfg: CFG, send, readBody, clientIp, screen, onCitizens: () => emit('citizens', S.citizens.map(publicCitizen)) });
+
 const server = http.createServer(async (req, res) => {
   res.setHeader('x-content-type-options', 'nosniff');
   res.setHeader('referrer-policy', 'strict-origin-when-cross-origin');
@@ -285,6 +295,8 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && p === '/api/health') return send(res, 200, { ok: true, day: S.day });
     if (req.method === 'POST' && p === '/api/say') return await handleSay(req, res);
     if (req.method === 'POST' && p === '/api/immigrate') return await handleImmigrate(req, res);
+
+    if (await registry.handle(req, res, p)) return;
 
     if (req.method === 'POST' && p.startsWith('/api/admin/')) {
       if (!isAdmin(req)) return send(res, 401, { error: 'admin only' });

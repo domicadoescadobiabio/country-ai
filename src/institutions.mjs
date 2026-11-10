@@ -3,6 +3,8 @@ import { institution as president } from './president.mjs';
 import { institution as council } from './council.mjs';
 import { institution as police } from './police.mjs';
 import { institution as military } from './military.mjs';
+import { institution as cities } from './cities.mjs';
+import { institution as careers } from './careers.mjs';
 import { institution as training } from './training.mjs';
 
-export const INSTITUTIONS = [president, council, police, military, training];
+export const INSTITUTIONS = [president, council, police, military, cities, careers, training];

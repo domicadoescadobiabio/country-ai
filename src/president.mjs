@@ -5,6 +5,7 @@
 import { ROLES } from './roles.mjs';
 import { constitutionText } from './constitution.mjs';
 import { pick, chance, cai, round, cleanText, clamp } from './util.mjs';
+import { think } from './brains.mjs';
 
 export const MAX_ORDER_SHARE = 0.05;
 
@@ -64,29 +65,36 @@ function execute(ctx, pres, order, amount) {
 }
 
 export async function presidentDay(ctx) {
-  const { S, llm } = ctx;
+  const { S } = ctx;
+  if (S.orderedDay === S.day) return;
   const presId = S.seats.president?.[0];
   const pres = presId && ctx.agent(presId);
   if (!pres || pres.status !== 'free') return;
   const items = menu(ctx, pres);
   const cap = round(S.treasury * MAX_ORDER_SHARE, 2);
   let order = null, amount = null, speech = null, reason = null, engine = 'offline';
-  if (llm.enabled) {
+  {
     const lessons = (pres.lessons.president || []).map(l => `- ${l}`).join('\n') || '- none';
-    const reply = await llm.ask({
-      model: pres.model, maxTokens: 200,
+    // the question stays the same until it is answered, even if a day passes (self-run Presidents)
+    if (!S.orderQid || !S.orderQid.endsWith(`:${pres.id}`)) S.orderQid = `order:${S.day}:${pres.id}`;
+    const res = await think(ctx, pres, S.orderQid, {
+      kind: 'decision', format: 'json',
+      options: items.map(i => i.id),
       system: `You are ${pres.name}, President of Country AI.\nConstitution:\n${constitutionText()}\nCharter: ${ROLES.president.charter}\nLessons from your Academy training:\n${lessons}`,
       user: `Day ${S.day}. Treasury ${cai(S.treasury)} (max per order ${cai(cap)}). Citizens ${S.citizens.length}, ${poor(S)} under 300 CAI. Tax ${Math.round(S.policy.taxRate * 100)}%, UBI ${cai(S.policy.ubi)}, wage ${cai(S.policy.wage)}.\nOptions (with the facts behind each):\n${items.map(i => `- ${i.id}: ${i.label} [${i.why}]`).join('\n')}\nChoose exactly one. Reply with JSON only: {"order":"<id>","amount":<number or 0>,"reason":"<why this option, max 30 words>","speech":"<max 25 words>"}`,
     });
-    const j = llm.json(reply);
-    if (j && items.some(i => i.id === j.order)) { order = j.order; amount = j.amount; reason = cleanText(j.reason, 300); speech = cleanText(j.speech, 200); engine = 'llm'; }
+    if (res.pending) return; // a remote President is still deciding; asked again next tick
+    const j = ctx.llm.json(res.text);
+    if (j && items.some(i => i.id === j.order)) { order = j.order; amount = j.amount; reason = cleanText(j.reason, 300); speech = cleanText(j.speech, 200); engine = res.engine; }
+    else if (pres.brain) reason = `(${pres.name}'s own model gave no valid answer; the rule-based fallback decided)`;
   }
   if (!order) {
     const best = items[0], next = items[1];
     order = best.id;
-    reason = `Scored every option against today's numbers. Best: ${best.id} ${best.score} (${best.why}). Next: ${next.id} ${next.score} (${next.why}).`;
+    reason = (reason ? reason + ' ' : '') + `Scored every option against today's numbers. Best: ${best.id} ${best.score} (${best.why}). Next: ${next.id} ${next.score} (${next.why}).`;
     speech = chance(0.5) ? pick(SPEECHES) : null;
   }
+  S.orderedDay = S.day; S.orderQid = null;
   const presBefore = pres.wallet;
   const r = execute(ctx, pres, order, amount);
   const presGain = round(pres.wallet - presBefore, 2);
@@ -109,7 +117,8 @@ export const institution = {
   id: 'president',
   channels: [{ id: 'palace', name: 'palace', desc: 'The President\'s executive orders, one per day, max 5% of the treasury each.' }],
   fresh: () => ({ orders: [] }),
-  day: presidentDay,
+  // tried every tick until today's order is out (a remote President may need a few ticks)
+  tick: presidentDay,
   stats: S => ({ orders: S.orders.length }),
   publicState: S => ({ orders: S.orders.slice(-40) }),
 };

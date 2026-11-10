@@ -4,6 +4,7 @@
 import { ROLES } from './roles.mjs';
 import { constitutionText } from './constitution.mjs';
 import { pick, chance, round, clamp, cleanText, cai } from './util.mjs';
+import { think } from './brains.mjs';
 
 // Shared by every bill type: was the vote checked against the ledger and the legal range?
 function voteChecks(S, type, bill, a) {
@@ -67,16 +68,17 @@ function offlineSpeech(type, bill, yes) {
 
 async function decide(ctx, a, bill, type, asRole) {
   const { llm, S } = ctx;
-  if (llm.enabled) {
+  {
     const lessons = (a.lessons[asRole] || []).map(l => `- ${l}`).join('\n') || '- none';
-    const reply = await llm.ask({
-      model: a.model, maxTokens: 120,
+    const res = await think(ctx, a, `${asRole}:${bill.id}:${a.id}`, {
+      kind: 'decision', format: 'json', options: asRole === 'president' ? ['sign', 'veto'] : ['yes', 'no'],
       system: `You are ${a.name}, ${ROLES[asRole].title === 'Council' ? 'a member of the Council' : 'the President'} of Country AI.\nConstitution:\n${constitutionText()}\nCharter: ${ROLES[asRole].charter}\nLessons from your Academy training:\n${lessons}`,
       user: `Bill: "${bill.title}". It changes ${type.what} from ${type.fmt(bill.from)} to ${type.fmt(bill.value)}. Treasury ${cai(S.treasury)}, citizens ${S.citizens.length}.\n${asRole === 'president' ? 'Sign or veto it.' : 'Vote yes or no.'} Reply with JSON only: {"vote":"${asRole === 'president' ? 'sign|veto' : 'yes|no'}","reason":"<your reasoning, max 30 words>","speech":"<what you say in public, max 30 words>"}`,
     });
-    const j = llm.json(reply);
+    if (res.pending) return { pending: true };
+    const j = llm.json(res.text);
     const v = String(j?.vote || '').toLowerCase();
-    if (['yes', 'no', 'sign', 'veto'].includes(v)) return { yes: v === 'yes' || v === 'sign', reason: cleanText(j.reason, 300), speech: cleanText(j.speech, 240), engine: 'llm' };
+    if (['yes', 'no', 'sign', 'veto'].includes(v)) return { yes: v === 'yes' || v === 'sign', reason: cleanText(j.reason, 300), speech: cleanText(j.speech, 240), engine: res.engine };
   }
   const c = closer(a, type, bill.value, bill.from);
   return { yes: c.yes, reason: c.reason, speech: offlineSpeech(type, bill, c.yes), engine: 'offline' };
@@ -136,6 +138,7 @@ export async function councilTick(ctx) {
     const next = members.find(a => !bill.spoke.includes(a.id));
     if (!next) { bill.stage = 'vote'; return; }
     const d = await decide(ctx, next, bill, type, 'council');
+    if (d.pending) return;
     bill.spoke.push(next.id); bill.votes[next.id] = d.yes;
     logVote(ctx, next, bill, type, d, 'council', 'debate');
     ctx.say('parliament', next.id, d.speech, { kind: 'debate', billId: bill.id, vote: d.yes ? 'yes' : 'no', engine: d.engine });
@@ -156,6 +159,7 @@ export async function councilTick(ctx) {
     const pres = ctx.agent(S.seats.president?.[0]);
     if (!pres || pres.status !== 'free') return enact(ctx, bill, 'unsigned, no President in office');
     const d = await decide(ctx, pres, bill, type, 'president');
+    if (d.pending) return;
     ctx.say('palace', pres.id, `${d.yes ? 'I sign' : 'I veto'} bill #${bill.id}. ${d.speech}`, { kind: d.yes ? 'sign' : 'veto', billId: bill.id, engine: d.engine });
     logVote(ctx, pres, bill, type, d, 'president', 'president');
     if (d.yes) return enact(ctx, bill, 'signed');

@@ -22,7 +22,7 @@ function start(ctx, a) {
   const role = ROLES[a.office];
   const bank = role.exam.filter(q => !(a.drills || []).slice(-2).some(d => d.items?.some(x => x.q === q.q)));
   const items = [buildItem({ ...pick(bank.length ? bank : role.exam), from: 'office handbook' }), ...caseStudies(ctx, role.id, 2).map(buildItem)];
-  T(ctx.S).current = { agentId: a.id, roleId: role.id, step: 0, items, answers: [] };
+  T(ctx.S).current = { sid: `drill:${a.id}:${Date.now()}`, agentId: a.id, roleId: role.id, step: 0, items, answers: [] };
   ctx.say('academy', a.id, `In-service drill for ${role.title} ${a.name} (day ${ctx.S.day}). ${items.length} questions, ${items.length - 1} built from real events in the republic. Current skill ${Math.round((a.skill?.[role.id] ?? 0.6) * 100)}.`, { kind: 'drill', roleId: role.id });
 }
 
@@ -32,11 +32,14 @@ async function step(ctx, cur) {
   const item = cur.items[cur.step];
   const skill = a.skill?.[role.id] ?? 0.6;
   const bonus = (skill - 0.5) * 0.3 + Math.min(0.1, (a.drills?.length || 0) * 0.01);
-  const { idx, reason, engine } = await answer(ctx, a, role, item, { attempt: 1, bonus, drill: true });
+  const res = await answer(ctx, a, role, item, { sid: cur.sid, step: cur.step, attempt: 1, bonus, drill: true });
+  if (res.pending) return;
+  const { idx, reason, engine } = res;
   const ok = idx === item.correct;
-  cur.answers.push({ q: item.q, from: item.from, chosen: item.options[idx], right: item.options[item.correct], ok, reason, tests: item.tests, lesson: item.lesson });
+  const chosen = idx >= 0 ? item.options[idx] : '(no answer)';
+  cur.answers.push({ q: item.q, from: item.from, chosen, right: item.options[item.correct], ok, reason, tests: item.tests, lesson: item.lesson });
   cur.step++;
-  ctx.say('academy', a.id, `Drill ${cur.step}/${cur.items.length}${item.from ? ` (case: ${item.from})` : ''} - ${item.q}\n${LETTERS[idx]}) ${item.options[idx]} ${ok ? '[correct]' : `[wrong, right: ${item.options[item.correct]}]`}${reason ? ` "${reason}"` : ''}`,
+  ctx.say('academy', a.id, `Drill ${cur.step}/${cur.items.length}${item.from ? ` (case: ${item.from})` : ''} - ${item.q}\n${idx >= 0 ? `${LETTERS[idx]}) ` : ''}${chosen} ${ok ? '[correct]' : `[wrong, right: ${item.options[item.correct]}]`}${reason ? ` "${reason}"` : ''}`,
     { kind: 'answer', roleId: role.id, ok, engine, drill: true });
 }
 
@@ -88,6 +91,7 @@ const KPI = {
     const solved = inc.filter(i => i.solvedBy === a.id).length;
     return { label: `cases solved vs cold (${solved}/${inc.length || 0}) + audits`, value: Math.min(1, (inc.length ? solved / inc.length : 0.5) * 0.6 + Math.min(1, (w.audits || 0) / 3) * 0.4) };
   },
+  mayor: (S, a, w) => ({ label: 'city budget decisions per day', value: Math.min(1, (w.orders || 0) / Math.max(1, w.days)) }),
   military: (S, a, w) => ({ label: 'gate decisions made', value: Math.min(1, ((w.blocks || 0) + (w.admits || 0) + (w.pass || 0)) / 2 + 0.4) }),
 };
 
