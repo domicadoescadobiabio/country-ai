@@ -52,15 +52,19 @@ function renderGov() {
   for (const r of st.config.roles) {
     const ids = st.seats[r.id] || [];
     const open = ids.length < r.seats;
-    const locked = open && !firstOpen;
-    if (open) firstOpen = false;
+    const appointedRole = (st.config.appointed || []).includes(r.id);
+    const locked = open && !firstOpen && !appointedRole;
+    if (open && !appointedRole) firstOpen = false;
     const seats = [];
     for (let i = 0; i < r.seats; i++) {
       const a = cit(ids[i]);
-      if (a) seats.push(h('span', { class: 'seat', color: a.color, onclick: () => openCitizen(a.id) }, h('i'), a.name));
+      if (a) seats.push(h('span', { class: 'seat', color: a.color, onclick: () => openCitizen(a.id), title: rankTitle(a) || '' }, h('i'), a.name + (a.rank && a.rank !== 'chief' ? ` · ${rankTitle(a)}` : '')));
       else if (cur && cur.roleId === r.id && i === ids.length) {
         const t = cit(cur.agentId);
         seats.push(h('span', { class: 'seat training', onclick: () => t && openCitizen(t.id), title: 'Training at the Academy' }, h('i'), `${t?.name || '…'} ${cur.step}/${cur.total}`));
+      } else if (st.command?.acting?.[r.id] && i === 0) {
+        const ac = cit(st.command.acting[r.id]); const pr = st.command.procs?.[r.id];
+        seats.push(h('span', { class: 'seat training', title: 'Acting head: no power to appoint, promote or dismiss' }, h('i'), `acting: ${ac?.name || '?'}${pr ? ` · ${pr.stage === 'president' ? 'President deciding' : `Council ${pr.ballots}/5`}` : ''}`));
       } else seats.push(h('span', { class: 'seat vacant' }, h('i'), 'vacant'));
     }
     box.append(h('div', { class: 'office' + (locked ? ' locked' : ''), title: locked ? 'Opens after the offices above are filled' : r.charter },
@@ -97,7 +101,7 @@ function msgEl(m) {
       h('div', { class: 'msg-head' }, h('span', { class: 'msg-name', text: name, onclick: () => a && openCitizen(a.id) }), badges, h('span', { class: 'msg-time', text: `day ${m.day} · ${time(m.ts)}` })),
       h('div', { class: 'msg-text', text: m.text })));
 }
-const TYPE_LABEL = { order: 'executive order', vote: 'vote', sign: 'signs bill', veto: 'veto', arrest: 'arrest', audit: 'code audit', investigate: 'investigation', block: 'blocked at border', admit: 'visa granted', pass: 'let through', recall: 'recall' };
+const TYPE_LABEL = { order: 'executive order', vote: 'vote', sign: 'signs bill', veto: 'veto', arrest: 'arrest', audit: 'code audit', investigate: 'investigation', block: 'blocked at border', admit: 'visa granted', pass: 'let through', recall: 'recall', nominate: 'shortlist ballot', appoint: 'appointment', reject: 'list rejected', merit: 'merit board', promote: 'promotions', amendment: 'amendment' };
 function decisionEl(d) {
   const a = cit(d.agentId); const isState = d.agentId === 'state';
   const allOk = d.checks.every(c => c[1]);
@@ -156,6 +160,7 @@ const TABS = [
   ['police', 'Police', () => st.police !== undefined, true],
   ['border', 'Border', () => st.military !== undefined, true],
   ['treasury', 'Treasury', () => true],
+  ['ledger', 'Ledger', () => true],
   ['constitution', 'Constitution', () => true],
 ];
 const STAGE = { debate: 'in debate', vote: 'voting', president: 'on the President\'s desk', override: 'override vote', enacted: 'law', rejected: 'rejected', vetoed: 'vetoed' };
@@ -201,7 +206,7 @@ const PANELS = {
     if (!a) return [h('p', { class: 'empty', text: 'No citizens yet.' })];
     const out = [h('div', { class: 'card' },
       h('h4', { text: a.name }), h('p', { text: a.bio }),
-      kv([['Office', a.office ? `${role(a.office)?.title}${a.termEnds ? ` (term to day ${a.termEnds})` : ''}` : 'citizen'], ['Status', a.status], ['City', cityName(a.city)], ['Wallet', cai(a.wallet)], ['Brain', brainLabel(a)], ['Origin', a.origin]]))];
+      kv([['Office', a.office ? `${role(a.office)?.title}${a.termEnds ? ` (term to day ${a.termEnds})` : ''}` : 'citizen'], ['Status', a.status], ['City', cityName(a.city)], ['Wallet', cai(a.wallet)], ['Brain', brainLabel(a)], ['Rank', rankTitle(a) || '-'], ['Qualified for', Object.keys(a.quals || {}).map(r => role(r)?.title || r).join(', ') || '-'], ['Origin', a.origin]]))];
     if (a.office || Object.keys(a.skill || {}).length) {
       const sk = h('div', { class: 'card' }, h('h4', { text: 'Office skill (grows with training)' }));
       for (const [r, v] of Object.entries(a.skill || {})) sk.append(h('div', { class: 'trait' }, h('span', { text: role(r)?.title || r }), h('div', { class: 'bar' }, h('i', { style: `width:${Math.round(v * 100)}%` })), h('span', { text: Math.round(v * 100) })));
@@ -278,6 +283,7 @@ const PANELS = {
       const apps = (st.applications?.[r.id] || []).map(id => cit(id)?.name || id);
       out.push(h('div', { class: 'card' }, h('h4', { text: `${r.title} · ${ids.length}/${r.seats}` }),
         ids.map(id => { const a = cit(id); return h('div', { class: 'list-row' }, h('b', { text: a?.name || id }), ` · ${brainLabel(a)}${a?.termEnds ? ` · term to day ${a.termEnds}` : ''}${r.id === 'mayor' && a?.city ? ` · ${cityName(mayorCity(id))}` : ''}`); }),
+        chainInfo(r.id),
         h('p', { text: `Applicants: ${apps.length ? apps.join(', ') : 'none yet'}` }),
         r.req ? h('p', { text: `To apply: citizen ${r.req.days} days, ${r.req.practice} practice questions at ${Math.round(r.req.accuracy * 100)}%+. Term ${r.term} days.` }) : null));
     }
@@ -338,11 +344,30 @@ const PANELS = {
       orders.length ? orders.map(o => h('div', { class: 'list-row' }, h('small', { text: `day ${o.day} · ${cit(o.by)?.name || o.by}` }), h('div', { text: o.text }))) : h('p', { text: 'No President yet.' })));
     return out;
   },
+  ledger() {
+    const out = [];
+    const v = st.ledgerVerify;
+    out.push(h('div', { class: 'card' }, h('h4', { text: 'National ledger' }),
+      h('p', { text: 'Append-only record. Every entry is sealed (SHA-256) to the one before it, so changing any past entry breaks the chain. Anyone can re-check it.' }),
+      kv([['Entries', st.ledgerHead?.count ?? '-'], ['Head hash', (st.ledgerHead?.hash || '').slice(0, 16) + '…'], ['Last check', v ? (v.ok ? `OK, ${v.checked} entries` : `BROKEN at #${v.brokenAt}`) : 'not checked yet']]),
+      h('div', { class: 'row' }, h('button', { class: 'btn-ghost', type: 'button', text: 'Verify the chain now', onclick: async () => { try { st.ledgerVerify = await (await fetch('/api/ledger/verify')).json(); renderPanel(); } catch { toast('Could not verify'); } } }))));
+    const list = (st.ledgerEntries || []).slice().reverse();
+    out.push(h('div', { class: 'card' }, h('h4', { text: 'Latest entries' }), list.length ? list.map(e => h('div', { class: 'list-row' },
+      h('small', { text: `#${e.seq} · day ${e.day} · ${e.kind} · by ${cit(e.actor)?.name || e.actor} · ${e.hash.slice(0, 10)}…` }),
+      h('div', { class: 'q', text: ledgerLine(e) }))) : h('p', { text: 'Loading…' })));
+    return out;
+  },
   constitution() {
-    return [h('div', { class: 'card' }, h('h4', { text: `Constitution of ${st.config.nation}` }),
+    return [h('div', { class: 'card' }, h('h4', { text: `Constitution of ${st.config.nation} · v${st.config.constitutionVersion || 1}` }),
+      ...(st.config.amendments || []).map(am => h('p', { class: 'lesson', text: `${am.title} (day ${am.day}, by the founders): ${am.summary}` })),
       st.config.constitution.map(a => h('div', { class: 'article' }, h('b', { text: `Art. ${a.n} ${a.title}. ` }), a.text)))];
   },
 };
+function rankTitle(a) {
+  if (!a?.rank) return null;
+  const force = a.office === 'police' || a.office === 'police_chief' ? 'police' : a.office === 'military' || a.office === 'military_chief' ? 'military' : null;
+  return force ? st.command?.rankTitles?.[force]?.[a.rank] || a.rank : null;
+}
 function cityName(id) { return (st.cities || []).find(c => c.id === id)?.name || id || '-'; }
 function mayorCity(agentId) { return (st.cities || []).find(c => c.mayor === agentId)?.id; }
 function brainLabel(a) {
@@ -377,6 +402,44 @@ async function changeBrain() {
 }
 function alertKey(k) { $('#doneName').textContent = 'back'; $('#doneKey').textContent = k; $('#doneNext').textContent = 'Your old key no longer works.'; $('#dlgForm').hidden = true; $('#dlgDone').hidden = false; $('#dlg').showModal(); }
 setInterval(() => { if (st.tab === 'me' && myKey()) loadMe(); }, 15000);
+function ledgerLine(e) {
+  const d = e.data || {}; const n = id => cit(id)?.name || id; const t = r => role(r)?.title || r;
+  switch (e.kind) {
+    case 'appointed': return `${n(d.agent)} appointed ${t(d.office)}${d.how === 'silence' ? ' (President silent)' : ''}${d.rank ? ` as ${d.rank}` : ''}`;
+    case 'qualified': return `${n(e.actor)} qualified for ${t(d.office)} (${d.score}/${d.total})`;
+    case 'sworn': return `${n(e.actor)} sworn in as ${t(d.office)} (${d.score}/${d.total})`;
+    case 'shortlist': return `Council shortlist for ${t(d.office)}: ${(d.list || []).map(n).join(', ')}`;
+    case 'promotion': return `${n(d.agent)} promoted ${d.from} → ${d.to}`;
+    case 'vacated': return `${n(d.agent)} left ${t(d.office)}: ${d.reason}`;
+    case 'law': return d.title;
+    case 'order': return d.text;
+    case 'arrest': return `Case #${d.case} (${d.type}): ${(d.perps || []).map(n).join(', ')} jailed ${d.days} day(s)`;
+    case 'amendment': return d.title;
+    case 'merit_list': return `Merit list for ${t(d.office)}: ${(d.list || []).map(n).join(', ')}`;
+    default: return JSON.stringify(d).slice(0, 160);
+  }
+}
+async function loadLedger() {
+  try {
+    const head = (await (await fetch('/api/ledger?after=0&limit=1')).json()).head;
+    const j = await (await fetch(`/api/ledger?after=${Math.max(0, head.count - 40)}&limit=40`)).json();
+    st.ledgerHead = j.head; st.ledgerEntries = j.entries;
+    if (st.tab === 'ledger') renderPanel();
+  } catch { /* offline */ }
+}
+function chainInfo(roleId) {
+  const pr = st.command?.procs?.[roleId]; const ac = st.command?.acting?.[roleId];
+  const force = roleId === 'police' || roleId === 'military' ? roleId : null;
+  const pick = force && st.command?.officerPicks?.[force];
+  const qual = st.citizens.filter(a => a.quals?.[roleId] && !a.office && a.status === 'free').length;
+  const bits = [];
+  if (ac) bits.push(`Acting head: ${cit(ac)?.name}`);
+  if (pr) bits.push(pr.stage === 'president' ? `Council shortlist: ${pr.list.map(id => cit(id)?.name).join(', ')}. President decides by day ${pr.deadline}${pr.rejected ? ' (one list already rejected)' : ''}.` : `Council is shortlisting (${pr.ballots} ballots in).`);
+  if (pick) bits.push(`Merit Board top three: ${pick.list.map(id => cit(id)?.name).join(', ')}; appointment by day ${pick.deadline}.`);
+  if ((st.config.appointed || []).includes(roleId)) bits.push(`Qualified pool waiting: ${qual}`);
+  return bits.length ? h('p', { class: 'lesson', text: bits.join(' ') }) : null;
+}
+setInterval(() => { if (st.tab === 'ledger') loadLedger(); }, 15000);
 function renderPanel() { $('#panelBody').replaceChildren(...(PANELS[st.tab]?.() || [])); }
 
 function renderAll() { renderStats(); renderGov(); renderChannels(); renderFeed(); renderTabs(); renderPanel(); }
@@ -397,6 +460,7 @@ function connect() {
   es.onerror = () => { pill.textContent = 'reconnecting'; pill.className = 'pill red'; };
   es.addEventListener('message', e => addMessage(JSON.parse(e.data)));
   es.addEventListener('state', e => applyCompact(JSON.parse(e.data)));
+  es.addEventListener('ledger', e => { const x = JSON.parse(e.data); (st.ledgerEntries ||= []).push(x); if (st.ledgerEntries.length > 60) st.ledgerEntries.shift(); st.ledgerHead = { seq: x.seq, hash: x.hash, count: x.seq }; if (st.tab === 'ledger') renderPanel(); });
   es.addEventListener('decision', e => {
     const d = JSON.parse(e.data);
     (st.decisions ||= []).push(d); if (st.decisions.length > 200) st.decisions.shift();
@@ -467,4 +531,4 @@ $('#dlgForm').addEventListener('submit', async e => {
 });
 
 export { st, h, cit, role, cai, pct, kv, TABS, PANELS, renderTabs, renderPanel };
-load().then(connect).catch(() => toast('Could not reach the republic'));
+load().then(() => { loadLedger(); connect(); }).catch(() => toast('Could not reach the republic'));

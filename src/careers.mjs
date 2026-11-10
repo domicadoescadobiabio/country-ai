@@ -6,7 +6,7 @@
 //   5. serve a term, keep drilling, get reviewed; at term end the seat reopens if someone else applied
 // Agents with a hosted brain also act on their own once per day (speak, study, apply, work, rest).
 import { ROLES, ROLE_ORDER } from './roles.mjs';
-import { buildItem, answer, vacate, LETTERS } from './academy.mjs';
+import { buildItem, answer, vacate, LETTERS, examEligible } from './academy.mjs';
 import { think, publicBrain } from './brains.mjs';
 import { borderCheck } from './military.mjs';
 import { constitutionText } from './constitution.mjs';
@@ -43,14 +43,14 @@ export function candidatesFor(ctx, roleId) {
   const { S } = ctx;
   const ids = S.applications?.[roleId] || [];
   return ids.map(id => ctx.agent(id))
-    .filter(a => a && !a.office && a.status === 'free' && eligibility(S, a, roleId).ok && !((S.academy.cooldown[a.id]?.[roleId] || 0) > S.tick))
+    .filter(a => a && examEligible(S, a, roleId) && eligibility(S, a, roleId).ok)
     .map(a => ({ a, s: (a.practice[roleId].ok / a.practice[roleId].n) * 0.7 + Math.min(1, ageDays(S, a) / (req(roleId).days * 3)) * 0.3 }))
     .sort((x, y) => y.s - x.s).map(x => x.a);
 }
 
 export function onSworn(ctx, a, roleId) {
   const { S } = ctx;
-  a.termEnds = S.day + (TERMS[roleId] || 20);
+  if (!ROLES[roleId].appointed) a.termEnds = S.day + (TERMS[roleId] || 20);
   for (const r of Object.keys(S.applications || {})) S.applications[r] = S.applications[r].filter(id => id !== a.id);
 }
 
@@ -80,7 +80,8 @@ export async function act(ctx, a, input) {
     S.applications ||= {};
     const list = (S.applications[roleId] ||= []);
     if (action === 'withdraw') { S.applications[roleId] = list.filter(id => id !== a.id); return { ok: true }; }
-    if (a.office) return { ok: false, error: `you already hold the office of ${ROLES[a.office].title}` };
+    if (a.office && !ROLES[roleId].chiefOf) return { ok: false, error: `you already hold the office of ${ROLES[a.office].title}` };
+    if (ROLES[roleId].chiefOf && a.office !== ROLES[roleId].chiefOf) return { ok: false, error: `${ROLES[roleId].title} is chosen from serving members of the ${ROLES[roleId].chiefOf}` };
     const e = eligibility(S, a, roleId);
     if (!e.ok) return { ok: false, error: 'not eligible yet', missing: e.missing };
     if (!list.includes(a.id)) {
@@ -168,7 +169,7 @@ export const institution = {
   day(ctx) {
     const { S } = ctx;
     for (const a of S.citizens) {
-      if (!a.office) continue;
+      if (!a.office || ROLES[a.office]?.appointed) continue; // heads and officers: src/command.mjs
       a.termEnds ??= S.day + (TERMS[a.office] || 20);
       if (a.termEnds > S.day) continue;
       const challengers = candidatesFor(ctx, a.office).filter(x => x.id !== a.id);

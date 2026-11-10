@@ -102,6 +102,7 @@ export async function presidentDay(ctx) {
   if (S.orders.length > 200) S.orders.shift();
   ctx.say(ROLES.president.channel, pres.id, `${r.text}${speech ? ` "${speech}"` : ''}`, { kind: 'order', order });
   ctx.log('order', `${pres.name}: ${r.text}`);
+  ctx.record?.('order', pres.id, { day: S.day, order, spend: r.spend, cap: r.cap, text: r.text });
   ctx.decide({
     agentId: pres.id, role: 'president', type: 'order', engine,
     title: `Executive order, day ${S.day}`,

@@ -105,6 +105,8 @@ try {
   // --- extra institution checks
   const extra = await import('./smoke-institutions.mjs').catch(() => null);
   if (extra) await extra.run({ get, postRaw, until, check, wait, TOKEN });
+  const command = await import('./smoke-command.mjs');
+  await command.run({ BASE, get, until, check });
   const agents = await import('./smoke-agents.mjs');
   await agents.run({ BASE, DATA, get, until, check, wait, mock });
 
@@ -113,7 +115,8 @@ try {
   fail++; console.log('  FAIL crashed', e);
 } finally {
   child.kill(); mock.close();
-  fs.rmSync(DATA, { recursive: true, force: true });
+  if (child.exitCode === null && child.signalCode === null) await new Promise(r => { child.once('exit', r); setTimeout(r, 3000); });
+  try { fs.rmSync(DATA, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 }); } catch { /* Windows may keep the db handle a moment; temp dir is harmless */ }
   console.log(`\nsmoke: ${pass} passed, ${fail} failed`);
   process.exitCode = fail ? 1 : 0;
 }

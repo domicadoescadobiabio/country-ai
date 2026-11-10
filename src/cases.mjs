@@ -123,6 +123,6 @@ GEN.mayor = [
 ];
 
 export function caseStudies(ctx, roleId, n = 2) {
-  const gens = shuffle(GEN[roleId] || []).slice(0, n);
+  const gens = shuffle(GEN[roleId] || GEN[{ police_chief: 'police', military_chief: 'military' }[roleId]] || []).slice(0, n);
   return gens.map(g => g(ctx));
 }

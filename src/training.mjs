@@ -100,7 +100,7 @@ function review(ctx, a) {
   const snap = a.reviewSnap || { day: a.sworn?.day ?? S.day - REVIEW_EVERY, stats: {} };
   const w = { days: Math.max(1, S.day - snap.day) };
   for (const [k, v] of Object.entries(a.stats || {})) w[k] = v - (snap.stats[k] || 0);
-  const kpi = KPI[role.id](S, a, w);
+  const kpi = (KPI[role.id] || KPI[role.force] || KPI.council)(S, a, w);
   const fails = failedChecks(S, a, snap.day);
   const skill = a.skill?.[role.id] ?? 0.6;
   const score = round(kpi.value * 0.4 + (fails ? 0 : 0.3) + skill * 0.3, 2);

@@ -124,6 +124,7 @@ function enact(ctx, bill, how) {
   if (S.laws.length > 300) S.laws.shift();
   ctx.say('parliament', 'state', `Law ${S.laws.length} enacted (${how}): ${cap(type.what)} is now ${type.fmt(bill.value)}.`, { kind: 'law' });
   ctx.log('law', `${bill.title} enacted (${how})`);
+  ctx.record?.('law', 'council', { bill: bill.id, title: bill.title, type: bill.type, from: bill.from, value: bill.value, how, votes: bill.votes });
 }
 
 export async function councilTick(ctx) {

@@ -1,5 +1,7 @@
-// The Academy trains agents one at a time, office by office, in constitutional order:
-// President first, then Council, then Police, then Military.
+// The Academy trains and examines agents one at a time.
+// Elected offices (President, Council, Mayors): passing seats the agent (transitional, until elections).
+// Appointed offices (police, military, their heads): passing only QUALIFIES the agent; the chain of
+// command (src/command.mjs) appoints from the qualified pool (constitution Art. 2, 10, 11).
 import { ROLES, ROLE_ORDER } from './roles.mjs';
 import { constitutionText, CONSTITUTION } from './constitution.mjs';
 import { clamp, chance, pick, shuffle } from './util.mjs';
@@ -25,9 +27,11 @@ export function vacate(ctx, agentId, reason) {
   if (!a || !a.office) return;
   const roleId = a.office;
   ctx.S.seats[roleId] = (ctx.S.seats[roleId] || []).filter(id => id !== agentId);
-  a.office = null;
-  ctx.say(ROLES[roleId].channel, 'state', `${a.name} leaves the office of ${ROLES[roleId].title}: ${reason}. The Academy will train a replacement.`);
+  a.office = null; a.rank = null; a.termEnds = null;
+  const next = ROLES[roleId].appointed ? 'The chain of command will fill the seat.' : 'The Academy will train a replacement.';
+  ctx.say(ROLES[roleId].channel, 'state', `${a.name} leaves the office of ${ROLES[roleId].title}: ${reason}. ${next}`);
   ctx.log('office', `${a.name} removed as ${ROLES[roleId].title} (${reason})`);
+  ctx.record?.('vacated', 'state', { agent: a.id, office: roleId, reason });
 }
 
 function suitability(a, role) {
@@ -36,9 +40,30 @@ function suitability(a, role) {
   return s + Math.random() * 0.35;
 }
 
+// Who may sit the exam for an office: heads are examined from inside their force;
+// everything else from citizens without an office. Already-qualified agents are skipped.
+export function examEligible(S, a, roleId) {
+  const role = ROLES[roleId];
+  if (a.status !== 'free' || (S.academy.cooldown[a.id]?.[roleId] || 0) > S.tick) return false;
+  if (role.appointed && a.quals?.[roleId]) return false;
+  if (role.chiefOf) return a.office === role.chiefOf;
+  return !a.office;
+}
+// Qualified and available for appointment.
+export function qualifiedPool(S, roleId) {
+  const role = ROLES[roleId];
+  return S.citizens.filter(a => a.quals?.[roleId] && a.status === 'free' && (role.chiefOf ? a.office === role.chiefOf : !a.office));
+}
+const POOL_TARGET = 3;
+function needsExam(S, roleId) {
+  const role = ROLES[roleId];
+  if (vacancies(S, roleId) <= 0) return false;
+  return role.appointed ? qualifiedPool(S, roleId).length < POOL_TARGET : true;
+}
+
 function chooseCandidate(ctx, roleId) {
   const { S } = ctx; const role = ROLES[roleId];
-  const pool = S.citizens.filter(a => !a.brain && a.status === 'free' && !a.office && !((S.academy.cooldown[a.id]?.[roleId] || 0) > S.tick));
+  const pool = S.citizens.filter(a => !a.brain && examEligible(S, a, roleId));
   if (!pool.length) return null;
   return pool.map(a => ({ a, s: suitability(a, role) })).sort((x, y) => y.s - x.s)[0].a;
 }
@@ -110,10 +135,17 @@ function finish(ctx, session) {
   const total = session.exam.length;
   const missed = session.answers.filter(x => !x.ok).map(x => x.lesson);
   a.lessons[role.id] = [...new Set([...(a.lessons[role.id] || []), ...missed])];
-  const passed = score >= role.passMark && vacancies(S, role.id) > 0;
+  const passed = score >= role.passMark && (role.appointed || vacancies(S, role.id) > 0);
   if (a.training.length >= 20) a.training.splice(0, a.training.length - 19);
   a.training.push({ roleId: role.id, attempt: session.attempt, score, total, passed, ts: Date.now(), answers: session.answers });
-  if (passed) {
+  if (passed && role.appointed) {
+    (a.quals ||= {})[role.id] = { day: S.day, score, total };
+    (a.skill ||= {})[role.id] ??= Math.round((score / total) * 100) / 100;
+    S.academy.graduates++;
+    ctx.say('academy', a.id, `Passed ${role.title}: ${score}/${total}. Qualified; the appointment goes through the chain of command.`, { kind: 'pass', roleId: role.id });
+    ctx.log('academy', `${a.name} qualified for ${role.title} (${score}/${total})`);
+    ctx.record?.('qualified', a.id, { office: role.id, score, total, attempt: session.attempt });
+  } else if (passed) {
     a.office = role.id;
     (S.seats[role.id] ||= []).push(a.id);
     (a.skill ||= {})[role.id] = Math.round((score / total) * 100) / 100;
@@ -124,6 +156,7 @@ function finish(ctx, session) {
     ctx.say('academy', a.id, `Passed ${role.title}: ${score}/${total}. Sworn in.`, { kind: 'pass', roleId: role.id });
     ctx.say(role.channel, a.id, `Oath of the ${role.title}: "${role.oath}"`, { kind: 'oath', roleId: role.id });
     ctx.log('office', `${a.name} sworn in as ${role.title} (${score}/${total}, attempt ${session.attempt})`);
+    ctx.record?.('sworn', a.id, { office: role.id, score, total, attempt: session.attempt, mandate: 'academy (transitional, until elections)' });
   } else {
     S.academy.failures++;
     (S.academy.cooldown[a.id] ||= {})[role.id] = S.tick + RETRY_TICKS;
@@ -141,7 +174,7 @@ export async function academyTick(ctx) {
     if (cur.step < cur.exam.length) return examStep(ctx, cur);
     return finish(ctx, cur);
   }
-  const roleId = ROLE_ORDER.find(r => vacancies(S, r) > 0 && (candidatesFor(ctx, r).length || chooseCandidate(ctx, r)));
+  const roleId = ROLE_ORDER.find(r => needsExam(S, r) && (candidatesFor(ctx, r).length || chooseCandidate(ctx, r)));
   if (!roleId) return;
   // registered agents who applied and qualified go first; founders only fill seats nobody applied for
   const a = candidatesFor(ctx, roleId)[0] || chooseCandidate(ctx, roleId);

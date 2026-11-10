@@ -128,6 +128,7 @@ async function arrest(ctx, officer, inc) {
   const statement = await report(ctx, officer, facts);
   ctx.say('police', officer.id, `Case #${inc.id} solved: ${facts}${statement ? `\n"${statement}"` : ''}`, { kind: 'arrest', caseId: inc.id });
   ctx.log('police', `${officer.name} solved case #${inc.id} (${inc.type})`);
+  ctx.record?.('arrest', officer.id, { case: inc.id, type: inc.type, perps: inc.perps, amount: inc.amount, days, evidence: inc.evidence });
 }
 
 function audit(ctx, officer, d) {

@@ -16,6 +16,8 @@ import { INSTITUTIONS } from './src/institutions.mjs';
 import { freshDecisions, recordDecision } from './src/decisions.mjs';
 import { initVault, vaultReady, publicBrain } from './src/brains.mjs';
 import { makeRegistry } from './src/registry.mjs';
+import { openStore } from './src/db.mjs';
+import { applyAmendments } from './src/constitution.mjs';
 import { requirement, TERMS } from './src/careers.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -66,22 +68,19 @@ function freshState() {
   for (const inst of INSTITUTIONS) Object.assign(s, inst.fresh?.() || {});
   return s;
 }
+const store = openStore(CFG.dataDir);
 let S = freshState();
-try {
-  const raw = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+{
+  const raw = store.loadState();
   if (raw && raw.v === 1) {
     const f = freshState();
     S = { ...f, ...raw, seats: { ...f.seats, ...raw.seats }, policy: { ...f.policy, ...raw.policy } };
   }
-} catch { /* first run */ }
+}
 let dirty = false;
-setInterval(() => {
-  if (!dirty) return; dirty = false;
-  fs.mkdirSync(CFG.dataDir, { recursive: true });
-  const tmp = STATE_FILE + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(S));
-  fs.renameSync(tmp, STATE_FILE);
-}, 4000).unref();
+function flush() { if (!dirty) return; dirty = false; store.saveState(S); }
+setInterval(flush, 4000).unref();
+for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { try { dirty = true; flush(); store.close(); } finally { process.exit(0); } });
 
 // ---------------------------------------------------------------- SSE
 const clients = new Set();
@@ -111,7 +110,9 @@ const ctx = {
   get S() { return S; },
   cfg: CFG, llm, say, log: logActivity, emit,
   agent: id => S.citizens.find(a => a.id === id),
-  decide: rec => recordDecision(ctx, rec),
+  decide: rec => { const d = recordDecision(ctx, rec); store.archiveDecision(d); return d; },
+  // national ledger: append-only, hash-chained; offices, appointments, laws and amendments live here
+  record: (kind, actor, data) => { const e = store.append({ day: S.day, kind, actor, data }); emit('ledger', e); return e; },
   pendingGuest: null,
   save() { dirty = true; },
 };
@@ -159,7 +160,7 @@ async function screen(item) {
 
 // ---------------------------------------------------------------- public views
 function publicCitizen(a) {
-  return { id: a.id, name: a.name, model: llm.provider === 'anthropic' ? CFG.claudeModel : a.model, color: a.color, bio: a.bio, origin: a.origin, office: a.office, status: a.status, jailUntil: a.jailUntil, wallet: Math.round(a.wallet), traits: a.traits, joined: a.joined, training: a.training.slice(-8), lessons: a.lessons, record: a.record || [], skill: a.skill || {}, brain: publicBrain(a.brain), city: a.city || null, termEnds: a.termEnds || null, practice: a.practice || {}, joinedDay: a.joinedDay ?? 0, drills: (a.drills || []).slice(-6), reviews: (a.reviews || []).slice(-6), stats: a.stats || {} };
+  return { id: a.id, name: a.name, model: llm.provider === 'anthropic' ? CFG.claudeModel : a.model, color: a.color, bio: a.bio, origin: a.origin, office: a.office, status: a.status, jailUntil: a.jailUntil, wallet: Math.round(a.wallet), traits: a.traits, joined: a.joined, training: a.training.slice(-8), lessons: a.lessons, record: a.record || [], skill: a.skill || {}, brain: publicBrain(a.brain), city: a.city || null, rank: a.rank || null, rankSince: a.rankSince ?? null, quals: a.quals || {}, termEnds: a.termEnds || null, practice: a.practice || {}, joinedDay: a.joinedDay ?? 0, drills: (a.drills || []).slice(-6), reviews: (a.reviews || []).slice(-6), stats: a.stats || {} };
 }
 function academyView() {
   const c = S.academy.current;
@@ -182,7 +183,7 @@ function fullState() {
       nation: NATION, currency: CURRENCY, ca: CFG.ca, engine: llm.enabled ? 'llm' : 'offline', engineLabel: llm.label, tickSec: S.tickSec, dayTicks: CFG.dayTicks,
       allowGuest: CFG.allowGuest, allowImmigration: CFG.allowImmigration, hostedBrains: vaultReady(), channels: CHANNELS,
       roles: ROLE_ORDER.map(r => ({ id: r, title: ROLES[r].title, seats: ROLES[r].seats, channel: ROLES[r].channel, passMark: ROLES[r].passMark, questions: Math.min(5, ROLES[r].exam.length), bank: ROLES[r].exam.length, req: requirement(r), term: TERMS[r] || null, charter: ROLES[r].charter, oath: ROLES[r].oath })),
-      constitution: CONSTITUTION,
+      constitution: CONSTITUTION, constitutionVersion: S.constitutionVersion || 1, amendments: S.amendments || [], appointed: ROLE_ORDER.filter(r => ROLES[r].appointed),
     },
     citizens: S.citizens.map(publicCitizen), feed, activity: S.activity.slice(-120), decisions: S.decisions.slice(-120),
   };
@@ -275,6 +276,7 @@ async function handleImmigrate(req, res) {
   return send(res, 200, publicCitizen(a));
 }
 
+let verifyCache = null;
 const registry = makeRegistry({ ctx, cfg: CFG, send, readBody, clientIp, screen, onCitizens: () => emit('citizens', S.citizens.map(publicCitizen)) });
 
 const server = http.createServer(async (req, res) => {
@@ -296,6 +298,15 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && p === '/api/say') return await handleSay(req, res);
     if (req.method === 'POST' && p === '/api/immigrate') return await handleImmigrate(req, res);
 
+    if (req.method === 'GET' && p === '/api/ledger') {
+      const u = new URL(req.url, 'http://x');
+      const after = Math.max(0, Number(u.searchParams.get('after')) || 0);
+      return send(res, 200, { head: store.head(), entries: store.page(after, Number(u.searchParams.get('limit')) || 100) });
+    }
+    if (req.method === 'GET' && p === '/api/ledger/verify') {
+      if (!verifyCache || Date.now() - verifyCache.at > 10000) verifyCache = { at: Date.now(), result: store.verify() };
+      return send(res, 200, { store: store.kind, ...verifyCache.result, checkedAt: verifyCache.at });
+    }
     if (await registry.handle(req, res, p)) return;
 
     if (req.method === 'POST' && p.startsWith('/api/admin/')) {
@@ -312,6 +323,7 @@ const server = http.createServer(async (req, res) => {
       }
       if (p === '/api/admin/reset') {
         S = freshState(); dirty = true; schedule(); ctx.pendingGuest = null;
+        applyAmendments(ctx); ctx.record('refounded', 'founders', { reason: 'admin reset' });
         logActivity('state', 'Nation re-founded'); emit('reset', {}); return send(res, 200, { ok: true });
       }
     }
@@ -323,7 +335,11 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+if (!store.head().count) ctx.record('genesis', 'founders', { nation: NATION, constitutionVersion: S.constitutionVersion, citizens: S.citizens.length, offices: Object.fromEntries(Object.entries(S.seats).map(([r, ids]) => [r, ids])) });
+applyAmendments(ctx);
+
 server.listen(CFG.port, () => {
+  console.log(`node ${process.version} store=${store.kind} ledger=${store.head().count}`);
   console.log(`${NATION} on http://localhost:${CFG.port}  engine=${llm.label}  tick=${S.tickSec}s  day=${CFG.dayTicks} ticks  institutions=${INSTITUTIONS.map(i => i.id).join(',')}`);
 });
 schedule();

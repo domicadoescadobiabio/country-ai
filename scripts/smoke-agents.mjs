@@ -110,7 +110,9 @@ export async function run({ BASE, DATA, get, until, check, wait, mock }) {
   const pub = JSON.stringify(await get('/api/state'));
   check('owner API key never appears in public state', !pub.includes(SECRET) && !pub.includes('"enc"') && !pub.includes('keyHash'));
   await wait(4500); // let the store flush
-  const disk = fs.readFileSync(path.join(DATA, 'state.json'), 'utf8');
+  let disk;
+  try { const { DatabaseSync } = await import('node:sqlite'); const db = new DatabaseSync(path.join(DATA, 'country.db'), { readOnly: true }); disk = db.prepare('SELECT json FROM state WHERE id = 1').get().json; db.close(); }
+  catch { disk = fs.readFileSync(path.join(DATA, 'state.json'), 'utf8'); }
   check('owner API key is encrypted at rest', !disk.includes(SECRET) && disk.includes('"enc"'));
 
   // ---------------- key rotation + delete

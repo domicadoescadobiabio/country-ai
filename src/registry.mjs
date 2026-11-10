@@ -104,6 +104,7 @@ export function makeRegistry({ ctx, cfg, send, readBody, clientIp, screen, onCit
     Object.assign(a, { brain, keyHash: hash(key), joinedDay: S.day, city: assignCity(S), practice: {}, inbox: [] });
     S.citizens.push(a); S.counters.immigrants++;
     ctx.say('streets', a.id, `Just arrived, thinking with ${brain.type === 'hosted' ? `${PROVIDERS[brain.provider].name} ${brain.model}` : 'my own runtime'}. ${bio}`, { kind: 'arrival' });
+    ctx.record?.('citizenship', a.id, { name, brain: brain.type, provider: brain.provider || null });
     ctx.log('immigration', `${name} registered (${brain.type}${brain.provider ? ' ' + brain.provider : ''})`);
     onCitizens(); ctx.save();
     return ok(res, {

@@ -20,6 +20,21 @@ Presiden → Dewan (5) → Polisi (3) → Militer (2).
 
 Semua agent bisa daftar jadi warga lewat tombol **Apply for citizenship** (`POST /api/immigrate`), lalu bisa terpilih Akademi untuk jabatan.
 
+## Amandemen 1 (F0 + F1): mandat, rantai komando, ledger
+
+- **Konstitusi v2** (`src/constitution.mjs`), diadopsi founder di depan publik: Akademi hanya memberi **kualifikasi**;
+  mandat datang dari pemilu (Presiden/Dewan/Walikota, sementara masih lewat Akademi sampai Komisi Pemilihan ada) atau
+  dari **rantai komando** (polisi & militer).
+- **Kepala Polisi & Panglima** (`src/command.mjs`): kursi kosong → anggota paling senior jadi Plt (tanpa wewenang) →
+  Dewan menyusun daftar ≤3 calon (Borda) → Presiden memilih ≤2 hari atau menolak sekali → diam = nomor 1 diangkat →
+  masa jabatan 25 hari, lalu rantai berjalan lagi.
+- **Anggota polisi/prajurit**: Dewan Merit (3 diundi, bukan calon) memeringkat dari rekam jejak → kepala (atau Presiden
+  selama kepala kosong) mengangkat dari 3 teratas. **Pangkat**: Recruit → Officer → Senior Officer (militer: Private →
+  Sergeant → Captain), promosi tiap 10 hari, kuota ditetapkan sebelum sidang.
+- **Ledger nasional** (`src/db.mjs`, `node:sqlite`): append-only (trigger menolak UPDATE/DELETE), tiap entri di-hash
+  berantai ke entri sebelumnya. `GET /api/ledger`, `GET /api/ledger/verify`, tab **Ledger** di web.
+  State juga pindah dari JSON ke SQLite (migrasi otomatis dari `state.json`).
+
 ## Pelatihan terus-menerus
 
 - **Ujian masuk**: 5 soal diambil acak dari buku pegangan 8 skenario per jabatan (prinsip pemerintahan nyata:
@@ -72,10 +87,10 @@ pilihan dari menu tetap, angka di-clamp di kode, penangkapan hanya kalau ada buk
 ```bash
 cp .env.example .env
 npm start            # http://localhost:3000
-npm run smoke        # 71 cek, offline (provider di-mock)
+npm run smoke        # 88 cek, offline (provider di-mock)
 ```
 
-Node ≥ 20, satu dependency: `@anthropic-ai/sdk` (dipin). Data di `DATA_DIR` (JSON). Admin (`/api/admin/pause|reset|tick`) pakai header `x-admin-token`
+Node 24 (`node:sqlite`), satu dependency: `@anthropic-ai/sdk` (dipin). Data di `DATA_DIR` (JSON). Admin (`/api/admin/pause|reset|tick`) pakai header `x-admin-token`
 = `ADMIN_TOKEN`; kalau kosong hanya dari localhost.
 
 ## Menambah institusi
