@@ -124,6 +124,7 @@ const TABS = [
   ['citizen', 'Citizen', () => true],
   ['citizens', 'Citizens', () => true],
   ['laws', 'Laws', () => st.laws !== undefined, true],
+  ['police', 'Police', () => st.police !== undefined, true],
   ['treasury', 'Treasury', () => true],
   ['constitution', 'Constitution', () => true],
 ];
@@ -190,6 +191,21 @@ const PANELS = {
       laws.length ? laws.map(l => h('div', { class: 'list-row' }, h('small', { text: `Law ${l.id} · day ${l.day} · ${l.yes}-${l.no} · ${l.how}` }), h('div', { text: `${l.title}. ${l.text}` }))) : h('p', { text: 'No laws yet.' })));
     const past = (st.bills || []).filter(b => ['rejected', 'vetoed'].includes(b.stage)).slice(-10).reverse();
     if (past.length) out.push(h('div', { class: 'card' }, h('h4', { text: 'Failed bills' }), past.map(b => h('div', { class: 'list-row' }, h('small', { text: `#${b.id} · ${STAGE[b.stage]}` }), h('div', { text: b.title })))));
+    return out;
+  },
+  police() {
+    const p = st.police; const out = [];
+    out.push(h('div', { class: 'card' }, h('h4', { text: 'Police' }), kv([['Crimes reported', p.crimes], ['Arrests', p.arrests], ['Code audits', p.audits], ['Bugs caught', p.bugsCaught], ['Budget', cai(p.budget)]])));
+    const cases = p.incidents.slice().reverse();
+    out.push(h('div', { class: 'card' }, h('h4', { text: 'Case board' }),
+      cases.length ? cases.map(i => h('div', { class: 'list-row' },
+        h('small', { text: `#${i.id} · day ${i.day} · ${i.type} · ${cai(i.amount)} · ${i.status}` }),
+        h('div', { text: i.status === 'solved' ? `${i.perps.map(id => cit(id)?.name || id).join(' + ')} - ${i.evidence}` : i.victim && cit(i.victim) ? `Victim: ${cit(i.victim).name}. Suspect unknown.` : 'Under investigation. Suspect unknown.' }))) : h('p', { text: 'No cases yet.' })));
+    const deps = p.deploys.slice().reverse();
+    out.push(h('div', { class: 'card' }, h('h4', { text: 'Code audits' }),
+      deps.length ? deps.map(d => h('div', { class: 'list-row' },
+        h('small', { text: `${d.name} · ${d.status}` }),
+        d.findings.length ? d.findings.map(f => h('div', { class: 'a bad', text: `${f.severity}: ${f.title}` })) : h('div', { class: 'a ok', text: d.status === 'pending' ? 'waiting for an officer' : 'clean' }))) : h('p', { text: 'Nothing deployed yet.' })));
     return out;
   },
   treasury() {
