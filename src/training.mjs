@@ -65,6 +65,12 @@ function finish(ctx, cur) {
 
 function recall(ctx, a, why) {
   const role = ROLES[a.office];
+  if (role.elected) { // Art. 15: the people decide
+    ctx.decide({ agentId: 'state', role: 'state', type: 'recall', title: `Recall vote triggered for ${role.title} ${a.name}`, inputs: [['Reason', why]], options: ['Dismiss by the state', 'Recall vote of the people'], chosen: 'Recall vote of the people', reason: 'Art. 15: an elected official is not dismissed by the state; the voters decide.', checks: [['Elected office goes to the voters', true]], outcome: 'Recall vote opened' });
+    import('./elections.mjs').then(m => m.startRecall(ctx, a, why));
+    a.drillFails = 0;
+    return;
+  }
   ctx.decide({
     agentId: 'state', role: 'state', type: 'recall',
     title: `Recall of ${role.title} ${a.name}`,

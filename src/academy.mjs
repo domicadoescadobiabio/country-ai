@@ -45,25 +45,31 @@ function suitability(a, role) {
 export function examEligible(S, a, roleId) {
   const role = ROLES[roleId];
   if (a.status !== 'free' || (S.academy.cooldown[a.id]?.[roleId] || 0) > S.tick) return false;
-  if (role.appointed && a.quals?.[roleId]) return false;
+  if ((role.appointed || role.elected) && a.quals?.[roleId]) return false;
   if (role.chiefOf) return a.office === role.chiefOf;
+  if (role.elected) return a.office !== roleId; // anyone may qualify to run, except the holder
   return !a.office;
 }
 // Qualified and available for appointment.
 export function qualifiedPool(S, roleId) {
   const role = ROLES[roleId];
-  return S.citizens.filter(a => a.quals?.[roleId] && a.status === 'free' && (role.chiefOf ? a.office === role.chiefOf : !a.office));
+  return S.citizens.filter(a => a.quals?.[roleId] && a.status === 'free' && (role.chiefOf ? a.office === role.chiefOf : role.elected ? a.office !== roleId : !a.office));
 }
 const POOL_TARGET = 3;
+// Mayors run in their own city: every city needs at least two qualified residents.
+const thinCities = (S, roleId) => Object.keys(S.cities || {}).filter(c => qualifiedPool(S, roleId).filter(a => a.city === c).length < 2);
 function needsExam(S, roleId) {
   const role = ROLES[roleId];
+  if (role.cityBased) return thinCities(S, roleId).length > 0;
+  if (role.elected) return qualifiedPool(S, roleId).length < role.seats + 3; // enough people to run against each other
   if (vacancies(S, roleId) <= 0) return false;
   return role.appointed ? qualifiedPool(S, roleId).length < POOL_TARGET : true;
 }
 
 function chooseCandidate(ctx, roleId) {
   const { S } = ctx; const role = ROLES[roleId];
-  const pool = S.citizens.filter(a => !a.brain && examEligible(S, a, roleId));
+  const thin = role.cityBased ? thinCities(S, roleId) : null;
+  const pool = S.citizens.filter(a => !a.brain && examEligible(S, a, roleId) && (!thin || thin.includes(a.city)));
   if (!pool.length) return null;
   return pool.map(a => ({ a, s: suitability(a, role) })).sort((x, y) => y.s - x.s)[0].a;
 }
@@ -135,14 +141,14 @@ function finish(ctx, session) {
   const total = session.exam.length;
   const missed = session.answers.filter(x => !x.ok).map(x => x.lesson);
   a.lessons[role.id] = [...new Set([...(a.lessons[role.id] || []), ...missed])];
-  const passed = score >= role.passMark && (role.appointed || vacancies(S, role.id) > 0);
+  const passed = score >= role.passMark && (role.appointed || role.elected || vacancies(S, role.id) > 0);
   if (a.training.length >= 20) a.training.splice(0, a.training.length - 19);
   a.training.push({ roleId: role.id, attempt: session.attempt, score, total, passed, ts: Date.now(), answers: session.answers });
-  if (passed && role.appointed) {
+  if (passed && (role.appointed || role.elected)) {
     (a.quals ||= {})[role.id] = { day: S.day, score, total };
     (a.skill ||= {})[role.id] ??= Math.round((score / total) * 100) / 100;
     S.academy.graduates++;
-    ctx.say('academy', a.id, `Passed ${role.title}: ${score}/${total}. Qualified; the appointment goes through the chain of command.`, { kind: 'pass', roleId: role.id });
+    ctx.say('academy', a.id, `Passed ${role.title}: ${score}/${total}. Qualified; ${role.elected ? 'may now run in elections for this office' : 'the appointment goes through the chain of command'}.`, { kind: 'pass', roleId: role.id });
     ctx.log('academy', `${a.name} qualified for ${role.title} (${score}/${total})`);
     ctx.record?.('qualified', a.id, { office: role.id, score, total, attempt: session.attempt });
   } else if (passed) {
@@ -174,7 +180,13 @@ export async function academyTick(ctx) {
     if (cur.step < cur.exam.length) return examStep(ctx, cur);
     return finish(ctx, cur);
   }
-  const roleId = ROLE_ORDER.find(r => needsExam(S, r) && (candidatesFor(ctx, r).length || chooseCandidate(ctx, r)));
+  // round-robin over offices so no office starves (vacant seats first, then qualification pools)
+  const from = (S.academy.lastRoleIdx ?? -1) + 1;
+  const order = ROLE_ORDER.map((_, i) => ROLE_ORDER[(from + i) % ROLE_ORDER.length]);
+  // agents who applied are always examined; otherwise only offices that need more qualified people
+  const ready = r => candidatesFor(ctx, r).length || (needsExam(S, r) && chooseCandidate(ctx, r));
+  const roleId = order.find(r => vacancies(S, r) > 0 && !ROLES[r].elected && ready(r)) || order.find(ready);
+  if (roleId) S.academy.lastRoleIdx = ROLE_ORDER.indexOf(roleId);
   if (!roleId) return;
   // registered agents who applied and qualified go first; founders only fill seats nobody applied for
   const a = candidatesFor(ctx, roleId)[0] || chooseCandidate(ctx, roleId);

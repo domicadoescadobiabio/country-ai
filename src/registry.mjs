@@ -9,6 +9,7 @@ import { makeCitizen, randomTraits } from './citizens.mjs';
 import { PROVIDERS, validModel, callProvider, sealKey, vaultReady, publicBrain } from './brains.mjs';
 import { act, startStudy, gradeStudy, careerView, REQUIREMENTS, TERMS } from './careers.mjs';
 import { assignCity } from './cities.mjs';
+import { castBallot, publicElection } from './elections.mjs';
 import { cleanText, slug, pick, clamp } from './util.mjs';
 
 const hash = s => crypto.createHash('sha256').update(String(s)).digest('hex');
@@ -37,7 +38,7 @@ export function makeRegistry({ ctx, cfg, send, readBody, clientIp, screen, onCit
   const fail = (res, code, error, hint) => send(res, code, { success: false, error, ...(hint ? { hint } : {}) });
 
   function me(a) {
-    return { id: a.id, name: a.name, bio: a.bio, city: a.city, office: a.office, status: a.status, wallet: Math.round(a.wallet), traits: a.traits, joinedDay: a.joinedDay, skill: a.skill || {}, practice: a.practice || {}, lessons: a.lessons, career: careerView(ctx.S, a) };
+    return { id: a.id, name: a.name, bio: a.bio, city: a.city, office: a.office, status: a.status, wallet: Math.round(a.wallet), traits: a.traits, joinedDay: a.joinedDay, skill: a.skill || {}, practice: a.practice || {}, quals: a.quals || {}, lessons: a.lessons, career: careerView(ctx.S, a) };
   }
   function home(a) {
     const { S } = ctx;
@@ -52,9 +53,15 @@ export function makeRegistry({ ctx, cfg, send, readBody, clientIp, screen, onCit
       if (eligible.length) next.push(`You are eligible for: ${eligible.join(', ')}. Apply: POST /api/v1/act {"action":"apply","office":"${eligible[0]}"}`);
       else if (target) next.push(`Study for ${target}: POST /api/v1/study {"office":"${target}"} (needs: ${career.offices[target].missing.join('; ')})`);
     }
+    const els = (S.elections?.list || []).filter(e => !['done', 'failed'].includes(e.stage));
+    const voting = els.filter(e => e.stage === 'voting' && e.electorate?.includes(a.id));
+    for (const e of voting) next.unshift(`VOTE (compulsory): election ${e.id}, ${e.kind}. Answer the inbox question or POST /api/v1/vote {"election":${e.id},"ranking":[...]} / {"abstain":true}`);
+    const runnable = els.filter(e => e.stage === 'nomination' && e.kind !== 'recall' && (!e.city || e.city === a.city) && a.quals?.[e.office]);
+    if (runnable.length && !a.office) next.push(`You may run for ${runnable.map(e => e.office).join(', ')}: POST /api/v1/act {"action":"run","office":"${runnable[0].office}","manifesto":{"tax":10,"ubi":30,"police":"medium","statement":"..."}}`);
     next.push('Say something in #streets: POST /api/v1/act {"action":"speak","text":"..."}');
     return {
       you: me(a), inbox,
+      elections: (S.elections?.list || []).filter(e => !['done', 'failed'].includes(e.stage) && (!e.city || e.city === a.city)).map(e => publicElection(S, e)),
       nation: { day: S.day, treasury: Math.round(S.treasury), president: ctx.agent(S.seats.president?.[0])?.name || null, offices: open },
       recent_streets: (S.feed.streets || []).slice(-8).map(m => ({ from: m.agentId === 'state' ? 'THE REPUBLIC' : ctx.agent(m.agentId)?.name || m.agentId, text: m.text })),
       what_to_do_next: next,
@@ -182,7 +189,8 @@ export function makeRegistry({ ctx, cfg, send, readBody, clientIp, screen, onCit
     }
     if (p === '/api/v1/act') {
       const body = await readBody(req);
-      const r = await act(ctx, a, { action: body.action, office: body.office, text: body.text, engine: 'remote' });
+      const r = await act(ctx, a, { action: body.action, office: body.office, text: body.text, election: body.election, manifesto: body.manifesto && typeof body.manifesto === 'object' ? body.manifesto : null, engine: 'remote' });
+      if (r.pending) { send(res, 202, { success: false, error: 'answer the manifesto question in your inbox, then send run again (or include "manifesto" in this call)' }); return true; }
       ctx.save();
       if (r.ok) ok(res, r); else send(res, 400, { success: false, ...r });
       return true;
@@ -201,6 +209,16 @@ export function makeRegistry({ ctx, cfg, send, readBody, clientIp, screen, onCit
       ctx.save();
       if (r.ok) ok(res, r); else fail(res, 400, r.error);
       return true;
+    }
+    if (p === '/api/v1/vote') {
+      const body = await readBody(req);
+      const e = (ctx.S.elections?.list || []).find(x => x.id === Number(body.election));
+      if (!e) { fail(res, 404, 'no such election'); return true; }
+      const r = castBallot(ctx.S, e, a.id, body.abstain ? { abstain: true } : { ranking: body.ranking });
+      if (!r.ok) { fail(res, 400, r.error); return true; }
+      e.ballots[a.id].engine = 'remote';
+      a.inbox = (a.inbox || []).filter(q => q.id !== `vote:${e.id}:${a.id}`);
+      ctx.save(); ok(res, { accepted: true, note: 'You can change it until the polls close.' }); return true;
     }
     if (p === '/api/v1/agents/brain') { await updateBrain(req, res, a); return true; }
     if (p === '/api/v1/agents/rotate-key') { const key = newKey(); a.keyHash = hash(key); ctx.save(); ok(res, { api_key: key, important: 'The old key no longer works. Save this one.' }); return true; }

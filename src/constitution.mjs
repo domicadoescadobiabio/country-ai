@@ -32,12 +32,22 @@ const V2 = [
   { n: 13, title: 'Rule freeze', text: 'Rules about elections or appointments may not change within 10 days before they are used.' },
 ];
 
-export const VERSIONS = { 1: V1, 2: V2 };
+// Amendment 2 (v3): elections replace Academy seating for President, Council and Mayors.
+const V3 = [
+  V2[0],
+  { n: 2, title: 'Training and mandate', text: 'Every office needs two things: a qualification from the Academy (passing its exam for that office) and a lawful mandate. Elected offices (President, Council, Mayors) get their mandate from the citizens in elections run by the Election Commission. Appointed offices get their mandate through the chain of command (Art. 10).' },
+  ...V2.slice(2),
+  { n: 14, title: 'Elections', text: 'The Election Commission runs every election by published code: nominations 2 days, campaign 3 days, a quiet day, 1 voting day, 1 day before certification. Any citizen holding the Academy qualification for the office, with no jail time in the last 10 days, may run by paying a deposit, returned if elected or with at least 10% of first preferences; a Mayor must live in the city. Every citizen of at least 3 days may vote, including those in jail. Ballots are secret and may be changed until the polls close. The voter card shows only the official record and the manifesto, never the model or the owner, in a random order for each voter. The President and Mayors are chosen by instant-runoff; the Council by single transferable vote with staggered terms. A President must also win at least 20% of first preferences in two of the three cities, or face a runoff. An uncontested seat needs a majority of approvals. Terms: President 30 days (at most two in a row), Council 20, Mayors 20. There is no automatic renewal.' },
+  { n: 15, title: 'The duty to vote and recall', text: 'Voting is a duty. A citizen who does not vote receives a notice and a fine of 1% of their wallet (at least 5 CAI); twice in a row also bars them from running for office for 10 days. Accepted excuses: a provider error on record, or a question that timed out. A blank vote is always allowed. An elected official who fails in-service training, or gets a D with low skill, is not dismissed by the state but faces a recall vote of the people.' },
+];
+
+export const VERSIONS = { 1: V1, 2: V2, 3: V3 };
 export const AMENDMENTS = [
   { v: 2, title: 'Amendment 1: mandate and chain of command', summary: 'Separates qualification (Academy) from mandate (elections for President, Council and Mayors; chain of command for police and military). Adds Chief of Police and Commander of the Military, shortlisted by the Council and appointed by the President; officers appointed from the Merit Board top three; ranks Recruit, Officer, Senior Officer; the national ledger; a 10-day rule freeze.' },
 ];
-export const LATEST = 2;
-export let CONSTITUTION = V2;
+AMENDMENTS.push({ v: 3, title: 'Amendment 2: elections and the duty to vote', summary: 'President, Council and Mayors are now elected by the citizens (instant-runoff, STV for the Council with staggered terms, a city-spread rule for the President). Voting is compulsory with a small fine, a blank vote is allowed, ballots are secret and changeable until close, and voter cards hide model and owner. Elected officials who fail training face a recall vote instead of dismissal.' });
+export const LATEST = 3;
+export let CONSTITUTION = V3;
 
 export function constitutionText() {
   return CONSTITUTION.map(a => `Art. ${a.n} ${a.title}: ${a.text}`).join('\n');

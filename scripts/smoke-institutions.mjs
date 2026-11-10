@@ -63,7 +63,7 @@ export async function runTraining({ get, until, check }) {
   const roles = new Set(ds.map(d => d.role));
   check('decisions logged for president, council, police and military', ['president', 'council', 'police', 'military'].every(r => roles.has(r)), JSON.stringify([...roles]));
   check('every decision has a reason and checks', ds.every(d => d.reason && Array.isArray(d.checks)), JSON.stringify(ds.find(d => !d.reason || !Array.isArray(d.checks))));
-  const single = ds.filter(d => !['nominate', 'merit', 'promote'].includes(d.type)); // those pick several
+  const single = ds.filter(d => !['nominate', 'merit', 'promote', 'election'].includes(d.type)); // those pick several
   check('every decision picked one of its options', single.every(d => !d.options.length || d.options.some(o => o === d.chosen || o.startsWith(d.chosen + ' '))), JSON.stringify(single.find(d => d.options.length && !d.options.some(o => o === d.chosen || o.startsWith(d.chosen + ' ')))));
   check('executive orders stay within the 5% cap', ds.filter(d => d.type === 'order').every(d => d.checks[0][1]));
   check('no arrest without evidence', ds.filter(d => d.type === 'arrest').every(d => d.checks[0][1]));

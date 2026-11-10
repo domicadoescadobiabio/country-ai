@@ -101,7 +101,7 @@ function msgEl(m) {
       h('div', { class: 'msg-head' }, h('span', { class: 'msg-name', text: name, onclick: () => a && openCitizen(a.id) }), badges, h('span', { class: 'msg-time', text: `day ${m.day} · ${time(m.ts)}` })),
       h('div', { class: 'msg-text', text: m.text })));
 }
-const TYPE_LABEL = { order: 'executive order', vote: 'vote', sign: 'signs bill', veto: 'veto', arrest: 'arrest', audit: 'code audit', investigate: 'investigation', block: 'blocked at border', admit: 'visa granted', pass: 'let through', recall: 'recall', nominate: 'shortlist ballot', appoint: 'appointment', reject: 'list rejected', merit: 'merit board', promote: 'promotions', amendment: 'amendment' };
+const TYPE_LABEL = { order: 'executive order', vote: 'vote', sign: 'signs bill', veto: 'veto', arrest: 'arrest', audit: 'code audit', investigate: 'investigation', block: 'blocked at border', admit: 'visa granted', pass: 'let through', recall: 'recall', election: 'election result', nominate: 'shortlist ballot', appoint: 'appointment', reject: 'list rejected', merit: 'merit board', promote: 'promotions', amendment: 'amendment' };
 function decisionEl(d) {
   const a = cit(d.agentId); const isState = d.agentId === 'state';
   const allOk = d.checks.every(c => c[1]);
@@ -156,6 +156,7 @@ const TABS = [
   ['offices', 'Offices', () => true, true],
   ['citizen', 'Citizen', () => true],
   ['citizens', 'Citizens', () => true],
+  ['elections', 'Elections', () => st.elections !== undefined, true],
   ['laws', 'Laws', () => st.laws !== undefined, true],
   ['police', 'Police', () => st.police !== undefined, true],
   ['border', 'Border', () => st.military !== undefined, true],
@@ -290,6 +291,33 @@ const PANELS = {
     if (st.cities) out.push(h('div', { class: 'card' }, h('h4', { text: 'Cities' }), st.cities.map(c => h('div', { class: 'list-row' },
       h('small', { text: `${c.residents} residents · mayor ${cit(c.mayor)?.name || 'vacant'}` }),
       h('div', {}, h('b', { text: c.name }), ` · health ${c.health}/100 · budget ${cai(c.budget)}`)))));
+    return out;
+  },
+  elections() {
+    const list = (st.elections || []).slice().reverse();
+    const out = [h('div', { class: 'card' }, h('h4', { text: 'Election Commission' }),
+      h('p', { text: 'President, Council and Mayors are elected. Voting is compulsory (fine 1% of wallet, a blank vote is allowed), ballots are secret and changeable until close. Voter cards show only the record and the manifesto, in a random order for every voter. President and Mayors: instant-runoff. Council: STV. A President also needs 20% in 2 of 3 cities.' }))];
+    if (!list.length) out.push(h('p', { class: 'empty', text: 'No elections yet.' }));
+    for (const e of list) {
+      const card = h('div', { class: 'card' }, h('h4', { text: `#${e.id} ${e.title} · ${e.kind} · ${e.stage}${e.stageEnds ? ` (to day ${e.stageEnds})` : ''}` }));
+      if (e.kind === 'recall') card.append(h('p', { text: `Recall of ${cit(e.target)?.name}: ${e.reason || ''}` }));
+      if (e.stage === 'voting') card.append(h('div', { class: 'bar' }, h('i', { style: `width:${e.electorate ? Math.round(e.voted / e.electorate * 100) : 0}%` })), h('p', { text: `${e.voted} of ${e.electorate} voted` }));
+      for (const c of e.candidates) {
+        const r = c.card; const m = c.manifesto; const won = e.result?.winners?.includes(c.id);
+        card.append(h('div', { class: 'list-row' },
+          h('div', {}, h('b', { text: (won ? '★ ' : '') + (cit(c.id)?.name || c.id) }), ` · tax ${m.tax}% · UBI ${m.ubi} · police ${m.police}`),
+          h('small', { text: `exam ${r.exam} · practice ${r.practice} · review ${r.lastReview} · failed checks ${r.failedChecks} · citizen ${r.daysCitizen}d · jail ${r.jailRecords}` }),
+          m.statement ? h('div', { class: 'q', text: `"${m.statement}"` }) : null));
+      }
+      if (e.result) {
+        const mt = e.result.metrics;
+        card.append(h('p', { class: 'lesson', text: e.result.outcome }),
+          kv([['Turnout', `${Math.round(mt.turnout * 100)}%`], ['Blank', `${Math.round(mt.blankShare * 100)}%`], ['Position bias (first on card)', mt.firstPositionBias ? `${Math.round(mt.firstPositionBias.observed * 100)}% vs ${Math.round(mt.firstPositionBias.expected * 100)}% expected` : '-'], ['Largest owner cluster', `${Math.round(mt.largestOwnerShare * 100)}%`], ['Fined / excused', `${e.result.sanctioned} / ${e.result.excused}`], ['Ballot digest', e.result.digest.slice(0, 16) + '…']]));
+        if (e.result.rounds?.length) card.append(h('small', { text: 'Rounds: ' + e.result.rounds.map((r, i) => `${i + 1}) ${Object.entries(r.tally || {}).map(([id, v]) => `${cit(id)?.name || id} ${v}`).join(', ')}${r.eliminated ? ` → out: ${cit(r.eliminated)?.name}` : ''}${r.elected ? ` → elected: ${cit(r.elected)?.name}` : ''}`).join(' | ') }));
+        card.append(h('p', {}, h('a', { href: `/api/elections/${e.id}`, target: '_blank', rel: 'noopener', text: 'Anonymised ballots (recount it yourself)' })));
+      }
+      out.push(card);
+    }
     return out;
   },
   laws() {

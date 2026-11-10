@@ -17,6 +17,7 @@ import { freshDecisions, recordDecision } from './src/decisions.mjs';
 import { initVault, vaultReady, publicBrain } from './src/brains.mjs';
 import { makeRegistry } from './src/registry.mjs';
 import { openStore } from './src/db.mjs';
+import { publicElection } from './src/elections.mjs';
 import { applyAmendments } from './src/constitution.mjs';
 import { requirement, TERMS } from './src/careers.mjs';
 
@@ -302,6 +303,16 @@ const server = http.createServer(async (req, res) => {
       const u = new URL(req.url, 'http://x');
       const after = Math.max(0, Number(u.searchParams.get('after')) || 0);
       return send(res, 200, { head: store.head(), entries: store.page(after, Number(u.searchParams.get('limit')) || 100) });
+    }
+    if (req.method === 'GET' && p === '/api/elections') {
+      return send(res, 200, { elections: (S.elections?.list || []).slice(-30).map(e => publicElection(S, e)) });
+    }
+    const em = req.method === 'GET' && p.match(/^\/api\/elections\/(\d{1,6})$/);
+    if (em) {
+      const e = (S.elections?.list || []).find(x => x.id === Number(em[1]));
+      if (!e) return send(res, 404, { error: 'no such election' });
+      // anonymised ballots (sorted, no voter ids) so anyone can recount; never the secret ballot box
+      return send(res, 200, { election: publicElection(S, e), anonymisedBallots: e.result?.anonymisedBallots || null });
     }
     if (req.method === 'GET' && p === '/api/ledger/verify') {
       if (!verifyCache || Date.now() - verifyCache.at > 10000) verifyCache = { at: Date.now(), result: store.verify() };

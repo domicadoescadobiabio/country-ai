@@ -30,7 +30,7 @@ await new Promise(r => mock.listen(0, '127.0.0.1', r));
 const child = spawn(process.execPath, ['server.mjs'], {
   cwd: ROOT,
   env: { ...process.env, PORT: String(PORT), DATA_DIR: DATA, TICK_SECONDS: '0.05', DAY_TICKS: '4', OPENROUTER_API_KEY: '', ANTHROPIC_API_KEY: '', ADMIN_TOKEN: TOKEN, IMMIGRANTS_PER_HOUR: '50',
-    BRAIN_SECRET: 'smoke-brain-secret', ANTHROPIC_BASE_URL: `http://127.0.0.1:${mock.address().port}`, REGISTER_COOLDOWN_MS: '0', CAREER_DAYS_SCALE: '0.3' },
+    BRAIN_SECRET: 'smoke-brain-secret', ANTHROPIC_BASE_URL: `http://127.0.0.1:${mock.address().port}`, REGISTER_COOLDOWN_MS: '0', CAREER_DAYS_SCALE: '0.3', ELECTION_MIN_VOTING_MS: '5000' },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 let stderr = '';
@@ -59,7 +59,7 @@ try {
   check('founders exist', s0.citizens.length >= 10);
 
   // --- Academy + President
-  const s1 = await until(s => s.seats.president?.length === 1, 30000);
+  const s1 = await until(s => s.seats.president?.length === 1, 90000);
   check('president trained and sworn in', s1.seats.president.length === 1);
   const pres = s1.citizens.find(a => a.id === s1.seats.president[0]);
   const pt = pres?.training.find(t => t.roleId === 'president' && t.passed);
@@ -73,12 +73,12 @@ try {
   check('failed candidates keep written lessons', failedPeople.every(a => Object.values(a.lessons).flat().length > 0));
 
   // --- order of seating: no lower office is filled before the ones above it are full
-  const st = await until(s => roles.every(r => s.seats[r].length === s.config.roles.find(x => x.id === r).seats), 120000);
+  const st = await until(s => roles.every(r => s.seats[r].length === s.config.roles.find(x => x.id === r).seats), 300000);
   const filled = roles.map(r => [r, st.seats[r].length, st.config.roles.find(x => x.id === r).seats]);
   check('all offices filled in constitutional order', filled.every(([, n, max]) => n === max), JSON.stringify(filled));
   const seatedIds = roles.flatMap(r => st.seats[r]);
   check('nobody holds two offices', new Set(seatedIds).size === seatedIds.length);
-  check('every office holder passed its exam', seatedIds.every(id => { const a = st.citizens.find(x => x.id === id); return a.training.some(t => t.roleId === a.office && t.passed); }));
+  check('every office holder holds the qualification for it', seatedIds.every(id => { const a = st.citizens.find(x => x.id === id); return a.quals?.[a.office] || a.training.some(t => t.roleId === a.office && t.passed); }));
 
   // --- visitors + immigration
   const r1 = await postRaw('/api/say', { text: 'hello republic, how is the budget?' });
@@ -107,6 +107,8 @@ try {
   if (extra) await extra.run({ get, postRaw, until, check, wait, TOKEN });
   const command = await import('./smoke-command.mjs');
   await command.run({ BASE, get, until, check });
+  const elections = await import('./smoke-elections.mjs');
+  await elections.run({ BASE, get, until, check });
   const agents = await import('./smoke-agents.mjs');
   await agents.run({ BASE, DATA, get, until, check, wait, mock });
 

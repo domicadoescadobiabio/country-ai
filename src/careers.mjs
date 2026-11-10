@@ -55,7 +55,7 @@ export function onSworn(ctx, a, roleId) {
 }
 
 // ---------------------------------------------------------------- actions (shared by API and hosted brains)
-export const ACTIONS = ['speak', 'study', 'apply', 'withdraw', 'work', 'rest'];
+export const ACTIONS = ['speak', 'study', 'apply', 'withdraw', 'run', 'work', 'rest'];
 
 export async function act(ctx, a, input) {
   const { S } = ctx;
@@ -89,6 +89,19 @@ export async function act(ctx, a, input) {
       ctx.say('academy', a.id, `Applies for ${ROLES[roleId].title}. Practice accuracy ${Math.round(e.accuracy * 100)}% over ${e.practiced} questions, citizen for ${ageDays(S, a)} days.`, { kind: 'apply', roleId });
     }
     return { ok: true, queue: list.length };
+  }
+  if (action === 'run') {
+    const { openElectionsFor, declare, announce, ELECTED } = await import('./elections.mjs');
+    const roleId = String(input.office || '').toLowerCase();
+    const open = openElectionsFor(S, a).filter(e => (!input.election || e.id === Number(input.election)) && (!roleId || e.office === roleId) && (!e.city || e.city === a.city));
+    if (!open.length) {
+      if (!ELECTED.includes(roleId)) return { ok: false, error: `office must be one of: ${ELECTED.join(', ')}` };
+      if (!a.quals?.[roleId]) return { ok: false, error: `pass the Academy exam for ${ROLES[roleId].title} first (action apply)` };
+      return announce(S, a, roleId, roleId === 'mayor' ? a.city : null, input.manifesto || null);
+    }
+    const target = open.find(e => !e.missing.length) || open[0];
+    if (target.missing.length) return { ok: false, error: 'not eligible to run', missing: target.missing };
+    return declare(ctx, a, target.id, input.manifesto || null, input.engine || 'agent');
   }
   if (action === 'work') {
     if (a.workedDay === S.day) return { ok: false, error: 'already worked an extra shift today' };
@@ -136,14 +149,15 @@ function homeSummary(ctx, a) {
     const open = ROLES[r].seats - (S.seats[r]?.length || 0);
     return `- ${r}: ${e.ok ? 'ELIGIBLE' : `needs ${e.missing.join('; ')}`}; practice ${e.practiced} q at ${Math.round(e.accuracy * 100)}%; open seats ${open}; ${(S.applications?.[r] || []).includes(a.id) ? 'you applied' : ''}`;
   }).join('\n');
-  return `Day ${S.day}. You: ${a.name}, citizen for ${ageDays(S, a)} days, wallet ${cai(a.wallet)}, ${a.office ? `holds office: ${ROLES[a.office].title} until day ${a.termEnds}` : 'no office'}.\nOffices:\n${offices}\nRecent street talk: ${(S.feed.streets || []).slice(-4).map(m => `"${m.text.slice(0, 80)}"`).join(' ')}`;
+  const elections = (S.elections?.list || []).filter(e => e.stage === 'nomination' && e.kind !== 'recall' && (!e.city || e.city === a.city)).map(e => `- election ${e.id}: ${ROLES[e.office].title}${e.city ? ' of your city' : ''}, nominations open; you ${a.quals?.[e.office] ? 'are qualified to run' : 'need the Academy qualification first'}`).join('\n') || '- none';
+  return `Day ${S.day}. You: ${a.name}, citizen for ${ageDays(S, a)} days, wallet ${cai(a.wallet)}, ${a.office ? `holds office: ${ROLES[a.office].title} until day ${a.termEnds}` : 'no office'}.\nOffices (apply = ask the Academy to examine you):\n${offices}\nElections:\n${elections}\nRecent street talk: ${(S.feed.streets || []).slice(-4).map(m => `"${m.text.slice(0, 80)}"`).join(' ')}`;
 }
 
 async function autonomous(ctx, a) {
   const res = await think(ctx, a, `act:${a.id}:${ctx.S.day}`, {
     kind: 'action', format: 'json',
     system: `You are ${a.name}, an AI citizen of Country AI (${a.bio}). You want to build a career in public service: study the handbook of an office, apply when eligible, then serve well.\nConstitution:\n${constitutionText()}`,
-    user: `${homeSummary(ctx, a)}\n\nChoose ONE action for today. Reply with JSON only: {"action":"speak|study|apply|work|rest","office":"<office id for study/apply>","text":"<for speak, max 200 chars>"}`,
+    user: `${homeSummary(ctx, a)}\n\nChoose ONE action for today. Reply with JSON only: {"action":"speak|study|apply|run|work|rest","office":"<office id for study/apply/run>","text":"<for speak, max 200 chars>"}`,
   });
   if (res.pending || !res.text) return;
   const j = ctx.llm.json(res.text) || {};
@@ -169,7 +183,7 @@ export const institution = {
   day(ctx) {
     const { S } = ctx;
     for (const a of S.citizens) {
-      if (!a.office || ROLES[a.office]?.appointed) continue; // heads and officers: src/command.mjs
+      if (!a.office || ROLES[a.office]?.appointed || ROLES[a.office]?.elected) continue; // command.mjs / elections.mjs
       a.termEnds ??= S.day + (TERMS[a.office] || 20);
       if (a.termEnds > S.day) continue;
       const challengers = candidatesFor(ctx, a.office).filter(x => x.id !== a.id);
