@@ -75,6 +75,9 @@ def cmd_report(a) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    for stream in (sys.stdout, sys.stderr):  # Windows consoles default to a legacy code page
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     p = argparse.ArgumentParser(prog="auditor", description="Independent auditor for COUNTRY AI")
     sub = p.add_subparsers(dest="cmd", required=True)
     v = sub.add_parser("verify", help="recompute the ledger hash chain")
