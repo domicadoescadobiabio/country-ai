@@ -46,7 +46,10 @@ export async function run({ BASE, get, until, check }) {
   const presidents = all.filter(e => e.office === 'president' && e.kind === 'regular' && e.result.winners.length);
   check('a President won with at least 20% in 2 cities (or went to a runoff)', presidents.every(e => !e.result.spread || e.result.spread.citiesOver20 >= 2), JSON.stringify(presidents.map(e => e.result.spread)));
   const mayors = all.filter(e => e.office === 'mayor');
-  check('mayor elections only count residents of that city', mayors.every(e => e.electorate == null || e.electorate <= (s.population?.byCity?.[e.city] ?? 0)), JSON.stringify(mayors.map(e => [e.city, e.electorate, s.population?.byCity?.[e.city]])));
+  // live count per city (the population summary in /api/state is cached for 15 s)
+  const residents = {};
+  for (const c of new Set(mayors.map(e => e.city))) residents[c] = (await get(`/api/citizens?city=${c}&size=1`)).total;
+  check('mayor elections only count residents of that city', mayors.every(e => e.electorate == null || e.electorate <= residents[e.city]), JSON.stringify(mayors.map(e => [e.city, e.electorate, residents[e.city]])));
   // the public state shows only the latest decisions: wait until an election result is among them
   const withElection = await until(x => x.decisions.some(d => d.type === 'election'), 90000).catch(() => s);
   const decisions = withElection.decisions.filter(d => d.type === 'election');

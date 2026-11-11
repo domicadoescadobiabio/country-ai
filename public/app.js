@@ -67,7 +67,7 @@ function renderGov() {
         seats.push(h('span', { class: 'seat training', onclick: () => t && openCitizen(t.id), title: 'Training at the Academy' }, h('i'), `${t?.name || '…'} ${cur.step}/${cur.total}`));
       } else if (st.command?.acting?.[r.id] && i === 0) {
         const ac = cit(st.command.acting[r.id]); const pr = st.command.procs?.[r.id];
-        seats.push(h('span', { class: 'seat training', title: 'Acting head: no power to appoint, promote or dismiss' }, h('i'), `acting: ${ac?.name || '?'}${pr ? ` · ${pr.stage === 'president' ? 'President deciding' : `Council ${pr.ballots}/5`}` : ''}`));
+        seats.push(h('span', { class: 'seat training', title: 'Acting head: no power to appoint, promote or dismiss' }, h('i'), `acting: ${ac?.name || '?'}${pr ? ` · ${pr.stage === 'president' ? 'President deciding' : `Council ${pr.ballots}/${st.config.roles.find(r => r.id === 'council')?.seats || 30}`}` : ''}`));
       } else seats.push(h('span', { class: 'seat vacant' }, h('i'), 'vacant'));
     }
     box.append(h('div', { class: 'office' + (locked ? ' locked' : ''), title: locked ? 'Opens after the offices above are filled' : r.charter },
