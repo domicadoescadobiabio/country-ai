@@ -16,7 +16,19 @@ export function makeLLM(cfg: Record<string, any>, log: (kind: string, text: stri
   const provider = hasClaude && hasOR ? 'mixed' : hasClaude ? 'anthropic' : hasOR ? 'openrouter' : null;
   const claude = hasClaude ? new Anthropic({ apiKey: cfg.anthropicKey, maxRetries: 1, timeout: 120000 }) : null;
   const orBase = (cfg.orBase || 'https://openrouter.ai/api/v1').replace(/\/$/, '');
-  const usage = { calls: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, errors: 0, claude: 0, openrouter: 0, fallbacks: 0, costUsd: 0 };
+  const usage = { calls: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, errors: 0, claude: 0, openrouter: 0, fallbacks: 0, costUsd: 0,
+    errorsByModel: {} as Record<string, { errors: number; lastKind: string; lastStatus: number | null; lastAt: string }> };
+  // Per-model failure counts so a broken model can be spotted on /api/state. Only the kind, the HTTP status
+  // and the time are kept (never the provider's message, which can echo request details). The key set is
+  // bounded: model ids come from config and the founders' list, but cap it anyway.
+  // kind: http (non-2xx), timeout, bad-json (reply was not valid JSON), network (unreachable), auth, rate-limit
+  function noteError(key: string, kind: string, status: number | null = null) {
+    usage.errors++;
+    const m = usage.errorsByModel;
+    if (!m[key] && Object.keys(m).length >= 64) key = 'other';
+    const e = m[key] || (m[key] = { errors: 0, lastKind: '', lastStatus: null, lastAt: '' });
+    e.errors++; e.lastKind = kind; e.lastStatus = status; e.lastAt = new Date().toISOString();
+  }
   // Claude prices in $ per million tokens (first-party API, checked 11 Nov 2026); cache writes cost 1.25x input
   const CLAUDE_PRICE = { 'claude-opus-5-5': [4, 20, 0.2], 'claude-sonnet-5-5': [2, 10, 0.2], 'claude-haiku-5-5': [0.1, 0.5, 0.01] };
   const claudeCost = (model, u) => {
@@ -50,11 +62,15 @@ export function makeLLM(cfg: Record<string, any>, log: (kind: string, text: stri
       if (r.stop_reason === 'refusal') return null;
       return r.content.filter(b => b.type === 'text').map(b => b.text).join(' ');
     } catch (e) {
-      usage.errors++;
-      if (e instanceof Anthropic.AuthenticationError) log('engine', 'Claude: invalid ANTHROPIC_API_KEY');
-      else if (e instanceof Anthropic.RateLimitError) log('engine', 'Claude: rate limited, offline fallback');
-      else if (e instanceof Anthropic.APIError) log('engine', `Claude API ${e.status}: offline fallback`);
-      else log('engine', `Claude unreachable: ${String(e.message).slice(0, 50)}`);
+      const key = `claude:${model}`;
+      // connection errors are APIError subclasses with no status: check them first
+      if (e instanceof Anthropic.APIConnectionTimeoutError) { noteError(key, 'timeout'); log('engine', 'Claude: timeout, offline fallback'); }
+      else if (e instanceof Anthropic.APIConnectionError) { noteError(key, 'network'); log('engine', 'Claude unreachable: offline fallback'); }
+      else if (e instanceof Anthropic.AuthenticationError) { noteError(key, 'auth', e.status ?? null); log('engine', 'Claude: invalid ANTHROPIC_API_KEY'); }
+      else if (e instanceof Anthropic.RateLimitError) { noteError(key, 'rate-limit', e.status ?? null); log('engine', 'Claude: rate limited, offline fallback'); }
+      else if (e instanceof Anthropic.APIError) { noteError(key, 'http', e.status ?? null); log('engine', `Claude API ${e.status}: offline fallback`); }
+      else if (e instanceof SyntaxError) { noteError(key, 'bad-json'); log('engine', 'Claude: unreadable reply, offline fallback'); }
+      else { noteError(key, 'network'); log('engine', `Claude unreachable: ${String(e.message).slice(0, 50)}`); }
       return null;
     }
   }
@@ -69,8 +85,9 @@ export function makeLLM(cfg: Record<string, any>, log: (kind: string, text: stri
         // usage.include: OpenRouter returns the real cost of the call, which the daily budget is charged with
         body: JSON.stringify({ model, max_tokens: Math.max(maxTokens, 3000), reasoning: { effort, exclude: true }, usage: { include: true }, messages: [{ role: 'system', content: system }, { role: 'user', content: user }] }),
       });
-      if (!r.ok) throw new Error(`openrouter ${r.status} (${model})`);
-      const j = await r.json();
+      if (!r.ok) throw Object.assign(new Error(`openrouter ${r.status} (${model})`), { kind: r.status === 429 ? 'rate-limit' : r.status === 401 || r.status === 403 ? 'auth' : 'http', status: r.status });
+      let j;
+      try { j = await r.json(); } catch (e) { if (ac.signal.aborted) throw e; throw Object.assign(new Error(`openrouter bad JSON (${model})`), { kind: 'bad-json' }); }
       usage.inputTokens += j.usage?.prompt_tokens || 0;
       usage.cachedTokens += j.usage?.prompt_tokens_details?.cached_tokens || 0;
       usage.outputTokens += j.usage?.completion_tokens || 0;
@@ -80,8 +97,10 @@ export function makeLLM(cfg: Record<string, any>, log: (kind: string, text: stri
       usage.costUsd += lastCost;
       return j.choices?.[0]?.message?.content || null;
     } catch (e) {
-      usage.errors++;
-      log('engine', `OpenRouter: ${String(e.message).slice(0, 70)}`);
+      // abort = our 90 s timer fired (it also aborts a body still streaming in r.json())
+      const kind = e?.kind || (e?.name === 'AbortError' || ac.signal.aborted ? 'timeout' : 'network');
+      noteError(`openrouter:${model}`, kind, e?.status ?? null);
+      log('engine', `OpenRouter: ${kind === 'timeout' ? `timeout (${model})` : String(e.message).slice(0, 70)}`);
       return null;
     } finally { clearTimeout(t); }
   }

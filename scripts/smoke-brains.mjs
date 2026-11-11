@@ -57,6 +57,9 @@ try {
   check('citizens with anthropic/ models think through OpenRouter, not Claude', Object.keys(seen.openrouter).some(m => m.startsWith('anthropic/')), JSON.stringify(Object.keys(seen.openrouter)));
   check('Opus requests opt into the server-side fallback', seen.fallbacksParam === 'default');
   check('a failing OpenRouter model costs no Claude call: that citizen thinks offline', (seen.openrouter[BROKEN] || 0) > 0 && (s.llmUsage?.fallbacks || 0) === 0, JSON.stringify({ broken: seen.openrouter[BROKEN] || 0, usage: s.llmUsage }));
+  const byModel = s.llmUsage?.errorsByModel || {}; const brokenErr = byModel[`openrouter:${BROKEN}`];
+  check('errors are counted per model with the kind of failure', brokenErr?.errors > 0 && brokenErr.lastKind === 'http' && brokenErr.lastStatus === 404 && typeof brokenErr.lastAt === 'string', JSON.stringify(byModel));
+  check('per-model error counts add up to the total', Object.values(byModel).reduce((t, e) => t + e.errors, 0) === s.llmUsage?.errors, JSON.stringify({ total: s.llmUsage?.errors, byModel }));
   check('every call is costed and the budget is published', (s.llmUsage?.costUsd || 0) > 0 && s.budget && typeof s.budget.spent === 'number', JSON.stringify(s.budget));
 
   check('decisions name the brain that answered', [...engines].some(e => /^openrouter:/.test(e)) && [...engines].some(e => /^claude:/.test(e)), JSON.stringify([...engines].slice(0, 12)));
