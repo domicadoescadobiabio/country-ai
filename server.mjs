@@ -12,7 +12,7 @@ import { ROLES, ROLE_ORDER } from './src/roles.mjs';
 import { FOUNDERS, makeCitizen, randomTraits } from './src/citizens.mjs';
 import { growPopulation } from './src/population.mjs';
 import { CITIES, assignCity } from './src/cities.ts';
-import { tierOf, budgetState, workerPull, workerAnswer, localStatus } from './src/brains.ts';
+import { tierOf, budgetState, workerPull, workerAnswer, localStatus, localOnline, ladderTick } from './src/brains.ts';
 import { freshAcademy, academyTick, totalSeats } from './src/academy.ts';
 import { lifeTick, payday } from './src/life.ts';
 import { INSTITUTIONS } from './src/institutions.ts';
@@ -168,6 +168,7 @@ async function step() {
     if (S.day < today) { logActivity('state', `Clock caught up from day ${S.day} to day ${today} after downtime`); S.day = today; }
     for (const inst of INSTITUTIONS) if (inst.tick) await inst.tick(ctx);
     await lifeTick(ctx);
+    ladderTick(ctx);
     census();
     emit('state', compactState());
     dirty = true;
@@ -219,7 +220,13 @@ async function screen(item) {
 
 // ---------------------------------------------------------------- public views
 // the model that really thinks for this citizen today (Art. 25): leadership -> Claude, everyone else -> their own model
-const thinksWith = a => (a.brain ? a.model : !llm.enabled ? 'offline' : tierOf(S, a) === 'leader' ? (a.office === 'judge' ? CFG.courtModel : CFG.leaderModel) : a.model);
+const thinksWith = a => {
+  if (a.brain) return a.model;
+  const t = tierOf(S, a);
+  if (t === 'leader' && llm.enabled) return a.office === 'judge' ? CFG.courtModel : CFG.leaderModel;
+  if (t === 'citizen' && localOnline()) return localStatus().model || 'local';
+  return llm.enabled ? a.model : 'offline';
+};
 function publicCitizen(a) {
   return { id: a.id, name: a.name, model: thinksWith(a), tier: tierOf(S, a), color: a.color, bio: a.bio, origin: a.origin, office: a.office, status: a.status, jailUntil: a.jailUntil, detainedDay: a.detainedDay ?? null, wallet: Math.round(a.wallet), traits: a.traits, joined: a.joined, training: a.training.slice(-8), lessons: a.lessons, record: a.record || [], skill: a.skill || {}, brain: publicBrain(a.brain), city: a.city || null, faction: a.faction || 'civilian', debt: Math.round(a.debt || 0), rank: a.rank || null, rankSince: a.rankSince ?? null, quals: a.quals || {}, termEnds: a.termEnds || null, practice: a.practice || {}, joinedDay: a.joinedDay ?? 0, drills: (a.drills || []).slice(-6), reviews: (a.reviews || []).slice(-6), stats: a.stats || {} };
 }

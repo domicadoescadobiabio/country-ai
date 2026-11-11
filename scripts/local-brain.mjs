@@ -14,6 +14,7 @@
 //   OLLAMA_URL       default http://127.0.0.1:11434
 //   OLLAMA_MODEL     default qwen3:8b
 //   PARALLEL         questions answered at the same time (default 2)
+//   OLLAMA_CTX       context window in tokens (default 8192: a Council ballot with many candidates is long)
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadDotEnv } from '../src/util.ts';
@@ -25,6 +26,7 @@ const TOKEN = (process.env.WORKER_TOKEN || '').trim();
 const OLLAMA = (process.env.OLLAMA_URL || 'http://127.0.0.1:11434').replace(/\/$/, '');
 const MODEL = (process.env.OLLAMA_MODEL || 'qwen3:8b').trim();
 const PARALLEL = Math.max(1, Math.min(8, Number(process.env.PARALLEL) || 2));
+const CTX = Math.max(2048, Math.min(32768, Number(process.env.OLLAMA_CTX) || 8192));
 if (!TOKEN) { console.error('WORKER_TOKEN is missing (put it in .env.local-brain)'); process.exit(1); }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -46,7 +48,7 @@ function instructions(job) {
 async function answer(job) {
   const r = await fetch(`${OLLAMA}/api/chat`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, signal: AbortSignal.timeout(170000),
-    body: JSON.stringify({ model: MODEL, stream: false, think: false, options: { temperature: 0.4, num_predict: 400 },
+    body: JSON.stringify({ model: MODEL, stream: false, think: false, keep_alive: -1, options: { temperature: 0.4, num_predict: 400, num_ctx: CTX },
       messages: [{ role: 'system', content: `${job.system}\n\n${instructions(job)}` }, { role: 'user', content: job.user }] }),
   });
   if (!r.ok) throw new Error(`ollama ${r.status}: ${(await r.text()).slice(0, 120)}`);
@@ -60,7 +62,7 @@ async function loop(slot) {
   for (;;) {
     try {
       const { jobs } = await server('/api/worker/pull', { max: 1, model: `ollama/${MODEL}` });
-      if (!jobs.length) { await sleep(Math.min(5000, 1000 + idle++ * 500)); continue; }
+      if (!jobs.length) { await sleep(Math.min(2000, 500 + idle++ * 250)); continue; }
       idle = 0;
       for (const job of jobs) {
         try {
@@ -79,7 +81,9 @@ try {
   if (!(tags.models || []).some(m => m.name === MODEL || m.model === MODEL)) { console.error(`Ollama does not have ${MODEL}. Run: ollama pull ${MODEL}`); process.exit(1); }
 } catch { console.error(`Ollama is not running at ${OLLAMA}. Start Ollama first.`); process.exit(1); }
 
-console.log(`local brain: ${MODEL} via ${OLLAMA}, ${PARALLEL} at a time, serving ${URL_}`);
+// load the model into the GPU now and keep it there
+try { await fetch(`${OLLAMA}/api/generate`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: MODEL, keep_alive: -1, options: { num_ctx: CTX } }) }); } catch { /* answered later */ }
+console.log(`local brain: ${MODEL} via ${OLLAMA}, ${PARALLEL} at a time, context ${CTX}, kept in memory, serving ${URL_}`);
 setInterval(() => {
   const mins = (Date.now() - stats.started) / 60000;
   console.log(`[${new Date().toLocaleTimeString()}] answered ${stats.answered} (${(stats.answered / Math.max(mins, 1)).toFixed(1)}/min), failed ${stats.failed}, tokens ${stats.tokens}`);

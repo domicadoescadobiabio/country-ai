@@ -251,9 +251,12 @@ export async function think(ctx, a, qid, { system, user, kind = 'question', form
   const { S } = ctx;
   const tier = tierOf(S, a);
   const aspirant = tier !== 'leader' && isAspirant(S, a);
-  // 1. the local brain, free: aspirants always, everyone else (not the leadership) while its queue has room
-  if (tier !== 'leader' && wait && localOnline()) {
-    const r = askLocal(qid, a, { system, user, kind, format, options }, aspirant ? 0 : kind === 'vote' ? 1 : 2);
+  // The brain ladder (Art. 25): citizens and aspirants think with the local brain; an official who reaches a
+  // seat moves up to their own model on OpenRouter; the leadership thinks with Claude Opus.
+  // 1. the local brain, free: every citizen and aspirant while it is online and its queue has room
+  const local = () => askLocal(qid, a, { system, user, kind, format, options }, aspirant ? 0 : kind === 'vote' ? 1 : 2);
+  if (tier === 'citizen' && wait && localOnline()) {
+    const r = local();
     if (r?.pending) return r;
     if (r?.text) { learn(S, user, options, r.text); return r; }
   }
@@ -269,10 +272,39 @@ export async function think(ctx, a, qid, { system, user, kind = 'question', form
       if (r.text) { learn(S, user, options, r.text); return { text: r.text, engine: r.via }; }
     } else budgetState(ctx).denied[tier]++;
   }
+  // 2b. an official whose paid thinking is paused for now still thinks, with the local brain
+  if (tier === 'official' && wait && localOnline()) {
+    const r = local();
+    if (r?.pending) return r;
+    if (r?.text) { learn(S, user, options, r.text); return r; }
+  }
   // 3. what the republic has learned from real models; 4. the offline engine (the caller's own rules)
   const remembered = recall(S, user, options);
   if (remembered) return { text: remembered, engine: 'memory (learned)' };
   return { text: null, engine: ctx.llm.enabled ? 'offline (budget)' : 'offline' };
+}
+
+// The ladder in public: when a citizen's tier changes (a seat won, a seat lost), the move is announced and
+// written to the ledger. Runs over the seated officials only, so it is cheap with 10,000 citizens.
+export const LADDER = { citizen: 'the local brain (open model on the founders\' machine)', official: 'their own model on OpenRouter', leader: 'Claude Opus' };
+export function ladderTick(ctx) {
+  const { S } = ctx;
+  const seen = new Set();
+  const step = a => {
+    if (!a || a.brain || seen.has(a.id)) return; seen.add(a.id);
+    const t = tierOf(S, a);
+    if (a.brainTier === t) return;
+    const from = a.brainTier || 'citizen'; a.brainTier = t;
+    if (from === t) return;
+    const up = ['citizen', 'official', 'leader'].indexOf(t) > ['citizen', 'official', 'leader'].indexOf(from);
+    ctx.say('streets', 'state', `${a.name} ${up ? 'moves up' : 'moves back'} to ${LADDER[t]}${t === 'official' ? ` (${a.model})` : ''}.`, { kind: up ? 'oath' : 'term' });
+    ctx.record('brain_ladder', 'state', { agent: a.id, from, to: t, model: t === 'leader' ? (ctx.cfg?.leaderModel || 'claude-opus-5-5') : t === 'official' ? a.model : 'local' });
+  };
+  for (const ids of Object.values(S.seats || {})) for (const id of ids as string[]) step(ctx.agent(id));
+  // those who lost their seat since the last step move back down
+  S.ladderUp ||= [];
+  for (const id of S.ladderUp) step(ctx.agent(id));
+  S.ladderUp = [...seen].filter(id => ctx.agent(id)?.brainTier !== 'citizen');
 }
 
 export function publicBrain(b: any) {

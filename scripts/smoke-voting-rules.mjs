@@ -63,5 +63,27 @@ check('when the budget is spent the answer is offline (budget)', late.engine ===
 B.day = 2; const fresh = await think(bctx, joe, 'newday', { system: 's', user: 'u' });
 check('a new day opens a new budget', !!fresh.text && B.thinkBudget.spent === 0.5);
 
+// ---- the brain ladder: citizens -> local brain, officials -> OpenRouter, leaders -> Claude Opus
+const { ladderTick, workerPull, workerAnswer } = await import('../src/brains.ts');
+const LS = { day: 1, foundedAt: Date.now(), seats: { council: ['ofc'], president: [] }, cabinet: {}, citizens: [] };
+const said = [], led = [];
+const people = { cit: { id: 'cit', name: 'Cit', model: 'z-ai/glm-5.3' }, ofc: { id: 'ofc', name: 'Ofc', office: 'council', model: 'mistralai/mistral-large-4-0' } };
+const lctx = { S: LS, cfg: { dailyBudgetUsd: 0, leaderModel: 'claude-opus-5-5' }, agent: id => people[id], say: (c, a, t) => said.push(t), record: (k, a, d) => led.push({ k, d }),
+  llm: { enabled: true, json: JSON.parse, askDetailed: async o => ({ text: 'B - api', via: `openrouter:${o.model}`, cost: 0.01 }) } };
+workerPull(1, 'ollama/test'); // the local brain is online
+const c1 = await think(lctx, people.cit, 'lq1', { system: 's', user: 'citizen question' });
+check('a citizen thinks with the local brain first', c1.pending === true);
+const job = workerPull(4).find(j => j.id === 'lq1');
+workerAnswer('lq1', 'A - local answer', 'ollama/test');
+const c2 = await think(lctx, people.cit, 'lq1', { system: 's', user: 'citizen question' });
+check('the local answer comes back to the citizen', !!job && c2.text === 'A - local answer' && /^local:/.test(c2.engine), JSON.stringify(c2));
+const o1 = await think(lctx, people.ofc, 'oq1', { system: 's', user: 'official question' });
+check('an official moves up to their own OpenRouter model', o1.engine === 'openrouter:mistralai/mistral-large-4-0', JSON.stringify(o1));
+ladderTick(lctx);
+check('moving up the ladder is announced and on the ledger', said.some(t => /Ofc moves up to their own model on OpenRouter/.test(t)) && led.some(e => e.k === 'brain_ladder' && e.d.to === 'official'), JSON.stringify(said));
+LS.seats.council = []; people.ofc.office = null;
+ladderTick(lctx);
+check('losing the seat moves the brain back down', said.some(t => /Ofc moves back to the local brain/.test(t)) && people.ofc.brainTier === 'citizen', JSON.stringify(said));
+
 console.log(`\nsmoke:voting-rules: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
