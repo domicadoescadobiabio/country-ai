@@ -9,6 +9,7 @@ import { act, eligibility, startStudy, gradeStudy, isRole } from './careers.ts';
 import { LETTERS } from './academy.ts';
 import { borderCheck } from './military.ts';
 import { CITIES } from './cities.ts';
+import { echoesStreet, safeNote } from './life.ts';
 import { round, cleanText, cai, clamp } from './util.ts';
 import type { Ctx, State, Citizen } from './types.ts';
 
@@ -53,6 +54,12 @@ function shuffled<T>(list: T[], seed: string): T[] {
   return a;
 }
 const speakGapMs = (ctx: Ctx) => (ctx.hourMs ? ctx.hourMs() : 3600000) * 2;
+// The whole street hears at most TALK_PER_HOUR lines from daily life: with 10,000 citizens thinking, the
+// per-citizen 2-hour gap alone let ~3,000 lines a day through, drowning everything else said there.
+const TALK_PER_HOUR = clamp(Number(process.env.LIFE_TALK_PER_HOUR) || 30, 1, 600);
+const hourIndex = (ctx: Ctx) => Math.floor((Date.now() - (ctx.S.foundedAt || 0)) / (ctx.hourMs ? ctx.hourMs() : 3600000));
+function talkRoom(ctx: Ctx) { const t = D(ctx.S).talk; return !t || t.hour !== hourIndex(ctx) || t.n < TALK_PER_HOUR; }
+function countTalk(ctx: Ctx) { const d = D(ctx.S); const h = hourIndex(ctx); if (d.talk?.hour !== h) d.talk = { hour: h, n: 0 }; d.talk.n++; }
 const todayActs = (S: State, a: Citizen) => (a.diary || []).filter(x => x.day === S.day).map(x => x.act);
 // Per-day counters live on the citizen record, not in the diary: the diary keeps only the last six entries,
 // so a limit read from it would reset itself after a few rests.
@@ -63,10 +70,7 @@ export function lifeCount(S: State, a: Citizen): Record<string, number> {
 const underLimit = (S: State, a: Citizen, act: string) => !(act in DAILY_LIMITS) || (lifeCount(S, a)[act] || 0) < DAILY_LIMITS[act];
 const countAct = (S: State, a: Citizen, act: string) => { if (act in DAILY_LIMITS) { const c = lifeCount(S, a); c[act] = (c[act] || 0) + 1; } };
 // a diary note is written by the model: it is screened like street talk before anyone else can read it
-export function safeNote(note: unknown) {
-  const text = cleanText(note, 90);
-  return text && !borderCheck({ text }, 2) ? text : '';
-}
+export { safeNote }; // lives in life.ts, which daily.ts already imports (street talk screens notes too)
 function partOfDay(ctx: Ctx) {
   const { S } = ctx; const dayMs = ctx.cfg?.dayMs || 86400000;
   const h = Math.floor((((Date.now() - (S.foundedAt || Date.now())) % dayMs) + dayMs) % dayMs / dayMs * 24);
@@ -86,7 +90,7 @@ export function menu(ctx: Ctx, a: Citizen) {
   if (canApply.length) m.push(['apply', `apply: ask the Academy to examine you (office: ${canApply.join('|')})`]);
   const canRun = Object.keys(a.quals || {}).filter(r => isRole(r) && (S.elections?.list || []).some(e => e.stage === 'nomination' && e.office === r && (!e.city || e.city === a.city)));
   if (canRun.length) m.push(['run', `run: stand in an election open now (office: ${canRun.join('|')})`]);
-  if (Date.now() - (a.lastSpeak || 0) > speakGapMs(ctx)) m.push(['talk', 'talk: say something in the street (say: your words, max 25 words)']);
+  if (Date.now() - (a.lastSpeak || 0) > speakGapMs(ctx) && talkRoom(ctx)) m.push(['talk', `talk: say one concrete thing in the street about your own day, your work as ${String(a.bio || '').split(' in ')[0].toLowerCase() || 'a citizen'}, your city or a real law, tax or election (say: your words, max 25 words; no slogans)`]);
   if (a.wallet >= 60 && ok('help')) m.push(['help', 'help: give 5-20 CAI to the poorest neighbour in your city (amount)']);
   if (ok('volunteer')) m.push(['volunteer', `volunteer: an unpaid shift repairing ${cityName(a.city)} (once a day)`]);
   m.push(['rest', 'rest: take it easy, see friends, sleep']);
@@ -101,14 +105,14 @@ function news(ctx: Ctx, a: Citizen) {
   const els = (S.elections?.list || []).filter(e => !['done', 'failed'].includes(e.stage) && (!e.city || e.city === a.city));
   const open = ROLE_ORDER.filter(r => ROLES[r].seats > (S.seats[r]?.length || 0)).slice(0, 6).map(r => `${ROLES[r].title} (${ROLES[r].seats - (S.seats[r]?.length || 0)} open)`);
   const city = S.cities?.[a.city];
-  const talk = (S.feed?.streets || []).slice(-3).map(m => `"${String(m.text).slice(0, 90)}"`).join(' ');
+  // No quotes of street talk here: a small model copies what it reads, and each copy became the next
+  // citizen's quote, until the street was two slogans repeated several times a second (12 Nov 2026).
   return [
     `Day ${S.day} of the republic. Tax ${Math.round(S.policy.taxRate * 100)}%, daily wage ${cai(S.policy.wage)}, basic income ${cai(S.policy.ubi)}.`,
     city ? `Your city ${cityName(a.city)}: health ${city.health}/100, city budget ${cai(city.budget)}.` : '',
     law ? `Latest law: ${law.title}.` : '',
     els.length ? `Elections now: ${els.map(e => `${ROLES[e.office].title}${e.city ? ' of your city' : ''} (${e.stage})`).join(', ')}.` : 'No election running for you right now.',
     open.length ? `Seats still empty: ${open.join(', ')}.` : '',
-    talk ? `Overheard in the street: ${talk}` : '',
   ].filter(Boolean).join('\n');
 }
 function career(S: State, a: Citizen) {
@@ -190,8 +194,9 @@ export async function doAct(ctx: Ctx, a: Citizen, j: any, engine: string, offere
     } else { what = 'rest'; line = 'wanted to volunteer, but found nothing to do'; }
   } else if (what === 'talk') {
     const text = cleanText(j.say, 200);
-    if (text.length >= 3 && !borderCheck({ text }, 1) && Date.now() - (a.lastSpeak || 0) > speakGapMs(ctx)) {
-      a.lastSpeak = Date.now();
+    // a line the street has just heard (a model echoing what it overheard) is not said again
+    if (text.length >= 3 && !borderCheck({ text }, 1) && !echoesStreet(S, text) && talkRoom(ctx) && Date.now() - (a.lastSpeak || 0) > speakGapMs(ctx)) {
+      a.lastSpeak = Date.now(); countTalk(ctx);
       ctx.say('streets', a.id, text, { kind: 'chat', engine });
       line = 'spoke in the street';
     } else { what = 'rest'; line = 'kept their thoughts to themselves'; }

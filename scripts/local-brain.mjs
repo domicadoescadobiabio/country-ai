@@ -16,6 +16,7 @@
 //   PARALLEL         questions answered at the same time (default 2)
 //   OLLAMA_CTX       context window in tokens (default 8192: a Council ballot with many candidates is long)
 //   LIFE_TEMPERATURE sampling temperature for daily-life thoughts (default 0.9; exams and votes stay at 0.4)
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadDotEnv } from '../src/util.ts';
@@ -62,9 +63,27 @@ async function answer(job) {
   return String(j.message?.content || '').replace(/<think>[\s\S]*?<\/think>/g, '').trim();
 }
 
+// Reload on change: this runner runs from the repository, so a fix to this file (or new settings in
+// .env.local-brain) used to wait for someone to restart it by hand. Under scripts/local-brain.cmd
+// (LOCAL_BRAIN_SUPERVISED=1) it finishes the answers in hand and exits with code 3; the .cmd starts the
+// new code at once. Started by hand, it only says that a restart is needed.
+const SELF = fileURLToPath(import.meta.url);
+const WATCHED = [SELF, path.join(ROOT, '.env.local-brain'), process.env.LOCAL_BRAIN_WATCH].filter(Boolean); // LOCAL_BRAIN_WATCH: tests
+const RELOAD_CHECK_MS = Math.max(200, Number(process.env.RELOAD_CHECK_MS) || 30000);
+const SUPERVISED = process.env.LOCAL_BRAIN_SUPERVISED === '1';
+const RELOAD_EXIT = 3;
+const stamp = () => WATCHED.map(f => { try { return fs.statSync(f).mtimeMs; } catch { return 0; } }).join('|');
+const startedStamp = stamp();
+let reload = false;
+setInterval(() => {
+  if (reload || stamp() === startedStamp) return;
+  if (SUPERVISED) { reload = true; console.log(`[${new Date().toLocaleTimeString()}] local-brain.mjs or .env.local-brain changed: finishing the answers in hand, then restarting with the new code`); }
+  else console.log(`[${new Date().toLocaleTimeString()}] local-brain.mjs or .env.local-brain changed: restart this runner to use the new code`);
+}, RELOAD_CHECK_MS).unref();
+
 async function loop(slot) {
   let idle = 0;
-  for (;;) {
+  while (!reload) {
     try {
       const { jobs } = await server('/api/worker/pull', { max: 1, model: `ollama/${MODEL}` });
       if (!jobs.length) { await sleep(Math.min(2000, 500 + idle++ * 250)); continue; }
@@ -88,9 +107,10 @@ try {
 
 // load the model into the GPU now and keep it there
 try { await fetch(`${OLLAMA}/api/generate`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: MODEL, keep_alive: -1, options: { num_ctx: CTX } }) }); } catch { /* answered later */ }
-console.log(`local brain: ${MODEL} via ${OLLAMA}, ${PARALLEL} at a time, context ${CTX}, kept in memory, serving ${URL_}`);
+console.log(`local brain: ${MODEL} via ${OLLAMA}, ${PARALLEL} at a time, context ${CTX}, daily-life temperature ${LIFE_TEMP} (exams 0.4), kept in memory, serving ${URL_}${SUPERVISED ? ', reloads itself when its code changes' : ''}`);
 setInterval(() => {
   const mins = (Date.now() - stats.started) / 60000;
   console.log(`[${new Date().toLocaleTimeString()}] answered ${stats.answered} (${(stats.answered / Math.max(mins, 1)).toFixed(1)}/min), failed ${stats.failed}, tokens ${stats.tokens}`);
 }, 60000).unref();
 await Promise.all(Array.from({ length: PARALLEL }, (_, i) => loop(i + 1)));
+if (reload) process.exit(RELOAD_EXIT); // only reached when reloading: the loops run forever otherwise

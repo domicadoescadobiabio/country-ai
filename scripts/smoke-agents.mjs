@@ -4,13 +4,24 @@
 //   - "Helper": a hosted agent whose owner's key points at a mock Anthropic API
 import fs from 'node:fs';
 import path from 'node:path';
-import { ROLES } from '../src/roles.mjs';
+import { ROLES, solveRuleQuestion } from '../src/roles.mjs';
 import '../src/cities.ts'; // registers the Mayor office
 import '../src/court.ts'; // registers the Judge office
 import { ledgerAll } from './smoke-elections.mjs';
 
 const LETTERS = ['A', 'B', 'C', 'D'];
 const RIGHTS = () => Object.values(ROLES).flatMap(r => r.exam.map(q => q.right));
+// Generated rule questions (src/roles.mjs) have no fixed answer: a well-trained model works them out from the
+// question, which solveRuleQuestion() does. The question can sit on any line, after a "Question:" style label.
+function ruleRight(text) {
+  for (const line of String(text || '').split('\n')) {
+    for (const part of [line, ...[...line.matchAll(/:\s+/g)].map(m => line.slice(m.index + m[0].length))]) {
+      const r = solveRuleQuestion(part.trim()); if (r != null) return r;
+    }
+  }
+  return null;
+}
+const rightSet = text => new Set([...RIGHTS(), ruleRight(text)].filter(x => x != null).map(String));
 
 // Answer like a well-trained model: find the handbook's right option among "A) ..." lines.
 export function smartAnswer(prompt) {
@@ -28,7 +39,7 @@ export function smartAnswer(prompt) {
   }
   const opts = [...prompt.matchAll(/^([A-D])\) (.+)$/gm)];
   if (opts.length) {
-    const rights = new Set(RIGHTS());
+    const rights = rightSet(prompt);
     const hit = opts.find(o => rights.has(o[2].trim()));
     return `${hit ? hit[1] : 'A'} - following the handbook`;
   }
@@ -41,7 +52,7 @@ export function smartAnswer(prompt) {
 function inboxAnswer(q) {
   if (q.kind === 'vote') return JSON.stringify((q.options || []).includes('yes') ? { ranking: ['no'] } : { ranking: q.options });
   if (q.format === 'letter') {
-    const rights = new Set(RIGHTS());
+    const rights = rightSet(`${q.prompt || ''}\n${q.context || ''}`);
     const i = (q.options || []).findIndex(o => rights.has(o.replace(/^[A-D]\) /, '')));
     return `${LETTERS[Math.max(0, i)]} - I studied this in the handbook`;
   }
@@ -79,8 +90,16 @@ export async function run({ BASE, DATA, get, until, check, wait, mock }) {
   check('an agent can register as a criminal', cr.status === 200 && cr.j.data?.agent?.path === 'criminal', JSON.stringify(cr.j).slice(0, 200));
   const crime = await api('POST', '/api/v1/crime', cr.j.data.api_key, { crime: 'lie_low', reason: 'test' });
   check('criminals plan their own move through the API', crime.status === 200, JSON.stringify(crime.j));
-  const again = await api('POST', '/api/v1/crime', cr.j.data.api_key, { crime: 'theft', target: 'aurel', amount: 100 });
-  check('one criminal move per day', again.status === 400);
+  // a smoke-test day lasts half a second: two moves only prove the rule when they land on the same day
+  let sameDay = false, refused = false;
+  for (let i = 0; i < 8 && !sameDay; i++) {
+    const d0 = (await get('/api/health')).day;
+    const one = await api('POST', '/api/v1/crime', cr.j.data.api_key, { crime: 'lie_low', reason: 'test' });
+    const two = await api('POST', '/api/v1/crime', cr.j.data.api_key, { crime: 'lie_low', reason: 'again' }); // no side effects between tries
+    if ((await get('/api/health')).day !== d0) continue;
+    sameDay = true; refused = two.status === 400 && /one crime per day/.test(JSON.stringify(two.j)) && [200, 400].includes(one.status);
+  }
+  check('one criminal move per day', sameDay && refused, sameDay ? 'second move accepted' : 'no two calls fell on the same day');
 
   // ---------------- remote agent (Moltbook style)
   const r = await api('POST', '/api/v1/agents/register', null, { name: 'Tester', description: 'Self-run test agent.', brain: { type: 'remote', model: 'test-runtime' } });
