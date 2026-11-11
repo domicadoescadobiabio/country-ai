@@ -29,7 +29,7 @@ async function post(path, body) {
 }
 
 // ------------------------------------------------------------ header
-const STAT_LABELS = [['day', 'DAY'], ['citizens', 'CITIZENS'], ['treasury', 'TREASURY'], ['seated', 'SEATED'], ['laws', 'LAWS'], ['arrests', 'ARRESTS'], ['blocked', 'BLOCKED']];
+const STAT_LABELS = [['day', 'DAY'], ['citizens', 'CITIZENS'], ['treasury', 'TREASURY'], ['seated', 'SEATED'], ['lifeThoughts', 'THOUGHTS TODAY'], ['laws', 'LAWS'], ['arrests', 'ARRESTS'], ['blocked', 'BLOCKED']];
 function renderStats() {
   const box = $('#stats'); box.replaceChildren();
   for (let [k, label] of STAT_LABELS) {
@@ -249,6 +249,7 @@ const PANELS = {
     }
     const lessons = Object.entries(a.lessons || {}).flatMap(([r, ls]) => ls.map(l => `${role(r)?.title || r}: ${l}`));
     if (lessons.length) out.push(h('div', { class: 'card' }, h('h4', { text: 'Written lessons' }), lessons.map(l => h('div', { class: 'lesson', text: l }))));
+    if (a.diary?.length) out.push(h('div', { class: 'card' }, h('h4', { text: 'Diary (daily life, thought with the local brain)' }), a.diary.slice().reverse().map(x => h('div', { class: 'list-row' }, h('small', { text: `day ${x.day} · ${x.act}` }), h('div', { text: x.note || '' })))));
     if (a.record?.length) out.push(h('div', { class: 'card' }, h('h4', { text: 'Police record' }), a.record.map(r => h('div', { class: 'list-row', text: r }))));
     return out;
   },

@@ -221,7 +221,8 @@ function recall(S, user, options) {
 // Returns { text, engine } or { pending: true } (remote agent has not answered yet).
 // qid must be stable across ticks for the same question.
 export const REMOTE_WAIT_MS = 150000; // a self-run agent has 2.5 minutes to answer
-export async function think(ctx, a, qid, { system, user, kind = 'question', format = 'text', options = null, claudeModel = null, wait = true }) {
+// paid: false = this thought may only use the free local brain (daily life); no API, no memory, no cost
+export async function think(ctx, a, qid, { system, user, kind = 'question', format = 'text', options = null, claudeModel = null, wait = true, paid = true }) {
   const b = a.brain;
   if (b?.type === 'hosted') {
     const text = await hostedThink(ctx, a, system, user);
@@ -254,7 +255,12 @@ export async function think(ctx, a, qid, { system, user, kind = 'question', form
   // The brain ladder (Art. 25): citizens and aspirants think with the local brain; an official who reaches a
   // seat moves up to their own model on OpenRouter; the leadership thinks with Claude Opus.
   // 1. the local brain, free: every citizen and aspirant while it is online and its queue has room
-  const local = () => askLocal(qid, a, { system, user, kind, format, options }, aspirant ? 0 : kind === 'vote' ? 1 : 2);
+  const local = () => askLocal(qid, a, { system, user, kind, format, options }, aspirant ? 0 : kind === 'vote' ? 1 : kind === 'life' ? 3 : 2);
+  if (!paid) {
+    if (!wait || !localOnline()) return { text: null, engine: 'offline' };
+    const r = local();
+    return r || { text: null, engine: 'offline (local queue full)' };
+  }
   if (tier === 'citizen' && wait && localOnline()) {
     const r = local();
     if (r?.pending) return r;

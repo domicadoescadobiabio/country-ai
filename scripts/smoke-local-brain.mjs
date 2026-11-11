@@ -60,6 +60,9 @@ try {
   const exam = Object.values(s.feed || {}).flat().filter(m => m.kind === 'answer');
   check('Academy answers come from the local model (not the offline dice)', exam.some(m => /^local:/.test(m.engine || '')), JSON.stringify(exam.slice(-3).map(m => m.engine)));
   check('reasoning tags are stripped from local answers', !JSON.stringify(s.feed).includes('<think>'));
+  // daily life: citizens think about their day with the local brain only (never a paid API)
+  const life = (await get('/api/state')).daily;
+  check('citizens live a daily life on the local brain', life && life.thoughts > 0, JSON.stringify(life && { thoughts: life.thoughts, byAct: life.byAct }));
   check('no server errors', !/step error|TypeError|ReferenceError/.test(stderr), stderr.slice(-400));
 } catch (e) {
   fail++; console.log('  FAIL crashed', e.stack);

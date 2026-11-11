@@ -12,5 +12,6 @@ import { institution as cities } from './cities.ts';
 import { institution as careers } from './careers.ts';
 import { institution as training } from './training.ts';
 import { institution as underworld } from './underworld.ts';
+import { institution as daily } from './daily.ts';
 
-export const INSTITUTIONS = [president, council, cabinet, police, military, command, elections, court, audit, cities, careers, training, underworld];
+export const INSTITUTIONS = [president, council, cabinet, police, military, command, elections, court, audit, cities, careers, training, underworld, daily];
