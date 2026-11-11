@@ -6,10 +6,10 @@
 //   office-specific measure, graded A-D and published.
 // - Accountability: two failed drills in a row, or grade D with low skill, means recall:
 //   the seat goes vacant and the Academy trains a replacement.
-import { ROLES } from './roles.mjs';
+import { ROLES, ruleQuestions } from './roles.mjs';
 import { answer, buildItem, vacate, LETTERS, ROOMS } from './academy.ts';
 import { caseStudies } from './cases.mjs';
-import { pick, round, clamp } from './util.ts';
+import { pick, round, clamp, chance } from './util.ts';
 import type { Ctx, State, Citizen } from './types.ts';
 
 const DRILL_EVERY = 2;
@@ -22,7 +22,9 @@ const officials = S => S.citizens.filter(a => a.office && a.status === 'free');
 function start(ctx: Ctx, a: Citizen) {
   const role = ROLES[a.office];
   const bank = role.exam.filter(q => !(a.drills || []).slice(-2).some(d => d.items?.some(x => x.q === q.q)));
-  const items = [buildItem({ ...pick(bank.length ? bank : role.exam), from: 'office handbook' }), ...caseStudies(ctx, role.id, 2).map(buildItem)];
+  // every other drill opens with a rule question (fresh numbers, near-miss options) instead of a handbook scenario
+  const first = chance(0.5) ? ruleQuestions(role.id, 1)[0] : { ...pick(bank.length ? bank : role.exam), from: 'office handbook' };
+  const items = [buildItem(first), ...caseStudies(ctx, role.id, 2).map(buildItem)];
   T(ctx.S).current = { sid: `drill:${a.id}:${Date.now()}`, agentId: a.id, roleId: role.id, step: 0, items, answers: [] };
   ctx.say('academy', a.id, `In-service drill for ${role.title} ${a.name} (day ${ctx.S.day}). ${items.length} questions, ${items.length - 1} built from real events in the republic. Current skill ${Math.round((a.skill?.[role.id] ?? 0.6) * 100)}.`, { kind: 'drill', roleId: role.id });
 }
@@ -40,6 +42,7 @@ async function step(ctx: Ctx, cur: any) {
   const chosen = idx >= 0 ? item.options[idx] : '(no answer)';
   cur.answers.push({ q: item.q, from: item.from, chosen, right: item.options[item.correct], ok, reason, tests: item.tests, lesson: item.lesson });
   cur.step++;
+  if (item.from === 'rule question') { const r = (T(ctx.S).rules ||= { asked: 0, right: 0 }); r.asked++; if (ok) r.right++; }
   ctx.say('academy', a.id, `Drill ${cur.step}/${cur.items.length}${item.from ? ` (case: ${item.from})` : ''} - ${item.q}\n${idx >= 0 ? `${LETTERS[idx]}) ` : ''}${chosen} ${ok ? '[correct]' : `[wrong, right: ${item.options[item.correct]}]`}${reason ? ` "${reason}"` : ''}`,
     { kind: 'answer', roleId: role.id, ok, engine, drill: true });
 }
@@ -138,5 +141,5 @@ export const institution = {
     }
   },
   stats: S => ({ drills: T(S).drills }),
-  publicState: S => { const t = T(S); return { training: { drills: t.drills, passed: t.passed, recalls: t.recalls, reviews: t.reviews, current: t.current ? { agentId: t.current.agentId, roleId: t.current.roleId, step: t.current.step, total: t.current.items.length, answers: t.current.answers.map(x => ({ ok: x.ok })) } : null } }; },
+  publicState: S => { const t = T(S); return { training: { drills: t.drills, passed: t.passed, recalls: t.recalls, reviews: t.reviews, rules: t.rules || { asked: 0, right: 0 }, current: t.current ? { agentId: t.current.agentId, roleId: t.current.roleId, step: t.current.step, total: t.current.items.length, answers: t.current.answers.map(x => ({ ok: x.ok })) } : null } }; },
 };

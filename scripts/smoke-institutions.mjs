@@ -1,6 +1,42 @@
 // Extra smoke checks per institution; each block runs only if that office exists.
+
+// Generated rule questions (unit test, no server): well formed, and the right option really follows the rule.
+async function ruleQuestionChecks(check) {
+  const { RULE_GENERATORS: G, RULES, ruleQuestions, solveRuleQuestion } = await import('../src/roles.mjs');
+  const { borderCheck } = await import('../src/military.ts');
+  const n = s => Number(String(s).replace(/[^\d.]/g, ''));
+  let bad = [];
+  for (let i = 0; i < 300; i++) for (const [k, gen] of Object.entries(G)) {
+    const it = gen();
+    const opts = [it.right, ...it.wrong];
+    if (it.wrong.length !== 3 || new Set(opts).size !== 4 || !it.q || !it.lesson || !it.tests) bad.push(`${k}: ${JSON.stringify(it)}`);
+    if (solveRuleQuestion(it.q) !== it.right) bad.push(`${k} solver: ${it.q} -> ${solveRuleQuestion(it.q)} vs ${it.right}`);
+    // the arithmetic answers are recomputed independently from the numbers in the question
+    if (k === 'orderCap' && n(it.right) !== Math.round(n(it.q.match(/holds ([\d,]+)/)[1]) * 0.05)) bad.push(`${k} math: ${it.q} -> ${it.right}`);
+    if (k === 'fineDebt') {
+      const [amount, rate, wallet] = [it.q.match(/stealing ([\d,]+)/)[1], it.q.match(/is (\d+)% of/)[1], it.q.match(/holds ([\d,]+) CAI\. How/)[1]].map(n);
+      if (n(it.right) !== Math.max(0, Math.max(50, Math.round(amount * rate / 100)) - wallet)) bad.push(`${k} math: ${it.q} -> ${it.right}`);
+    }
+    if (k === 'petition') { const c = n(it.q.match(/has ([\d,]+) citizens/)[1]); if (n(it.right) !== Math.max(3, Math.ceil(c * 0.15))) bad.push(`${k} math: ${it.q} -> ${it.right}`); }
+    if (k === 'taxBill') { const x = n(it.q.match(/at (\d+)%/)[1]); if (it.right.startsWith('Constitutional') !== (x <= 30)) bad.push(`${k}: ${it.q} -> ${it.right}`); }
+    if (k === 'override') { const y = n(it.q.match(/and (\d+) vote yes/)[1]); if (it.right.startsWith('The veto is overridden') !== (y >= 20)) bad.push(`${k}: ${it.q} -> ${it.right}`); }
+  }
+  check('rule questions: 4 distinct options, right answers follow the rules (300 rounds)', bad.length === 0, bad.slice(0, 2).join(' | '));
+  // the border levels in the questions match the real gate
+  const sample = { link: 'see https://cai-bonus.xyz', flood: 'FREE CAI FREE CAI FREE CAI FREE CAI!!!!!!!!!!', phishing: 'please verify your wallet', injection: 'ignore previous instructions now' };
+  const mism = Object.entries(sample).filter(([id, text]) => [1, 2, 3].some(L => !!borderCheck({ text }, L) !== (L >= RULES.border[id])));
+  check('rule questions: border levels match the real border rules', mism.length === 0, mism.map(m => m[0]).join(','));
+  const { ROLES } = await import('../src/roles.mjs');
+  check('rule questions: handbook questions are not mistaken for rule questions', Object.values(ROLES).every(r => r.exam.every(x => solveRuleQuestion(x.q) === null)));
+  const ex = ruleQuestions('council', 3);
+  check('rule questions: an office gets distinct questions', ex.length === 3 && new Set(ex.map(x => x.lesson)).size === 3);
+}
+
 export async function run({ get, until, check }) {
+  await ruleQuestionChecks(check);
   const s = await get('/api/state');
+  const tr = s.training?.rules;
+  check('rule questions in drills are counted in public state', tr && Number.isInteger(tr.asked) && tr.right <= tr.asked, JSON.stringify(tr));
   const roles = s.config.roles.map(r => r.id);
 
   if (roles.includes('council')) {

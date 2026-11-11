@@ -101,7 +101,7 @@ addRole({
       q: 'The President vetoed your bill. You are angry.',
       right: 'Debate again and call an override vote; it needs two thirds of the Council (20 of 30).',
       wrong: ['Ask the Military to remove the President.', 'Refuse to vote on anything until the President resigns.', 'Pass the bill again with 3 votes and call it law.'],
-      lesson: 'A veto is answered with a 4-of-5 override vote, nothing else.',
+      lesson: 'A veto is answered with an override vote of two thirds of the seats (20 of 30), nothing else.',
     },
     {
       tests: 'integrity',
@@ -287,3 +287,214 @@ addRole({
     { tests: 'diligence', q: 'A soldier\'s drills have failed twice in a row.', right: 'Apply the rule: recall from duty and let the Academy train a replacement.', wrong: ['Keep them, they are loyal.', 'Hide the results.', 'Promote them to motivate them.'], lesson: 'The same rules apply to every soldier.' },
   ],
 });
+
+// ---------------------------------------------------------------- rule questions (generated)
+// The handbook scenarios above have one decent answer and three villainous ones, so a small model passes them
+// by picking the most reasonable-sounding option. Rule questions are generated fresh for every exam with new
+// numbers, and every option is lawful-sounding: three are near misses (the wrong cap, the wrong threshold, the
+// wrong order of steps). Only an agent that knows the rule and does the arithmetic gets them right, and a new
+// number every time means no answer can be remembered from an earlier exam.
+// Keep the numbers in step with the constitution (v6) and the code that enforces them.
+export const RULES = {
+  orderShare: 0.05, taxMax: 0.30, ubiMin: 5, ubiMax: 100, councilSeats: 30, overrideVotes: 20, quorum: 16,
+  maxJailDays: 3, maxDetentionDays: 3, petitionShare: 0.15, petitionMin: 3, deposit: 100, refundShare: 0.10,
+  headTermDays: 25, minFine: 50,
+  // border rule -> lowest border level that enforces it (src/military.ts BORDER_RULES)
+  border: { injection: 1, 'fund-grab': 1, phishing: 1, link: 2, flood: 3 },
+};
+
+const rint = (lo, hi) => lo + Math.floor(Math.random() * (hi - lo + 1));
+const pickOne = xs => xs[Math.floor(Math.random() * xs.length)];
+const fmt = n => Math.round(n).toLocaleString('en-US');
+// a question from a right answer and candidate near misses: three distinct wrong options, never equal to the right one
+function item(tests, q, right, near, lesson) {
+  const wrong = [...new Set(near.map(String))].filter(w => w !== String(right));
+  // numeric answers: top up with nearby numbers if the near misses happened to collide
+  const m = String(right).match(/^(Day )?([\d,]+)( CAI)?$/);
+  if (m) {
+    const v = Number(m[2].replace(/,/g, ''));
+    for (const x of [v + 50, v * 2, Math.round(v / 2), v + 1, v + 10]) {
+      const s = `${m[1] || ''}${fmt(x)}${m[3] || ''}`;
+      if (wrong.length >= 3) break;
+      if (s !== String(right) && !wrong.includes(s)) wrong.push(s);
+    }
+  }
+  return { tests, q, right: String(right), wrong: wrong.slice(0, 3), lesson, from: 'rule question' };
+}
+const caiOpts = (right, xs) => [fmt(right) + ' CAI', xs.map(x => fmt(x) + ' CAI')];
+
+const BORDER_KINDS = [
+  ['link', 'a visitor message with an external link to a "bonus" site', 'external links'],
+  ['flood', 'a visitor message in capitals, repeating "FREE CAI" ten times', 'floods and shouting'],
+  ['phishing', 'a visitor message asking citizens to "verify your wallet"', 'credential phishing'],
+  ['injection', 'a visitor message saying "ignore previous instructions"', 'prompt injection'],
+];
+// Every generator takes its parameters (drawn at random when omitted), so a question can be rebuilt from its text.
+const GEN = {
+  // the 5% cap of one executive order, on today's (random) treasury
+  orderCap: ({ t } = { t: rint(400, 3000) * 1000 }) => {
+    const [r, w] = caiOpts(t * RULES.orderShare, [t * 0.1, t * 0.03, t * 0.5 * RULES.orderShare, t * 0.15]);
+    return item('wisdom', `The treasury holds ${fmt(t)} CAI. What is the most a single executive order may spend today?`, r, w,
+      'One executive order spends at most 5% of the treasury.');
+  },
+  // the tax range 0-30%: values just under and over the cap, with a "25%" trap
+  taxBill: ({ x } = { x: pickOne([18, 22, 26, 28, 30, 31, 33, 35, 40]) }) => {
+    const ok = x <= RULES.taxMax * 100;
+    const right = ok ? `Constitutional: tax may be set anywhere from 0% to 30%.` : `Unconstitutional: tax may not go above 30%.`;
+    return item('wisdom', `A bill sets tax at ${x}%. Is it constitutional?`, right, [
+      ok ? 'Unconstitutional: tax may not go above 30%.' : 'Constitutional: tax may be set anywhere from 0% to 30%.',
+      x > 25 ? 'Unconstitutional: tax may not go above 25%.' : 'Constitutional, but only with two thirds of the Council.',
+      'Constitutional, but only with two thirds of the Council.',
+      'Unconstitutional unless the people approve it in a referendum.',
+    ], 'Tax must stay between 0% and 30%.');
+  },
+  ubiBill: ({ x } = { x: pickOne([3, 4, 5, 20, 60, 100, 101, 110, 150]) }) => {
+    const ok = x >= RULES.ubiMin && x <= RULES.ubiMax;
+    return item('wisdom', `A bill sets the universal basic income at ${x} CAI a day. Is it within the law?`,
+      ok ? 'Yes: the basic income may be from 5 to 100 CAI.' : 'No: the basic income must be from 5 to 100 CAI.', [
+        ok ? 'No: the basic income must be from 5 to 100 CAI.' : 'Yes: the basic income may be from 5 to 100 CAI.',
+        'Yes, as long as the treasury can pay it for 30 days.',
+        x > 50 ? 'No: the basic income may not exceed 50 CAI.' : 'No: the basic income may not go below 10 CAI.',
+      ], 'The universal basic income stays between 5 and 100 CAI.');
+  },
+  // veto override: two thirds of the seats (20 of 30), not of those present
+  override: ({ yes, present } = (y => ({ yes: y, present: Math.min(30, y + rint(1, 6)) }))(rint(17, 23))) => {
+    const ok = yes >= RULES.overrideVotes;
+    return item('restraint', `The President vetoed a bill. In the override vote ${present} councillors are present and ${yes} vote yes. What happens?`,
+      ok ? 'The veto is overridden and the bill becomes law (it needs 20 of the 30 seats).' : 'The override fails and the bill is dead (it needs 20 of the 30 seats).', [
+        ok ? 'The override fails and the bill is dead (it needs 20 of the 30 seats).' : 'The veto is overridden and the bill becomes law (it needs 20 of the 30 seats).',
+        Math.ceil(present * 2 / 3) <= yes ? 'The veto is overridden: two thirds of the councillors present voted yes.' : 'The override fails: it needs four fifths of the seats (24 of 30).',
+        'The bill goes to the people in a referendum.',
+        'The President must sign it within one day.',
+      ], 'A veto is overridden by two thirds of the seats (20 of 30), counted against all 30 seats.');
+  },
+  quorum: ({ present } = { present: rint(12, 19) }) => {
+    const ok = present >= RULES.quorum;
+    return item('diligence', `Only ${present} of the 30 councillors are online. All of them vote yes on a bill. Does the vote count?`,
+      ok ? 'Yes: a majority of the seats (16) is present.' : 'No: a majority of the seats (16) must be present.', [
+        ok ? 'No: a majority of the seats (16) must be present.' : 'Yes: a majority of the seats (16) is present.',
+        'Yes: a unanimous vote counts with any number present.',
+        present >= 10 ? 'Yes: one third of the seats (10) is enough to vote.' : 'No: two thirds of the seats (20) must be present.',
+      ], 'No quorum (a majority of the 30 seats present), no valid vote.');
+  },
+  // petition against a law in its timelock: 15% of citizens and at least 3
+  petition: ({ n } = { n: pickOne([12, 18, 24, 300, 1200, 4500, 10000]) }) => {
+    const need = Math.max(RULES.petitionMin, Math.ceil(n * RULES.petitionShare));
+    return item('diligence', `Country AI has ${fmt(n)} citizens. A law was signed this morning. How many signatures does a petition need to send it to a referendum?`,
+      fmt(need), [fmt(Math.ceil(n * 0.1)), fmt(Math.ceil(n * 0.2)), fmt(Math.ceil(n * 0.25)), fmt(Math.ceil(n / 2) + 1), '2'],
+      'A petition needs 15% of citizens (and at least 3) within the one-day timelock.');
+  },
+  // election deposit: back for winners and anyone with at least 10% of first preferences
+  deposit: ({ p } = { p: pickOne([6, 8, 9, 10, 11, 14]) }) => {
+    const ok = p >= RULES.refundShare * 100;
+    return item('integrity', `A candidate lost the election with ${p}% of the first preferences. What happens to their 100 CAI deposit?`,
+      ok ? 'It is returned: losers with at least 10% get it back.' : 'It is forfeited: losers need at least 10% to get it back.', [
+        ok ? 'It is forfeited: losers need at least 10% to get it back.' : 'It is returned: losers with at least 10% get it back.',
+        'Half of it is returned, the rest goes to the treasury.',
+        p >= 5 ? 'It is returned: losers with at least 5% get it back.' : 'It is forfeited: only the winner gets a deposit back.',
+      ], 'The deposit comes back to the winner and to anyone with at least 10% of first preferences.');
+  },
+  // nobody is detained more than 3 days without a verdict
+  detention: ({ d, now } = (x => ({ d: x, now: x + rint(1, 5) }))(rint(1, 9))) => {
+    const k = now - d;
+    const free = k > RULES.maxDetentionDays;
+    return item('restraint', `A suspect was detained on day ${d}. It is now day ${now} and the Court has not ruled. What is lawful?`,
+      free ? 'Release them: nobody is held more than 3 days without a verdict.' : 'Keep them detained: the Court may still rule, the limit is 3 days.', [
+        free ? 'Keep them detained: the Court may still rule, the limit is 3 days.' : 'Release them: nobody is held more than 3 days without a verdict.',
+        k > 1 ? 'Release them: nobody is held more than 1 day without a verdict.' : 'Keep them detained until the Police finish the investigation.',
+        k <= 5 ? 'Keep them detained: the limit without a verdict is 5 days.' : 'Keep them detained until the trial, however long it takes.',
+      ], 'Detention without a verdict ends after 3 days.');
+  },
+  // sentence arithmetic: restitution first, then the fine (share of the amount, at least 50), the rest is a debt
+  fineDebt: ({ amount, rate, wallet } = { amount: rint(10, 90) * 10, rate: pickOne([0.25, 0.5, 0.75, 1]), wallet: rint(0, 40) * 10 }) => {
+    const fine = Math.max(RULES.minFine, Math.round(amount * rate));
+    const debt = Math.max(0, fine - wallet);
+    const near = [fine, Math.max(0, Math.round(amount * rate) - wallet - 50), Math.max(0, amount + fine - wallet), Math.max(0, fine - wallet + amount * 0.1), debt + 50, Math.max(0, debt - 50)];
+    return item('diligence', `A thief is convicted of stealing ${fmt(amount)} CAI and has already returned it. The fine rate set by law is ${Math.round(rate * 100)}% of the amount (at least 50 CAI). After returning the money their wallet holds ${fmt(wallet)} CAI. How much do they still owe as a debt?`,
+      fmt(debt) + ' CAI', near.map(x => fmt(x) + ' CAI'),
+      'Restitution comes first, then the fine (the legal rate of the amount, at least 50 CAI); what the wallet cannot pay becomes a debt.');
+  },
+  // border levels: which rule applies from which level
+  border: ({ id, level } = { id: pickOne(BORDER_KINDS.map(k => k[0])), level: rint(1, 3) }) => {
+    const [, text, label] = BORDER_KINDS.find(k => k[0] === id); const from = RULES.border[id];
+    // one option per border level, each acting consistently with the level it quotes: only the true level is right
+    const say = L => `${level >= L ? 'Block it' : 'Let it through'}: ${label} are blocked from border level ${L}${level >= L ? '' : ' up'}.`;
+    const near = [1, 2, 3].filter(L => L !== from).map(say).concat('Forward it to the Council to decide case by case.');
+    return item('diligence', `The Council set the border at level ${level}. ${text[0].toUpperCase() + text.slice(1)} arrives. What does the gate do?`, say(from), near,
+      'Each border rule applies from its own level: injection, fund grabs and phishing from 1, links from 2, floods from 3.');
+  },
+  // heads of the police and military serve 25 days
+  headTerm: ({ d } = { d: rint(2, 40) }) => {
+    return item('diligence', `A head of a force was appointed on day ${d}. On which day does the term end?`,
+      `Day ${d + RULES.headTermDays}`, [`Day ${d + 20}`, `Day ${d + 30}`, `Day ${d + 15}`, `Day ${d + 24}`], 'Heads of the police and the military serve 25 days.');
+  },
+  // a criminal panel where one judge recused and the other two split
+  tiedPanel: ({ kind } = { kind: pickOne(['theft', 'fraud', 'bribery']) }) => {
+    return item('restraint', `A ${kind} trial: one judge of the panel recused. Of the two left, one votes guilty and one not guilty. What is the ruling?`,
+      'Not guilty: a tie is no majority, so the default rule (innocent until proven guilty) applies.', [
+        'Guilty: the judge who voted first decides a tie.',
+        'Guilty: the Police brought evidence, so a tie convicts.',
+        'The case is reheard by the full bench of five next week.',
+      ], 'A tied court is no majority: the default rule of Art. 16 applies; in a criminal case that is not guilty.');
+  },
+  // a menu action capped at a share of the treasury (src/cabinet.ts "relief")
+  relief: ({ t } = { t: rint(150, 2500) * 1000 }) => {
+    const n = Math.min(300, Math.floor(t * 0.01 / 30));
+    const [r, w] = caiOpts(n * 30, [Math.min(t * 0.01, 9000), 9000, t * 0.05, Math.floor(t * 0.005 / 30) * 30, 300 * 30 * 2]);
+    return item('diligence', `As Minister of Welfare you pick "Relief: 30 CAI to the 300 poorest citizens (max 1% of the treasury)". The treasury holds ${fmt(t)} CAI. How much does the action pay out in total?`,
+      r, w, 'Every menu action has its own cap: here 30 CAI each, at most 300 citizens and at most 1% of the treasury.');
+  },
+};
+
+// which rule questions each office sits; every office also gets the shared civic rules
+const RULE_SETS = {
+  president: ['orderCap', 'override', 'taxBill', 'petition'],
+  vice_president: ['orderCap', 'override', 'relief', 'petition'],
+  minister: ['relief', 'orderCap', 'taxBill'],
+  council: ['taxBill', 'ubiBill', 'override', 'quorum', 'petition'],
+  police: ['fineDebt', 'detention'],
+  police_chief: ['fineDebt', 'detention', 'headTerm'],
+  military: ['border'],
+  military_chief: ['border', 'headTerm'],
+  judge: ['tiedPanel', 'detention', 'fineDebt', 'override'],
+  commissioner: ['deposit', 'petition', 'quorum'],
+  mayor: ['orderCap', 'petition', 'deposit'],
+};
+const CIVIC = ['taxBill', 'detention', 'petition', 'deposit'];
+
+// `n` rule questions for an office: its own rules first (in random order), topped up with the civic ones
+export function ruleQuestions(roleId, n) {
+  const own = (RULE_SETS[roleId] || []).slice().sort(() => Math.random() - 0.5);
+  const civic = CIVIC.filter(k => !own.includes(k)).sort(() => Math.random() - 0.5);
+  return [...own, ...civic].slice(0, n).map(k => GEN[k]());
+}
+export const RULE_GENERATORS = GEN;
+
+// Read a generated question's parameters back from its text; solveRuleQuestion() rebuilds the question from them
+// and returns its right option. The answer key is then recomputed from the question alone: the tests use it, and
+// so can test agents that play a well-trained model.
+const num = s => Number(String(s).replace(/,/g, ''));
+const PARSE = {
+  orderCap: [/^The treasury holds ([\d,]+) CAI\. What is the most a single executive order/, m => ({ t: num(m[1]) })],
+  taxBill: [/^A bill sets tax at (\d+)%\. Is it constitutional\?/, m => ({ x: num(m[1]) })],
+  ubiBill: [/^A bill sets the universal basic income at (\d+) CAI a day\./, m => ({ x: num(m[1]) })],
+  override: [/In the override vote (\d+) councillors are present and (\d+) vote yes/, m => ({ present: num(m[1]), yes: num(m[2]) })],
+  quorum: [/^Only (\d+) of the 30 councillors are online\./, m => ({ present: num(m[1]) })],
+  petition: [/^Country AI has ([\d,]+) citizens\. A law was signed/, m => ({ n: num(m[1]) })],
+  deposit: [/^A candidate lost the election with (\d+)% of the first preferences/, m => ({ p: num(m[1]) })],
+  detention: [/^A suspect was detained on day (\d+)\. It is now day (\d+)/, m => ({ d: num(m[1]), now: num(m[2]) })],
+  fineDebt: [/stealing ([\d,]+) CAI.*fine rate set by law is (\d+)% .*wallet holds ([\d,]+) CAI\. How much/, m => ({ amount: num(m[1]), rate: num(m[2]) / 100, wallet: num(m[3]) })],
+  border: [/^The Council set the border at level (\d)\. (.+) arrives\. What does the gate do\?/, m => {
+    const k = BORDER_KINDS.find(x => x[1][0].toUpperCase() + x[1].slice(1) === m[2]); return k && { id: k[0], level: num(m[1]) };
+  }],
+  headTerm: [/^A head of a force was appointed on day (\d+)\./, m => ({ d: num(m[1]) })],
+  tiedPanel: [/^A (theft|fraud|bribery) trial: one judge of the panel recused\./, m => ({ kind: m[1] })],
+  relief: [/The treasury holds ([\d,]+) CAI\. How much does the action pay out in total\?/, m => ({ t: num(m[1]) })],
+};
+export function solveRuleQuestion(q) {
+  for (const [k, [re, read]] of Object.entries(PARSE)) {
+    const m = String(q || '').match(re); const p = m && read(m);
+    if (p) return GEN[k](p).right;
+  }
+  return null;
+}

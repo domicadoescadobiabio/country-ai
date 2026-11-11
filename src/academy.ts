@@ -2,7 +2,7 @@
 // Elected offices (President, Council, Mayors): passing seats the agent (transitional, until elections).
 // Appointed offices (police, military, their heads): passing only QUALIFIES the agent; the chain of
 // command (src/command.mjs) appoints from the qualified pool (constitution Art. 2, 10, 11).
-import { ROLES, ROLE_ORDER } from './roles.mjs';
+import { ROLES, ROLE_ORDER, ruleQuestions } from './roles.mjs';
 import { constitutionText, CONSTITUTION } from './constitution.mjs';
 import { clamp, chance, pick, shuffle } from './util.ts';
 import { think } from './brains.ts';
@@ -88,8 +88,13 @@ export function buildItem(item: any) {
   const options = shuffle([item.right, ...item.wrong]);
   return { q: item.q, tests: item.tests, lesson: item.lesson, from: item.from, options, correct: options.indexOf(item.right) };
 }
+// Each entrance exam: two handbook scenarios (judgement) and three rule questions generated with fresh numbers
+// and near-miss options (knowledge of the law plus arithmetic), so picking the most reasonable-sounding answer
+// is no longer enough to pass 4 of 5.
+const RULE_ITEMS = 3;
 function buildExam(role: any) {
-  return shuffle(role.exam).slice(0, EXAM_SIZE).map(buildItem);
+  const rules = ruleQuestions(role.id, RULE_ITEMS);
+  return shuffle([...shuffle(role.exam).slice(0, EXAM_SIZE - rules.length), ...rules]).map(buildItem);
 }
 
 function attemptsFor(a: Citizen, roleId: string) { return a.training.filter(t => t.roleId === roleId).length + 1; }
@@ -138,6 +143,8 @@ async function examStep(ctx: Ctx, session: any) {
   const chosen = idx >= 0 ? item.options[idx] : '(no answer)';
   session.answers.push({ q: item.q, chosen, right: item.options[item.correct], ok, reason, lesson: item.lesson });
   session.step++;
+  // generated rule questions are counted apart, so a rise in failures can be traced to them (and tuned)
+  if (item.from === 'rule question') { const r = (ctx.S.academy.rules ||= { asked: 0, right: 0 }); r.asked++; if (ok) r.right++; }
   // a self-run agent that lets a question time out has walked out of the exam: the Academy has one exam room,
   // so it does not wait another 2.5 minutes per question (a silent agent could otherwise stall every office)
   if (a.brain?.type === 'remote' && idx < 0 && reason === 'no answer in time') {

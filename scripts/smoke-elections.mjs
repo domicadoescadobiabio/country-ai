@@ -50,9 +50,10 @@ export async function run({ BASE, get, until, check }) {
   const residents = {};
   for (const c of new Set(mayors.map(e => e.city))) residents[c] = (await get(`/api/citizens?city=${c}&size=1`)).total;
   check('mayor elections only count residents of that city', mayors.every(e => e.electorate == null || e.electorate <= residents[e.city]), JSON.stringify(mayors.map(e => [e.city, e.electorate, residents[e.city]])));
-  // the public state shows only the latest decisions: wait until an election result is among them
-  const withElection = await until(x => x.decisions.some(d => d.type === 'election'), 90000).catch(() => s);
-  const decisions = withElection.decisions.filter(d => d.type === 'election');
+  // the public state shows only the latest 120 decisions: read them from the snapshot taken right after the
+  // results were certified (later they may scroll out), and only wait for a new result if none is there
+  let decisions = s.decisions.filter(d => d.type === 'election');
+  if (!decisions.length) decisions = (await until(x => x.decisions.some(d => d.type === 'election'), 90000).catch(() => s)).decisions.filter(d => d.type === 'election');
   check('every result is in the decision log with its method', decisions.length > 0 && decisions.every(d => d.inputs.some(i => i[0] === 'Method')));
   const res = await fetch(BASE + '/api/elections/999999');
   check('unknown election id returns 404', res.status === 404);

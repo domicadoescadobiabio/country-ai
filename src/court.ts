@@ -302,6 +302,6 @@ export const institution = {
   stats: S => ({ rulings: K(S).cases.filter(c => c.status === 'decided').length }),
   publicState: S => {
     const c = K(S);
-    return { court: { slots: c.slots, impeachment: c.impeachment && { target: c.impeachment.target, stage: c.impeachment.stage, grounds: c.impeachment.grounds, votes: c.impeachment.votes }, cases: c.cases.slice(-30).map(x => ({ id: x.id, kind: x.kind, claim: x.claim, evidence: x.evidence, status: x.status, ruling: x.ruling || null, deadline: x.deadline, openedDay: x.openedDay, votes: x.votes, quorum: x.quorum ?? null, filedBy: x.filedBy })) } };
+    return { court: { slots: c.slots, impeachment: c.impeachment && { target: c.impeachment.target, stage: c.impeachment.stage, grounds: c.impeachment.grounds, votes: c.impeachment.votes }, cases: c.cases.slice(-30).map(x => ({ id: x.id, kind: x.kind, claim: x.claim, evidence: x.evidence, status: x.status, ruling: x.ruling || null, deadline: x.deadline, openedDay: x.openedDay, votes: x.votes, quorum: x.quorum ?? null, filedBy: x.filedBy, pardoned: x.pardoned ?? null })) } };
   },
 };

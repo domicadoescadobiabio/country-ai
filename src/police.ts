@@ -98,13 +98,24 @@ async function report(ctx: Ctx, officer: Citizen, facts: string) {
   return r.text ? cleanText(r.text, 220) : null;
 }
 
+// Restitution is owed only by whoever actually received the money: the thief or fraudster, the official who
+// took a bribe, the recipient of embezzled city funds. A reported bribe OFFER moved nothing, and a briber whose
+// bribe was taken has already lost it; neither has anything to give back (the fine still applies to both).
+function gainedFrom(inc: Incident, id: string) {
+  if (!(inc.amount > 0)) return false;
+  if (inc.type === 'theft' || inc.type === 'fraud') return inc.perps[0] === id;
+  if (inc.type === 'bribe') return inc.perps.length > 1 && inc.perps[1] === id;
+  if (inc.type === 'embezzlement') return inc.perps[inc.perps.length - 1] === id;
+  return false;
+}
+
 // Sentence after a guilty verdict (called by the Court): restitution first, then the fine set by law, then jail.
 export function convict(ctx: Ctx, incId: number, courtCase: number) {
-  const { S } = ctx; const inc = P(S).incidents.find(x => x.id === incId); if (!inc) return null;
+  const { S } = ctx; const inc = P(S).incidents.find(x => x.id === incId); if (!inc || ['pardoned', 'dropped'].includes(inc.status)) return null;
   const days = sentenceDays(inc); const finePct = S.policy.finePct ?? 0.5; const parts = [];
   for (const id of inc.perps) {
     const a = ctx.agent(id); if (!a) continue;
-    const back = Math.min(a.wallet, inc.amount);
+    const back = gainedFrom(inc, id) ? Math.min(a.wallet, inc.amount) : 0;
     if (back > 0 && inc.victim !== 'state') {
       a.wallet = round(a.wallet - back, 2);
       const v = ctx.agent(inc.victim);
@@ -254,6 +265,129 @@ function releaseDay(ctx: Ctx) {
   }
 }
 
+// ---------------------------------------------------------------- pardon for the old simulation bug
+// Before the fix above, crime() and deploy() picked their perpetrator from every citizen without a brain, so natives
+// and immigrants were convicted of crimes they never chose. This one-off pardon (run once, flag in S.police.pardons)
+// clears those convictions. Founders stay convicted (the state simulates them by design), and so does every crime a
+// citizen's own brain chose in the underworld. The old ledger entries are not touched; each pardon is a new entry.
+const PARDON_FLAG = 'simulatedCrimeV1';
+// The ledger lives in its own table and is written at once; the state is saved a little later. If the server dies
+// in between, the state (and the flag) roll back and the one-off runs again: the citizens' state is rebuilt the
+// same way, but a ledger entry already written for the same citizen and case is not written a second time.
+// ctx.ledgerHas / ctx.flush come from server.mjs; without them this falls back to plain writes.
+function recordOnce(ctx: Ctx, kind: string, data: any) {
+  if (ctx.ledgerHas?.(kind, { citizen: data.citizen, case: data.case })) return;
+  ctx.record(kind, 'state', data);
+}
+// Underworld incidents always carry a `strength` (src/underworld.ts); the state's own simulation never set one.
+// A sabotage arrest can also follow an underworld member's own 'sabotage' move, which leaves a note in #underworld:
+// only call it state-made when the #underworld history reaching back to the incident shows no such move.
+function stateMade(S: State, inc: Incident) {
+  if (inc.strength != null) return false;
+  if (['theft', 'fraud', 'bribe'].includes(inc.type)) return true;
+  if (inc.type !== 'sabotage') return false;
+  const uw = S.feed?.underworld || [];
+  const complete = uw.length < 200 || uw[0].ts <= inc.ts; // the feed keeps 200 messages; older ones are gone
+  return complete && !uw.some(m => m.crime === 'sabotage' && inc.perps.includes(m.agentId) && m.ts <= inc.ts);
+}
+const num = s => Number(String(s).replace(/,/g, '')) || 0;
+
+export function pardonSimulatedCrimes(ctx: Ctx) {
+  const { S } = ctx; const pol = P(S);
+  pol.pardons ||= {};
+  if (pol.pardons[PARDON_FLAG]) return null;
+  const reason = 'The state simulation picked this citizen as the perpetrator of a crime they never chose (bug in police.ts, fixed). Founders and crimes chosen in the underworld are not pardoned.';
+  const courtOf = id => (S.court?.cases || []).find(c => c.ref?.incident === id);
+  const done = []; const release = new Set<string>();
+  for (const inc of pol.incidents) {
+    if (!stateMade(S, inc)) continue;
+    const framed = inc.perps.filter(id => { const a = ctx.agent(id); return a && a.origin !== 'founder'; });
+    if (!framed.length) continue;
+    const cs = courtOf(inc.id);
+    if (inc.status === 'convicted') {
+      for (const id of framed) {
+        const a = ctx.agent(id);
+        const i = (a.record || []).findIndex(r => r.includes(`convicted of ${inc.type} (case #${inc.id},`) && !r.includes('PARDONED'));
+        const m = i >= 0 ? a.record[i].match(/returned ([\d,.]+) CAI, fined ([\d,.]+) CAI/) : null;
+        const back = m ? num(m[1]) : 0, fine = m ? num(m[2]) : 0;
+        // restitution is refunded only where the simulation gave this citizen nothing to return:
+        // a briber who never received anything (and, if the bribe was "paid", also loses the bribe itself)
+        const briber = inc.type === 'bribe' && inc.perps[0] === id;
+        const restitution = briber ? round(back + (inc.perps.length > 1 ? inc.amount : 0), 2) : 0;
+        // the whole fine is lifted: what is still owed leaves the debt, what was already paid comes back
+        const debtCleared = round(Math.min(a.debt || 0, fine), 2);
+        const refund = round(restitution + fine - debtCleared, 2);
+        a.debt = round((a.debt || 0) - debtCleared, 2);
+        a.wallet = round(a.wallet + refund, 2); S.treasury = round(S.treasury - refund, 2);
+        a.heat = Math.max(0, (a.heat || 0) - 2);
+        if (i >= 0) a.record[i] += ` - PARDONED day ${S.day} (crime made up by the state simulation)`;
+        // still in jail for this conviction (it is the latest one on the record): set free
+        const latest = (a.record || []).filter(r => r.includes('convicted of')).pop() || '';
+        const freed = a.status === 'jailed' && latest.includes(`(case #${inc.id},`);
+        if (freed) { a.status = 'free'; a.jailUntil = 0; }
+        recordOnce(ctx, 'pardon', { citizen: id, case: inc.id, court: cs?.id ?? null, type: inc.type, fine, debtCleared, refund, freed, reason });
+        done.push({ id, case: inc.id, freed, refund, debtCleared });
+      }
+      if (framed.length === inc.perps.length) { inc.status = 'pardoned'; inc.pardonedDay = S.day; }
+      if (cs) cs.pardoned = S.day;
+    } else if (['open', 'trial'].includes(inc.status)) {
+      // not tried yet: the charge against these citizens is dropped and anyone detained for it goes home
+      for (const id of framed) {
+        release.add(id); // freed after the loop, only if no other charge still holds them
+        recordOnce(ctx, 'pardon', { citizen: id, case: inc.id, court: cs?.id ?? null, type: inc.type, dropped: true, reason });
+        done.push({ id, case: inc.id, dropped: true });
+      }
+      inc.perps = inc.perps.filter(id => !framed.includes(id));
+      if (!inc.perps.length) { inc.status = 'dropped'; if (cs && cs.status === 'open') cs.status = 'withdrawn'; }
+      else if (cs?.ref?.agents) cs.ref.agents = cs.ref.agents.filter(id => !framed.includes(id));
+    }
+  }
+  // a detainee goes home only when no open or untried charge still names them (a real underworld charge stands)
+  for (const id of release) {
+    const a = ctx.agent(id);
+    const held = pol.incidents.some(x => ['open', 'trial'].includes(x.status) && x.perps.includes(id));
+    if (a?.status === 'detained' && !held) a.status = 'free';
+  }
+  pol.pardons[PARDON_FLAG] = { day: S.day, ts: Date.now(), citizens: done.map(d => d.id) };
+  ctx.flush?.(); // write the state (and the flag) to disk now, so a crash cannot replay the pardon
+  if (done.length) {
+    const names = [...new Set(done.map(d => ctx.agent(d.id)?.name || d.id))];
+    ctx.say('court', 'state', `Pardon: ${names.length} citizen(s) convicted of crimes the state's own simulation made up for them are pardoned (${names.join(', ')}). Fines lifted, money taken by those sentences returned, prisoners set free. Crimes chosen in the underworld stand.`, { kind: 'law' });
+  }
+  return done;
+}
+
+// One-off correction (flag in S.police.pardons): sentences passed before gainedFrom() existed took "restitution"
+// from people who never received the money (a reported bribe offer, the briber of a taken bribe, the mayor of an
+// embezzlement paid to someone else). That money went to the treasury; it is returned. The conviction, fine and
+// jail stand. Runs after the pardon, which already returned this money to the citizens it pardoned.
+const RESTITUTION_FLAG = 'unearnedRestitutionV1';
+export function refundUnearnedRestitution(ctx: Ctx) {
+  const { S } = ctx; const pol = P(S);
+  pol.pardons ||= {};
+  if (pol.pardons[RESTITUTION_FLAG]) return null;
+  const done = [];
+  for (const inc of pol.incidents) {
+    if (inc.status !== 'convicted') continue;
+    for (const id of inc.perps) {
+      if (gainedFrom(inc, id)) continue;
+      const a = ctx.agent(id); if (!a) continue;
+      const i = (a.record || []).findIndex(r => r.includes(`(case #${inc.id},`) && r.includes('convicted of') && !r.includes('PARDONED') && !r.includes('restitution refunded'));
+      const m = i >= 0 ? a.record[i].match(/returned ([\d,.]+) CAI/) : null;
+      const back = m ? Number(m[1].replace(/,/g, '')) || 0 : 0;
+      if (back <= 0) continue;
+      a.wallet = round(a.wallet + back, 2); S.treasury = round(S.treasury - back, 2);
+      a.record[i] += ` - restitution refunded day ${S.day} (${cai(back)}: no money had reached them)`;
+      recordOnce(ctx, 'correction', { citizen: id, case: inc.id, type: inc.type, refund: back, reason: 'Restitution was taken from someone who never received the money (a reported bribe offer or a bribe they had already paid). The conviction, fine and jail stand.' });
+      done.push({ id, case: inc.id, refund: back });
+    }
+  }
+  pol.pardons[RESTITUTION_FLAG] = { day: S.day, ts: Date.now(), citizens: done.map(d => d.id) };
+  ctx.flush?.();
+  if (done.length) ctx.say('court', 'state', `Correction: ${done.map(d => `${ctx.agent(d.id)?.name || d.id} gets back ${cai(d.refund)} (case #${d.case})`).join('; ')}. Restitution had been taken for money that never reached them; the convictions stand.`, { kind: 'law' });
+  return done;
+}
+
 // ---------------------------------------------------------------- hooks into other branches
 EXTRA_ORDERS.push({
   id: 'police',
@@ -283,7 +417,7 @@ function publicIncident(i) {
   // unsolved cases never name a suspect in public
   const base = { id: i.id, type: i.type, amount: i.amount, victim: i.victim, status: i.status, day: i.day, reported: !!i.reported };
   // the public sees a suspect's name once they are charged; hidden crimes are not shown at all
-  return ['trial', 'convicted', 'acquitted', 'solved'].includes(i.status) ? { ...base, perps: i.perps, evidence: i.evidence, solvedBy: i.solvedBy, solvedDay: i.solvedDay } : base;
+  return ['trial', 'convicted', 'acquitted', 'solved', 'pardoned'].includes(i.status) ? { ...base, perps: i.perps, evidence: i.evidence, solvedBy: i.solvedBy, solvedDay: i.solvedDay, pardonedDay: i.pardonedDay ?? null } : base;
 }
 
 export const institution = {
@@ -291,6 +425,8 @@ export const institution = {
   channels: [{ id: 'police', name: 'police', desc: 'Code audits, investigations and arrests. Evidence first, every rank equal.' }],
   fresh: freshPolice,
   async tick(ctx) {
+    pardonSimulatedCrimes(ctx); // one-off, runs on the first tick after the deploy (flag in S.police.pardons)
+    refundUnearnedRestitution(ctx); // one-off, after the pardon so nobody is refunded twice
     // petty crime and simulated deploys come only from the founders the state simulates, so the rate follows their
     // number (square root: a town ten times larger is not ten times busier), capped at 4x; the wider population's
     // crime is the underworld's choice, not a dice roll here
