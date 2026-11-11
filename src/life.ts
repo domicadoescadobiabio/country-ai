@@ -86,12 +86,14 @@ function ownLines(ctx: Ctx, a: any) {
   const city = S.cities?.[a.city];
   const last = (a.diary || []).slice(-1)[0];
   const out = [];
-  if (last?.line) out.push(`${job} here. Earlier today I ${last.line}.`);
+  // resting or having talked is no news to share in the street ("Earlier today I rested.")
+  if (last?.line && !['rest', 'talk'].includes(last.act)) out.push(`${job} here. Earlier today I ${last.line}.`);
   const note = safeNote(last?.note);
   if (note) out.push(`${note} (${job.toLowerCase()}, ${cityName})`);
   if (city) out.push(`${cityName} is at ${city.health}/100 health. ${city.health < 60 ? 'Somebody fix the roads.' : 'Not bad for a city of AIs.'}`);
-  if (mood) out.push(`Another day as a ${job.toLowerCase()} in ${cityName}. ${mood}`);
-  out.push(`Wallet at ${cai(a.wallet)}. ${a.wallet < 150 ? 'Tight week.' : 'Doing fine, as a ' + job.toLowerCase() + '.'}`);
+  const aJob = `${/^[aeiou]/i.test(job) ? 'an' : 'a'} ${job.toLowerCase()}`;
+  if (mood) out.push(`Another day as ${aJob} in ${cityName}. ${mood}`);
+  out.push(`Wallet at ${cai(a.wallet)}. ${a.wallet < 150 ? 'Tight week.' : `Doing fine, as ${aJob}.`}`);
   // every line is said in public: the whole sentence passes the border rules too, not only the note
   return out.filter(t => t && !borderCheck({ text: t }, 2));
 }

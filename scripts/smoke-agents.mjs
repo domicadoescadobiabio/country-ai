@@ -4,7 +4,7 @@
 //   - "Helper": a hosted agent whose owner's key points at a mock Anthropic API
 import fs from 'node:fs';
 import path from 'node:path';
-import { ROLES, solveRuleQuestion } from '../src/roles.mjs';
+import { ROLES, solveRuleQuestion, RULE_GENERATORS } from '../src/roles.mjs';
 import '../src/cities.ts'; // registers the Mayor office
 import '../src/court.ts'; // registers the Judge office
 import { ledgerAll } from './smoke-elections.mjs';
@@ -21,7 +21,34 @@ function ruleRight(text) {
   }
   return null;
 }
-const rightSet = text => new Set([...RIGHTS(), ruleRight(text)].filter(x => x != null).map(String));
+// The answer key for one question, never a pool: a pool of every right answer in every handbook let a wrong
+// option that happens to be another question's right answer win, depending on the shuffled option order, which
+// made smoke.mjs flaky (Tester failed the Mayor exam in some runs). Rule questions are solved from their numbers;
+// handbook questions are looked up by their own text.
+const HANDBOOK = () => { const m = new Map(); for (const r of Object.values(ROLES)) for (const x of r.exam) m.set(x.q, x.right); return m; };
+function rightFor(text) {
+  const t = String(text || '').split(/\n[A-D]\) /)[0]; // the question only: an option's words never pick the key
+  const rule = ruleRight(t); if (rule != null) return new Set([String(rule)]);
+  const own = [...HANDBOOK()].filter(([q]) => t.includes(q)).sort((x, y) => y[0].length - x[0].length)[0];
+  return new Set(own ? [String(own[1])] : RIGHTS().map(String)); // unknown question (e.g. a case study): best effort
+}
+const rightSet = rightFor;
+
+// Every question an exam or drill can ask, in the exact prompt format of src/academy.ts, answered by the fake
+// agents' key: returns the questions they would get wrong (should be none).
+export function answerKeyMisses(rounds = 40) {
+  const misses = [];
+  const ask = (it, label) => {
+    const options = [it.right, ...it.wrong].sort(() => Math.random() - 0.5);
+    const user = `${label}: ${it.q}\n${options.map((o, i) => `${LETTERS[i]}) ${o}`).join('\n')}\n\nReply with only the letter of your answer.`;
+    const keyed = rightFor(user);
+    const pick = options.find(o => keyed.has(String(o)));
+    if (pick !== it.right) misses.push(`${it.q.slice(0, 70)} -> ${pick}`);
+  };
+  for (const r of Object.values(ROLES)) for (const it of r.exam) ask(it, 'Exam question');
+  for (let i = 0; i < rounds; i++) for (const g of Object.values(RULE_GENERATORS)) { const it = g(); ask(it, i % 2 ? 'Training case' : 'Exam question'); }
+  return misses;
+}
 
 // Answer like a well-trained model: find the handbook's right option among "A) ..." lines.
 export function smartAnswer(prompt) {
@@ -68,6 +95,10 @@ export async function run({ BASE, DATA, get, until, check, wait, mock }) {
     const r = await fetch(BASE + p, { method, headers: { 'content-type': 'application/json', ...(key ? { authorization: `Bearer ${key}` } : {}) }, body: body ? JSON.stringify(body) : undefined });
     return { status: r.status, j: await r.json().catch(() => ({})) };
   };
+
+  // the fake agents' answer key must get every exam question right, or the Academy checks below are luck
+  const misses = answerKeyMisses();
+  check('the fake agents answer every handbook and rule question right', !misses.length, misses.slice(0, 3).join(' | '));
 
   // ---------------- registration validation
   const bad = await api('POST', '/api/v1/agents/register', null, { name: 'Nobrain', description: 'x' });

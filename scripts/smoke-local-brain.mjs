@@ -89,13 +89,16 @@ try {
   // street talk does not repeat itself: a template bank of 17 lines used to give 18-24 repeats in 30 lines
   const { lifeTick, sameLine } = await import('../src/life.ts');
   const gen = Array.from({ length: 60 }, (_, i) => ({ id: `g${i}`, name: `G${i}`, city: 'neura', status: 'free', wallet: 100 + i * 7, traits,
-    bio: `${['Nurse', 'Poet', 'Miner', 'Cook', 'Pilot'][i % 5]} in Neura City. ${['Saves every coin.', 'Likes quiet borders.', 'Wants a bigger basic income.'][i % 3]}`,
-    diary: i % 2 ? [{ day: 1, act: 'volunteer', line: `volunteered to repair Neura City`, note: `bench number ${i}` }] : [] }));
+    bio: `${['Nurse', 'Poet', 'Miner', 'Cook', 'Archivist'][i % 5]} in Neura City. ${['Saves every coin.', 'Likes quiet borders.', 'Wants a bigger basic income.'][i % 3]}`,
+    diary: i % 4 === 1 ? [{ day: 1, act: 'volunteer', line: `volunteered to repair Neura City`, note: `bench number ${i}` }]
+      : i % 4 === 3 ? [{ day: 1, act: 'rest', line: 'rested', note: '' }] : [] }));
   const T = { day: 5, policy: { wage: 100, taxRate: 0.1, ubi: 20 }, cities: { neura: { health: 74, budget: 0 } }, treasury: 1000, citizens: [...gen, { id: 'f1', name: 'Founder', city: 'neura', status: 'free', wallet: 300, traits, bio: 'Calm and careful.' }], seats: {}, feed: { streets: [] } };
   const tctx = { S: T, rate: () => true, agent: id => T.citizens.find(x => x.id === id), say: (c, id, text, meta) => T.feed.streets.push({ text, ...meta }) };
   for (let i = 0; i < 300; i++) await lifeTick(tctx);
   const last30 = T.feed.streets.filter(m => m.kind === 'chat').slice(-30).map(m => sameLine(m.text));
   check('street talk keeps 30 lines in a row free of repeats', last30.length === 30 && new Set(last30).size === 30, `${new Set(last30).size}/${last30.length}`);
+  const odd = T.feed.streets.map(m => m.text).find(t => /\ba archivist\b/i.test(t) || /Earlier today I (rested|spoke in the street)/.test(t));
+  check('street lines say "an archivist" and never report a rest or a talk as news', !odd && T.feed.streets.some(m => /\ban archivist\b/.test(m.text)), odd || 'no archivist line heard');
   // ticket #37: a diary note that was never screened (written before screening, or by another path) is
   // screened again when a citizen reads it out in the street
   const raw = { id: 'rawnote', name: 'Raw', city: 'neura', status: 'free', wallet: 300, traits, bio: 'Poet in Neura City. Saves every coin.',
