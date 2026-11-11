@@ -67,7 +67,9 @@ function needsExam(S: State, roleId: string) {
   if (role.cityBased) return thinCities(S, roleId).length > 0;
   // enough qualified people FREE to run against each other: someone already standing in another race cannot
   // stand here too (one candidacy at a time), so they do not count
-  if (role.elected) { const busy = runningElsewhere(S, roleId); return qualifiedPool(S, roleId).filter(a => !busy.has(a.id)).length < role.seats + 3; }
+  // enough qualified people who can really stand against each other: not holding another seat (judges and
+  // officials in mid-term may not run), able to pay the deposit, and not standing in a race for another office
+  if (role.elected) { const busy = runningElsewhere(S, roleId); return qualifiedPool(S, roleId).filter(a => !busy.has(a.id) && (!a.office || a.office === roleId) && a.wallet >= 100).length < role.seats + 3; }
   if (vacancies(S, roleId) <= 0) return false;
   return role.appointed ? qualifiedPool(S, roleId).length < POOL_TARGET : true;
 }
@@ -76,7 +78,7 @@ function chooseCandidate(ctx: Ctx, roleId: string) {
   const { S } = ctx; const role = ROLES[roleId];
   const thin = role.cityBased ? thinCities(S, roleId) : null;
   const busy = thin || role.elected ? runningElsewhere(S, roleId) : null;
-  const pool = S.citizens.filter(a => !a.brain && !inExam(S, a.id) && examEligible(S, a, roleId) && (!busy || !busy.has(a.id)) && (!thin || thin.includes(a.city)));
+  const pool = S.citizens.filter(a => !a.brain && !inExam(S, a.id) && examEligible(S, a, roleId) && (!busy || !busy.has(a.id)) && (!role.elected || (!a.office && a.wallet >= 100)) && (!thin || thin.includes(a.city)));
   if (!pool.length) return null;
   return pool.map(a => ({ a, s: suitability(a, role) })).sort((x, y) => y.s - x.s)[0].a;
 }
