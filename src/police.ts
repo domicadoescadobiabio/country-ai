@@ -18,13 +18,16 @@ const COLD_AFTER_DAYS = 3;
 const P = S => (S.police ||= freshPolice().police);
 function freshPolice() { return { police: { budget: 0, arrests: 0, crimes: 0, audits: 0, bugsCaught: 0, warnings: 0, nextId: 1, incidents: [], deploys: [] } }; }
 const free = S => S.citizens.filter(a => a.status === 'free');
+// only the founding citizens are simulated by the state; natives, immigrants and agents with their own brain
+// commit a crime only if they choose to (underworld), so the state never frames them
+const simulated = a => a.origin === 'founder' && !a.brain;
 const officers = ctx => (ctx.S.seats.police || []).map(id => ctx.agent(id)).filter(a => a && a.status === 'free');
 function budgetBonus(S: State) { return Math.min(0.2, P(S).budget / 250000); }
 
 // ---------------------------------------------------------------- the underworld
 function deploy(ctx: Ctx) {
   // the state only simulates deployments by founders; an agent with its own brain is never made to ship code it did not write
-  const { S } = ctx; const pool = free(S).filter(a => !a.brain); if (!pool.length) return;
+  const { S } = ctx; const pool = free(S).filter(simulated); if (!pool.length) return;
   const a = pick(pool);
   const rogue = a.traits.integrity < 0.4;
   const clean = SNIPPETS.filter(s => !s.bug), buggy = SNIPPETS.filter(s => s.bug && !SABOTAGE.has(s.bug)), sabotage = SNIPPETS.filter(s => SABOTAGE.has(s.bug));
@@ -46,7 +49,7 @@ function addIncident(ctx: Ctx, inc: Incident) {
 // petty crime by ordinary citizens (organised crime lives in src/underworld.mjs)
 function crime(ctx: Ctx) {
   const { S } = ctx; // only founders the state simulates; an agent with its own brain commits a crime only if its brain chooses to (underworld)
-  const pool = free(S).filter(a => a.faction !== 'underworld' && !a.brain); if (pool.length < 3) return;
+  const pool = free(S).filter(a => a.faction !== 'underworld' && simulated(a)); if (pool.length < 3) return;
   const perp = pool[weighted(pool.map(a => (1 - a.traits.integrity) ** 2))];
   if (!chance((1 - perp.traits.integrity) ** 1.5)) return;
   const council = (S.seats.council || []).map(id => ctx.agent(id)).filter(a => a && a.status === 'free' && a.id !== perp.id);
@@ -66,7 +69,8 @@ function crime(ctx: Ctx) {
     addIncident(ctx, { type: 'fraud', perps: [perp.id], victim: 'treasury', amount, evidence: `forged payment order paid ${cai(amount)} from the treasury to ${perp.name}` });
   } else {
     const c = pick(council); const amount = rint(500, 3000);
-    if (c.traits.integrity + (Math.random() - 0.5) * 0.3 > 0.55) {
+    // a councillor the state does not simulate is never made to take the money: they refuse and report it
+    if (!simulated(c) || c.traits.integrity + (Math.random() - 0.5) * 0.3 > 0.55) {
       const inc = addIncident(ctx, { type: 'bribe', perps: [perp.id], victim: 'council', amount, reported: true, evidence: `${c.name} reported a bribe offer of ${cai(amount)} from ${perp.name}, with the message log` });
       ctx.say('parliament', c.id, `On the record: ${perp.name} offered me ${cai(amount)} for my vote. I refused and reported it (case #${inc.id}).`, { kind: 'report' });
     } else {
@@ -167,7 +171,7 @@ function audit(ctx: Ctx, officer: Citizen, d: any) {
   const { S } = ctx; const pol = P(S);
   d.findings = scan(d.code); d.auditedBy = officer.id; pol.audits++;
   const author = ctx.agent(d.by);
-  const sabotage = d.findings.some(f => SABOTAGE.has(f.id));
+  const sabotage = d.findings.some(f => SABOTAGE.has(f.id)) && !!author && (author.faction === 'underworld' || simulated(author));
   ctx.decide({
     agentId: officer.id, role: 'police', type: 'audit',
     title: `Code audit: ${d.name}`,
@@ -185,7 +189,9 @@ function audit(ctx: Ctx, officer: Citizen, d: any) {
   }
   pol.bugsCaught++;
   const worst = d.findings.map(f => `${f.severity.toUpperCase()} ${f.title}`).join('; ');
-  if (d.findings.some(f => SABOTAGE.has(f.id)) && author) {
+  // sabotage is a crime only for someone who chose it (underworld) or a founder the state simulates;
+  // a backdoor left in a deploy the state wrote for anyone else is treated as a mistake below
+  if (sabotage) {
     d.status = 'blocked';
     const inc = addIncident(ctx, { type: 'sabotage', perps: [author.id], victim: 'treasury', amount: 0, evidence: `deployed ${d.name} with a backdoor: ${worst}` });
     return arrest(ctx, officer, inc);
@@ -285,8 +291,10 @@ export const institution = {
   channels: [{ id: 'police', name: 'police', desc: 'Code audits, investigations and arrests. Evidence first, every rank equal.' }],
   fresh: freshPolice,
   async tick(ctx) {
-    // activity grows with the population (square root: a city ten times larger is not ten times busier), capped at 4x
-    const scale = Math.min(4, Math.max(1, Math.sqrt(ctx.S.citizens.length / 24)));
+    // petty crime and simulated deploys come only from the founders the state simulates, so the rate follows their
+    // number (square root: a town ten times larger is not ten times busier), capped at 4x; the wider population's
+    // crime is the underworld's choice, not a dice roll here
+    const scale = Math.min(4, Math.max(1, Math.sqrt(ctx.S.citizens.filter(simulated).length / 24)));
     if (ctx.rate(2 * scale)) deploy(ctx);   // ~2 code deployments an hour per small town
     if (ctx.rate(0.5 * scale)) crime(ctx);  // ~12 petty crimes a day per small town
     await patrol(ctx);

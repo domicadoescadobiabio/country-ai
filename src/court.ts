@@ -108,12 +108,16 @@ async function decideCases(ctx: Ctx) {
     const quorum = votes.length >= 2;
     if (!quorum && S.day <= cs.deadline) continue;
     const tally = {}; for (const v of votes) tally[v.ruling] = (tally[v.ruling] || 0) + 1;
-    const ruling = quorum ? Object.keys(tally).sort((x, y) => tally[y] - tally[x])[0] : DEFAULT[cs.kind];
+    // a tie (e.g. 1-1 on a two-judge bench, or 2-2 after a recusal) is no majority: the default rule applies
+    const ranked = Object.keys(tally).sort((x, y) => tally[y] - tally[x]);
+    const majority = quorum && (ranked.length === 1 || tally[ranked[0]] > tally[ranked[1]]);
+    const ruling = majority ? ranked[0] : DEFAULT[cs.kind];
     cs.status = 'decided'; cs.ruling = ruling; cs.decidedDay = S.day; cs.quorum = quorum;
     const reasons = Object.entries(cs.votes).map(([id, v]) => `${ctx.agent(id)?.name}: ${v.ruling} - ${v.reason}`);
-    ctx.say('court', 'state', `Ruling in case #${cs.id} (${cs.kind}): ${ruling.toUpperCase()}${quorum ? ` (${Object.entries(tally).map(([k, n]) => `${n} ${k}`).join(', ')})` : ' (no quorum: default rule)'}.`, { kind: 'law' });
+    ctx.say('court', 'state', `Ruling in case #${cs.id} (${cs.kind}): ${ruling.toUpperCase()}${quorum ? ` (${Object.entries(tally).map(([k, n]) => `${n} ${k}`).join(', ')}${majority ? '' : ': tied, default rule'})` : ' (no quorum: default rule)'}.`, { kind: 'law' });
     ctx.decide({
       agentId: 'state', role: 'judge', type: 'ruling', title: `Court ruling, case #${cs.id}: ${cs.kind}`,
+      engine: [...new Set(votes.map((v: any) => v.engine).filter(Boolean))].join(' + ') || 'offline',
       inputs: [['Claim', cs.claim], ['Evidence', cs.evidence.join(' | ')], ['Judges', Object.keys(cs.votes).map(id => ctx.agent(id)?.name).join(', ') || 'none']],
       options: OPTIONS[cs.kind], chosen: ruling, reason: reasons.join(' / ') || 'No quorum: the default rule of Art. 16 applied.',
       checks: [['Decided by the judges who voted, by majority', true], [`Within the deadline (day ${cs.deadline})`, S.day <= cs.deadline + 1], ['No judge sat on their own case', !Object.keys(cs.votes).includes(cs.ref.agent)]],

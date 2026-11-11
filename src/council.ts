@@ -177,7 +177,7 @@ export async function councilTick(ctx: Ctx) {
     if (!next) { bill.stage = 'vote'; return; }
     const d = await decide(ctx, next, bill, type, 'council');
     if (d.pending) return;
-    bill.spoke.push(next.id); bill.votes[next.id] = d.yes;
+    bill.spoke.push(next.id); bill.votes[next.id] = d.yes; (bill.engines ||= {})[next.id] = d.engine;
     logVote(ctx, next, bill, type, d, 'council', 'debate');
     ctx.say('parliament', next.id, d.speech, { kind: 'debate', billId: bill.id, vote: d.yes ? 'yes' : 'no', engine: d.engine });
     return;
@@ -208,7 +208,7 @@ export async function councilTick(ctx: Ctx) {
   if (bill.stage === 'override') {
     for (const a of members) {
       bill.override[a.id] = bill.votes[a.id] ?? closer(a, type, bill.value, bill.from).yes;
-      logVote(ctx, a, bill, type, { yes: bill.override[a.id], reason: `Override: I keep my earlier ${bill.override[a.id] ? 'yes' : 'no'} on this bill.`, engine: 'offline' }, 'council', 'override');
+      logVote(ctx, a, bill, type, { yes: bill.override[a.id], reason: `Override: I keep my earlier ${bill.override[a.id] ? 'yes' : 'no'} on this bill.`, engine: bill.engines?.[a.id] || 'offline' }, 'council', 'override');
     }
     const yes = Object.values(bill.override).filter(Boolean).length;
     if (yes >= OVERRIDE) return enact(ctx, bill, `veto overridden ${yes}-${members.length - yes}`);
