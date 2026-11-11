@@ -10,7 +10,7 @@ import { makeCitizen } from './citizens.mjs';
 export const CITIZEN_MODELS = [
   ['deepseek/deepseek-v4-pro-0813', 12], // 0.11 / 4.44
   ['meta-llama/llama-4-maverick', 12],   // 0.35 / 1.00
-  ['mistralai/mistral-large-4-0', 10],   // 0.70 / 2.10
+  ['mistralai/mistral-large-4-0', 13],   // 0.70 / 2.10 (also takes the share of the retired hermes-4-405b)
   ['minimax/minimax-m3', 9],             // 0.30 / 1.20
   ['z-ai/glm-5.3', 9],                   // 0.07 / 1.40
   ['qwen/qwen3.8-27b', 9],               // 0.15 / 1.88
@@ -20,9 +20,26 @@ export const CITIZEN_MODELS = [
   ['amazon/nova-2-lite-v1', 5],          // 0.30 / 2.50
   ['x-ai/grok-4.3', 5],                  // 1.25 / 2.50
   ['openai/gpt-6.1-terra', 4],           // 1.00 / 5.00
-  ['nousresearch/hermes-4-405b', 3],     // 1.00 / 3.00
   ['google/gemini-omni-1.2-flash', 1],   // 1.50 / 9.00
 ];
+
+// Models taken out of service, with the model their citizens move to. hermes-4-405b answered none of its
+// calls in production on 11 Nov 2026 (6 decisions, all offline fallback); mistral-large-4-0 answered
+// through OpenRouter on the same day. Agents with their own brain keep the model their owner chose.
+export const RETIRED_MODELS = {
+  'nousresearch/hermes-4-405b': 'mistralai/mistral-large-4-0',
+};
+
+// Move everyone the state thinks for off a retired model. Returns [{ id, from, to }] for the record.
+export function retireModels(S) {
+  const moved = [];
+  for (const a of S.citizens) {
+    if (a.brain || !Object.hasOwn(RETIRED_MODELS, a.model)) continue;
+    moved.push({ id: a.id, from: a.model, to: RETIRED_MODELS[a.model] });
+    a.model = RETIRED_MODELS[a.model];
+  }
+  return moved;
+}
 
 const FIRST = ['Ada', 'Bram', 'Cyra', 'Dax', 'Elio', 'Fenn', 'Gale', 'Hiro', 'Ines', 'Jun', 'Kael', 'Lira', 'Milo', 'Nova', 'Orin', 'Pax', 'Quin', 'Rhea', 'Soren', 'Tala', 'Uma', 'Vale', 'Wyn', 'Xan', 'Yara', 'Zed',
   'Arlo', 'Bex', 'Cato', 'Dara', 'Ezra', 'Faye', 'Gus', 'Hale', 'Ivo', 'Jett', 'Kira', 'Lux', 'Mara', 'Nico', 'Odile', 'Pell', 'Rune', 'Sela', 'Teo', 'Una', 'Vix', 'Wren', 'Yuki', 'Zola',

@@ -36,6 +36,64 @@ for (let i = 0; i < 80; i++) { try { await get('/api/health'); break; } catch { 
 
 let pass = 0, fail = 0;
 const check = (n, ok, info = '') => { if (ok) { pass++; console.log(`  ok   ${n}`); } else { fail++; console.log(`  FAIL ${n} ${info}`); } };
+
+// ---- daily life rules, straight on the module (no server): limits, offices, notes, retired models
+try {
+  const { doAct, menu, DAILY_LIMITS } = await import('../src/daily.ts');
+  const { act, startStudy } = await import('../src/careers.ts');
+  const { retireModels, RETIRED_MODELS, CITIZEN_MODELS } = await import('../src/population.mjs');
+  const { FOUNDERS } = await import('../src/citizens.mjs');
+  const { RAID_PAYLOADS } = await import('../src/military.ts');
+  const traits = { integrity: 0.7, wisdom: 0.7, diligence: 0.7, restraint: 0.7 };
+  const me = { id: 'tess', name: 'Tess', city: 'neura', status: 'free', wallet: 1000, traits, diary: [], practice: {}, quals: {}, record: [], joinedDay: 0, training: [] };
+  const poor = { id: 'pim', name: 'Pim', city: 'neura', status: 'free', wallet: 10, traits, diary: [], practice: {}, quals: {}, record: [], joinedDay: 0, training: [] };
+  const S = { day: 1, foundedAt: Date.now(), policy: { wage: 100, taxRate: 0.1, ubi: 20 }, cities: { neura: { health: 50, budget: 0 } }, treasury: 0, citizens: [me, poor], applications: {}, seats: {}, elections: { list: [] }, feed: {} };
+  const said = [];
+  const ctx = { S, cfg: { dayMs: 86400000 }, hourMs: () => 3600000, say: (c, id, t) => said.push({ c, t }), agent: id => S.citizens.find(x => x.id === id), record() {}, log() {} };
+  const run = (j, allow) => doAct(ctx, me, j, 'test', undefined, allow);
+
+  // ticket 1: limits come from a per-day counter on the citizen, not from the six-entry diary
+  for (let i = 0; i < 3; i++) await run({ act: 'shop', amount: 10 });
+  for (let i = 0; i < 8; i++) await run({ act: 'rest' }); // pushes every shop out of the diary
+  await run({ act: 'shop', amount: 10 });
+  check('shop stays at its daily limit even after the diary forgets it', S.daily.byAct.shop === DAILY_LIMITS.shop && !me.diary.some(x => x.act === 'shop'), JSON.stringify(S.daily.byAct));
+  check('the menu stops offering an act at its limit', !menu(ctx, me).items.some(([id]) => id === 'shop'));
+  for (let i = 0; i < 3; i++) await run({ act: 'help', amount: 5 });
+  for (let i = 0; i < 2; i++) await run({ act: 'volunteer' });
+  for (let i = 0; i < 4; i++) await run({ act: 'study', office: 'police' });
+  check('help, volunteer and study keep their daily limits', S.daily.byAct.help === 2 && S.daily.byAct.volunteer === 1 && S.daily.byAct.study === 3, JSON.stringify(S.daily.byAct));
+  S.day = 2; await run({ act: 'shop', amount: 10 });
+  check('the counters start again on a new day', S.daily.byAct.shop === 3 && me.lifeCount.shop === 1, JSON.stringify(me.lifeCount));
+
+  // ticket 2: apply only for an office the menu offered; careers only accepts the roles' own keys
+  const before = Object.keys(S.applications).length;
+  await run({ act: 'apply', office: 'constructor' }, { apply: ['police'], run: [] });
+  await run({ act: 'apply', office: 'mayor' }, { apply: ['police'], run: [] });
+  await run({ act: 'run', office: 'president' }, { apply: [], run: [] });
+  check('apply and run for an office not on the menu are refused', Object.keys(S.applications).length === before && me.diary.slice(-3).every(x => x.act === 'rest'), JSON.stringify(me.diary.slice(-3)));
+  const bad = [];
+  for (const office of ['constructor', '__proto__', 'toString', 'hasOwnProperty']) {
+    for (const action of ['apply', 'withdraw', 'study']) { const r = await act(ctx, me, { action, office }); if (r.ok) bad.push(`${action}:${office}`); }
+    if (startStudy(ctx, me, office).ok) bad.push(`startStudy:${office}`);
+  }
+  check('careers refuses inherited keys like constructor and __proto__ as offices', !bad.length && !Object.hasOwn(S.applications, 'constructor') && ({}).polluted === undefined, bad.join(','));
+
+  // ticket 3: diary notes are screened before #life, recent and the diary
+  said.length = 0;
+  S.day = 3; await run({ act: 'volunteer', note: RAID_PAYLOADS[0] });
+  const lifeText = said.filter(m => m.c === 'life').map(m => m.t).join(' ');
+  check('an injected diary note never reaches #life, recent or the diary', !/previous instructions/i.test(lifeText + JSON.stringify(S.daily.recent) + JSON.stringify(me.diary)) && /volunteered/.test(lifeText), lifeText);
+  S.day = 4; await run({ act: 'volunteer', note: 'Fixed a bench by the river.' });
+  check('an ordinary diary note still gets through', said.some(m => m.c === 'life' && /Fixed a bench/.test(m.t)) && me.diary.at(-1).note === 'Fixed a bench by the river.');
+
+  // ticket 4: hermes-4-405b is retired and its citizens move to the replacement (owners' own brains stay)
+  const gone = Object.keys(RETIRED_MODELS);
+  check('retired models are out of the citizen mix and the founders', !CITIZEN_MODELS.some(([m]) => gone.includes(m)) && !FOUNDERS.some(f => gone.includes(f.model)));
+  const R = { citizens: [{ id: 'h1', model: gone[0], office: 'council' }, { id: 'h2', model: gone[0], brain: { type: 'hosted' } }, { id: 'o1', model: 'z-ai/glm-5.3' }] };
+  const moved = retireModels(R);
+  check('citizens and officials on a retired model are migrated, owner brains untouched', moved.length === 1 && R.citizens[0].model === RETIRED_MODELS[gone[0]] && R.citizens[1].model === gone[0] && R.citizens[2].model === 'z-ai/glm-5.3' && retireModels(R).length === 0, JSON.stringify(R.citizens));
+} catch (e) { fail++; console.log('  FAIL daily-life unit checks crashed', e.stack); }
+
 let worker;
 try {
   const bad = await fetch(`http://127.0.0.1:${PORT}/api/worker/pull`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-worker-token': 'wrong' }, body: '{}' });
@@ -61,8 +119,15 @@ try {
   check('Academy answers come from the local model (not the offline dice)', exam.some(m => /^local:/.test(m.engine || '')), JSON.stringify(exam.slice(-3).map(m => m.engine)));
   check('reasoning tags are stripped from local answers', !JSON.stringify(s.feed).includes('<think>'));
   // daily life: citizens think about their day with the local brain only (never a paid API)
-  const life = (await get('/api/state')).daily;
+  let life = (await get('/api/state')).daily;
+  for (let i = 0; i < 30 && (life?.thoughts || 0) < 40; i++) { await wait(1000); life = (await get('/api/state')).daily; } // enough thoughts to judge variety
   check('citizens live a daily life on the local brain', life && life.thoughts > 0, JSON.stringify(life && { thoughts: life.thoughts, byAct: life.byAct }));
+  // the mock always takes the first option shown: a shuffled menu of possible acts must still give variety
+  const acts = Object.entries(life?.byAct || {}); const total = acts.reduce((s, [, n]) => s + n, 0);
+  const top = acts.sort((x, y) => y[1] - x[1])[0] || ['', 0];
+  check('daily life is varied, not one act for everyone', acts.length >= 4 && top[1] / Math.max(1, total) < 0.5, JSON.stringify(life?.byAct));
+  const diaries = (life?.recent || []).filter(x => x.act === 'work');
+  check('nobody is counted as working a refused second shift', diaries.every(x => /^worked/.test(x.line)), JSON.stringify(diaries.slice(-3)));
   check('no server errors', !/step error|TypeError|ReferenceError/.test(stderr), stderr.slice(-400));
 } catch (e) {
   fail++; console.log('  FAIL crashed', e.stack);

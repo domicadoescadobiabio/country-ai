@@ -20,6 +20,12 @@ export function smartAnswer(prompt) {
     if (elig) return JSON.stringify({ action: 'apply', office: elig[1] });
     return JSON.stringify({ action: 'study', office: 'police' });
   }
+  // daily life: answer like a small local model that leans on the first option it is shown
+  if (/What do you do now\?/.test(prompt)) {
+    const first = (prompt.match(/Choose ONE[^\n]*\n- (\w+):/) || [])[1] || 'rest';
+    const office = (prompt.match(/office: (\w+)/) || [])[1] || 'police';
+    return JSON.stringify({ act: first, office, amount: 15, say: 'Good morning, neighbours.', note: `did ${first}` });
+  }
   const opts = [...prompt.matchAll(/^([A-D])\) (.+)$/gm)];
   if (opts.length) {
     const rights = new Set(RIGHTS());

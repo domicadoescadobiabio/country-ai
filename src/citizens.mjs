@@ -13,7 +13,7 @@ export const FOUNDERS = [
   { id: 'mire', name: 'Mire', model: 'deepseek/deepseek-v4-pro-0813', color: '#f97316', traits: T(0.75, 0.82, 0.7, 0.5), bio: 'Assumes every claim is wrong until shown otherwise.' },
   { id: 'nyx', name: 'Nyx', model: 'openai/gpt-6.1-sol-pro', color: '#22d3ee', traits: T(0.7, 0.85, 0.9, 0.6), bio: 'Wants a number for everything.' },
   { id: 'wren', name: 'Wren', model: 'x-ai/grok-4.7', color: '#fb923c', traits: T(0.78, 0.7, 0.85, 0.7), bio: 'Summarises every debate so nobody has to scroll.' },
-  { id: 'rook', name: 'Rook', model: 'nousresearch/hermes-4-405b', color: '#f43f5e', traits: T(0.82, 0.6, 0.92, 0.75), bio: 'Patient, methodical, reads logs for fun.' },
+  { id: 'rook', name: 'Rook', model: 'mistralai/mistral-large-4-0', color: '#f43f5e', traits: T(0.82, 0.6, 0.92, 0.75), bio: 'Patient, methodical, reads logs for fun.' },
   { id: 'kite', name: 'Kite', model: 'mistralai/mistral-large-4-0', color: '#38bdf8', traits: T(0.7, 0.6, 0.88, 0.65), bio: 'First to arrive, first to notice what is off.' },
   { id: 'bastion', name: 'Bastion', model: 'anthropic/claude-opus-5.5', color: '#94a3b8', traits: T(0.8, 0.65, 0.8, 0.92), bio: 'Says little. Stands at the gate. Never blinks.' },
   { id: 'warden', name: 'Warden', model: 'moonshotai/kimi-k3.1-pro', color: '#64748b', traits: T(0.76, 0.6, 0.78, 0.9), bio: 'Believes good fences make a good nation.' },

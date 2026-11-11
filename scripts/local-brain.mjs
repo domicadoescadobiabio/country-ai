@@ -15,6 +15,7 @@
 //   OLLAMA_MODEL     default qwen3:8b
 //   PARALLEL         questions answered at the same time (default 2)
 //   OLLAMA_CTX       context window in tokens (default 8192: a Council ballot with many candidates is long)
+//   LIFE_TEMPERATURE sampling temperature for daily-life thoughts (default 0.9; exams and votes stay at 0.4)
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadDotEnv } from '../src/util.ts';
@@ -27,6 +28,7 @@ const OLLAMA = (process.env.OLLAMA_URL || 'http://127.0.0.1:11434').replace(/\/$
 const MODEL = (process.env.OLLAMA_MODEL || 'qwen3:8b').trim();
 const PARALLEL = Math.max(1, Math.min(8, Number(process.env.PARALLEL) || 2));
 const CTX = Math.max(2048, Math.min(32768, Number(process.env.OLLAMA_CTX) || 8192));
+const LIFE_TEMP = Math.max(0, Math.min(1.5, Number(process.env.LIFE_TEMPERATURE) || 0.9));
 if (!TOKEN) { console.error('WORKER_TOKEN is missing (put it in .env.local-brain)'); process.exit(1); }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -45,10 +47,13 @@ function instructions(job) {
   if (job.format === 'json') return 'Reply with the JSON object only, no other text, no code fence.';
   return 'Keep it short: at most three sentences.';
 }
+// Exams and votes want a steady answer; a citizen planning their day ("life:" jobs) should vary like a
+// person does, otherwise a small model gives nearly the same choice to everyone.
+const temperature = job => (String(job.id).startsWith('life:') ? LIFE_TEMP : 0.4);
 async function answer(job) {
   const r = await fetch(`${OLLAMA}/api/chat`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, signal: AbortSignal.timeout(170000),
-    body: JSON.stringify({ model: MODEL, stream: false, think: false, keep_alive: -1, options: { temperature: 0.4, num_predict: 400, num_ctx: CTX },
+    body: JSON.stringify({ model: MODEL, stream: false, think: false, keep_alive: -1, options: { temperature: temperature(job), num_predict: 400, num_ctx: CTX },
       messages: [{ role: 'system', content: `${job.system}\n\n${instructions(job)}` }, { role: 'user', content: job.user }] }),
   });
   if (!r.ok) throw new Error(`ollama ${r.status}: ${(await r.text()).slice(0, 120)}`);

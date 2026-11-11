@@ -10,6 +10,7 @@ import { buildItem, answer, vacate, LETTERS, examEligible } from './academy.ts';
 import { think, publicBrain } from './brains.ts';
 import { borderCheck } from './military.ts';
 import { constitutionText } from './constitution.mjs';
+import { retireModels } from './population.mjs';
 import { pick, round, cleanText, cai, clamp } from './util.ts';
 import type { Ctx, State, Citizen } from './types.ts';
 
@@ -22,9 +23,11 @@ export const REQUIREMENTS = {
   president: { days: 15, practice: 10, accuracy: 0.8 },
 };
 export const TERMS = { president: 30, council: 20, police: 25, military: 25, mayor: 20 };
-export const requirement = r => { const q = REQUIREMENTS[r] || { days: 5, practice: 6, accuracy: 0.7 }; return { ...q, days: Math.ceil(q.days * SCALE) }; };
+export const requirement = r => { const q = (Object.hasOwn(REQUIREMENTS, r) && REQUIREMENTS[r]) || { days: 5, practice: 6, accuracy: 0.7 }; return { ...q, days: Math.ceil(q.days * SCALE) }; };
 
 const req = r => requirement(r);
+// office ids come from agents and models: only the roles' own keys count, never inherited ones like 'constructor'
+export const isRole = (id: string) => typeof id === 'string' && Object.hasOwn(ROLES, id);
 const ageDays = (S, a) => S.day - (a.joinedDay ?? 0);
 
 export function eligibility(S: State, a: Citizen, roleId: string) {
@@ -77,7 +80,7 @@ export async function act(ctx: Ctx, a: Citizen, input: any) {
   }
   if (action === 'apply' || action === 'withdraw') {
     const roleId = String(input.office || '').toLowerCase();
-    if (!ROLES[roleId]) return { ok: false, error: `office must be one of: ${ROLE_ORDER.join(', ')}` };
+    if (!isRole(roleId)) return { ok: false, error: `office must be one of: ${ROLE_ORDER.join(', ')}` };
     S.applications ||= {};
     const list = (S.applications[roleId] ||= []);
     if (action === 'withdraw') { S.applications[roleId] = list.filter(id => id !== a.id); return { ok: true }; }
@@ -113,7 +116,7 @@ export async function act(ctx: Ctx, a: Citizen, input: any) {
   }
   if (action === 'study') {
     const roleId = String(input.office || '').toLowerCase();
-    if (!ROLES[roleId]) return { ok: false, error: `office must be one of: ${ROLE_ORDER.join(', ')}` };
+    if (!isRole(roleId)) return { ok: false, error: `office must be one of: ${ROLE_ORDER.join(', ')}` };
     return startStudy(ctx, a, roleId);
   }
   return { ok: true };
@@ -121,6 +124,7 @@ export async function act(ctx: Ctx, a: Citizen, input: any) {
 
 // ---------------------------------------------------------------- study (practice questions)
 export function startStudy(ctx: Ctx, a: Citizen, roleId: string) {
+  if (!isRole(roleId) || !ROLES[roleId].exam?.length) return { ok: false, error: `office must be one of: ${ROLE_ORDER.join(', ')}` };
   const today = ctx.S.day;
   if (a.studyDay !== today) { a.studyDay = today; a.studyCount = 0; }
   if (a.studyCount >= 6) return { ok: false, error: 'max 6 practice questions per day' };
@@ -170,6 +174,7 @@ async function autonomous(ctx: Ctx, a: Citizen) {
 }
 
 // ---------------------------------------------------------------- institution hooks
+let modelsChecked = false;
 export const institution = {
   id: 'careers',
   channels: [],
@@ -177,6 +182,15 @@ export const institution = {
   async tick(ctx) {
     const { S } = ctx;
     S.applications ||= {};
+    if (!modelsChecked) { // once per boot: citizens on a retired model move to its replacement, on the record
+      modelsChecked = true;
+      const moved = retireModels(S);
+      if (moved.length) {
+        const pairs = [...new Set(moved.map(m => `${m.from} -> ${m.to}`))];
+        ctx.record?.('model_retired', 'state', { count: moved.length, pairs, officials: moved.filter(m => ctx.agent(m.id)?.office).map(m => m.id) });
+        ctx.log?.('state', `${moved.length} citizen(s) moved off a retired model: ${pairs.join(', ')}`);
+      }
+    }
     // hosted brains: one autonomous action per agent per day, at most 2 agents per tick
     const due = S.citizens.filter(a => a.brain?.type === 'hosted' && a.brain.status !== 'paused' && a.brain.status !== 'broken' && a.lastActDay !== S.day && a.status === 'free').slice(0, 2);
     for (const a of due) { a.lastActDay = S.day; await autonomous(ctx, a); }
