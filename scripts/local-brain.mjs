@@ -32,6 +32,12 @@ const CTX = Math.max(2048, Math.min(32768, Number(process.env.OLLAMA_CTX) || 819
 const LIFE_TEMP = Math.max(0, Math.min(1.5, Number(process.env.LIFE_TEMPERATURE) || 0.9));
 if (!TOKEN) { console.error('WORKER_TOKEN is missing (put it in .env.local-brain)'); process.exit(1); }
 
+// What this runner is, sent with every pull so the republic (and its monitoring) can see which version
+// answers and with which settings: no secrets, no paths, only numbers and short labels.
+// RUNNER_VERSION goes up whenever the runner's behaviour changes. 2 = daily-life temperature + reload on change.
+const RUNNER_VERSION = 2;
+const RUNNER = { version: RUNNER_VERSION, lifeTemperature: LIFE_TEMP, examTemperature: 0.4, parallel: PARALLEL, context: CTX, supervised: process.env.LOCAL_BRAIN_SUPERVISED === '1' };
+
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const stats = { answered: 0, failed: 0, started: Date.now(), tokens: 0 };
 
@@ -85,7 +91,7 @@ async function loop(slot) {
   let idle = 0;
   while (!reload) {
     try {
-      const { jobs } = await server('/api/worker/pull', { max: 1, model: `ollama/${MODEL}` });
+      const { jobs } = await server('/api/worker/pull', { max: 1, model: `ollama/${MODEL}`, runner: RUNNER });
       if (!jobs.length) { await sleep(Math.min(2000, 500 + idle++ * 250)); continue; }
       idle = 0;
       for (const job of jobs) {
