@@ -136,6 +136,11 @@ def recount(body: dict) -> Recount | None:
     if res.get("ballots") is not None and res["ballots"] != len(anon):
         out.problems.append(f"certified ballot count {res['ballots']} but {len(anon)} published")
 
+    if res.get("void"):
+        # declared void (no ballots): no mandate was given, nothing to recount
+        out.recounted, out.note = [], "void: no valid ballots, no mandate"
+        out.certified = []
+        return out
     if kind in YESNO:
         yes = sum(1 for r in rankings if r[0] == "yes")
         no = sum(1 for r in rankings if r[0] == "no")

@@ -112,6 +112,17 @@ def elections_certified(s: dict) -> list[str]:
     return out
 
 
+@check("no seat comes from an election without ballots")
+def mandate_needs_ballots(s: dict) -> list[str]:
+    els = s.get("elections")
+    out = []
+    for e in els if isinstance(els, list) else (els or {}).get("list") or []:
+        r = e.get("result") or {}
+        if e.get("stage") == "done" and e.get("kind") not in ("recall", "referendum", "impeachment")                 and r.get("ballots") == 0 and not r.get("void") and r.get("winners"):
+            out.append(f"election {e.get('id')} ({e.get('office')}) certified {r.get('winners')} with 0 ballots")
+    return out
+
+
 def run_all(state: dict) -> dict:
     results = {}
     for name, fn in CHECKS:

@@ -17,7 +17,7 @@ import { freshDecisions, recordDecision } from './src/decisions.ts';
 import { initVault, vaultReady, publicBrain } from './src/brains.ts';
 import { makeRegistry } from './src/registry.mjs';
 import { openStore } from './src/db.ts';
-import { publicElection } from './src/elections.ts';
+import { publicElection, voidEmptyMandates } from './src/elections.ts';
 import { founderDrillImpeachment } from './src/court.ts';
 import { applyAmendments } from './src/constitution.mjs';
 import { requirement, TERMS } from './src/careers.ts';
@@ -424,6 +424,7 @@ const server = http.createServer(async (req, res) => {
 
 if (!store.head().count) ctx.record('genesis', 'founders', { nation: NATION, constitutionVersion: S.constitutionVersion, citizens: S.citizens.length, offices: Object.fromEntries(Object.entries(S.seats).map(([r, ids]) => [r, ids])) });
 applyAmendments(ctx);
+{ const n = voidEmptyMandates(ctx); if (n) logActivity('state', `Correction: ${n} seat(s) without a valid mandate vacated; new elections follow`); }
 // founders keep the model family written in src/citizens.mjs (updated when the catalog changes)
 for (const f of FOUNDERS) { const a = S.citizens.find(x => x.id === f.id && !x.brain); if (a && a.model !== f.model) a.model = f.model; }
 // founders added in later versions arrive in an existing republic as new citizens

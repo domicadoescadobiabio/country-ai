@@ -17,6 +17,8 @@ say "auditor unit tests (Python)"
 "$PY" -m unittest discover -s auditor/tests -t . -q
 ok "auditor"
 
+say "voting rules (Node unit checks)"
+node scripts/smoke-voting-rules.mjs | tail -n 1
 say "smoke: the whole republic, compressed time (Node)"
 node scripts/smoke.mjs | tail -n 3
 say "smoke: brains and model routing (Node, mocked providers)"

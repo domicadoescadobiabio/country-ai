@@ -235,12 +235,27 @@ async function campaignStep(ctx: Ctx, e: Election) {
 }
 
 // ---------------------------------------------------------------- voting
-function electorate(S: State, e: Election) {
-  return S.citizens.filter(a => a.status !== 'left' && S.day - (a.joinedDay ?? 0) >= MIN_VOTER_DAYS && (!e.city || a.city === e.city)).map(a => a.id);
+export function electorate(S: State, e: Election) {
+  // founders are citizens from the founding; anyone who arrives later votes after MIN_VOTER_DAYS days
+  const eligible = a => a.origin === 'founder' || S.day - (a.joinedDay ?? 0) >= MIN_VOTER_DAYS;
+  return S.citizens.filter(a => a.status !== 'left' && eligible(a) && (!e.city || a.city === e.city)).map(a => a.id);
+}
+// Art. 15: a citizen in jail or detention cannot hold office, so cannot stand: struck from the ballot (deposit kept by the treasury)
+function strikeUnfree(ctx: Ctx, e: Election, when: string) {
+  const out = e.candidates.filter(c => !free(ctx.agent(c.id)));
+  if (!out.length) return;
+  e.candidates = e.candidates.filter(c => !out.includes(c));
+  for (const c of out) {
+    const a = ctx.agent(c.id);
+    ctx.S.treasury = round(ctx.S.treasury + c.deposit, 2);
+    ctx.say('election', 'state', `${a?.name || c.id} is struck from the ballot for ${titleOf(e)} ${when}: ${a?.status || 'not a citizen'}.`, { kind: 'term' });
+    ctx.record('struck_from_ballot', 'commission', { election: e.id, agent: c.id, status: a?.status || null, when });
+  }
 }
 function startVoting(ctx: Ctx, e: Election) {
   const { S } = ctx;
   e.stage = 'voting'; e.stageDay = S.day; e.stageAt = Date.now();
+  if (!YESNO.includes(e.kind)) strikeUnfree(ctx, e, 'when the polls opened');
   e.electorate = electorate(S, e);
   ctx.say('election', 'state', `Polls open for ${titleOf(e)}: ${e.electorate.length} voters. Voting is compulsory; a blank vote is allowed. Ballots are secret and can be changed until the polls close.`, { kind: 'vote' });
   ctx.record('polls_open', 'commission', { election: e.id, electorate: e.electorate.length, candidates: e.candidates.map(c => c.id) });
@@ -367,6 +382,15 @@ function close(ctx: Ctx, e: Election) {
   const { S } = ctx;
   const list = Object.values(e.ballots);
   const rankings = list.filter(b => !b.abstain).map(b => b.ranking);
+  if (!YESNO.includes(e.kind) && rankings.length === 0) {
+    // nobody gave a mandate: no tie-break may pick a winner from an empty ballot box
+    e.stage = 'failed'; e.stageDay = S.day;
+    e.result = { winners: [], outcome: `No valid ballots (${list.length} cast, electorate ${e.electorate.length}): the election is void and will be held again.`, metrics: metrics(S, e, list), anonymisedBallots: list.map(() => 'BLANK'), digest: null, void: true };
+    for (const c of e.candidates) { const a = ctx.agent(c.id); if (a) a.wallet = round(a.wallet + c.deposit, 2); }
+    ctx.say('election', 'state', `${titleOf(e)}: ${e.result.outcome}`, { kind: 'vote' });
+    ctx.record('election_void', 'commission', { election: e.id, office: e.office, city: e.city, kind: e.kind, ballots: list.length, electorate: e.electorate.length });
+    return;
+  }
   const m = metrics(S, e, list);
   let winners = [], detail = {}, outcome = '';
   if (YESNO.includes(e.kind)) {
@@ -457,7 +481,12 @@ async function certify(ctx: Ctx, e: Election) {
     return;
   }
   if (e.kind === 'referendum') { const { resolveReferendum } = await import('./council.ts'); resolveReferendum(ctx, e.lawId, e.result.winners[0] === 'yes'); return; }
-  const winners = e.result.winners.map(id => ctx.agent(id)).filter(Boolean);
+  const winners = e.result.winners.map(id => ctx.agent(id)).filter(Boolean).filter(a => {
+    if (free(a)) return true;
+    ctx.say('election', 'state', `${a.name} won ${titleOf(e)} but is ${a.status}: cannot be sworn in. The seat stays vacant and a new election follows.`, { kind: 'term' });
+    ctx.record('not_sworn', 'commission', { election: e.id, agent: a.id, status: a.status });
+    return false;
+  });
   // outgoing holders whose seats were up leave (unless re-elected)
   for (const id of e.replaces) if (!e.result.winners.includes(id)) { const a = ctx.agent(id); if (a?.office === e.office) { S.seats[e.office] = S.seats[e.office].filter(x => x !== id); a.office = null; a.termEnds = null; ctx.say('election', 'state', `${a.name} leaves the office of ${ROLES[e.office].title}: term ended.`, { kind: 'term' }); } }
   for (const a of winners) {
@@ -478,6 +507,25 @@ async function certify(ctx: Ctx, e: Election) {
   if (e.office === 'council' && winners.length >= 4) {
     for (const a of winners.slice(3)) { a.termEnds = S.day + Math.floor(TERMS.council / 2); ctx.say('election', 'state', `${a.name} serves a half term (to day ${a.termEnds}) so Council elections stay staggered.`, { kind: 'term' }); }
   }
+}
+
+// Correction (runs at every start, idempotent): a seat won in an election where no ballot was cast carries no
+// mandate, and nobody in jail or detention may hold an elected seat. Both are vacated in public and on the
+// ledger, and the scheduler opens new elections for them. Earlier versions certified such results.
+export function voidEmptyMandates(ctx: Ctx) {
+  const { S } = ctx; let n = 0;
+  for (const e of E(S).list) {
+    if (e.stage !== 'done' || YESNO.includes(e.kind) || !e.result || e.result.voided) continue;
+    if ((e.result.anonymisedBallots || []).some(b => b !== 'BLANK')) continue;
+    e.result.voided = true; e.result.void = true;
+    for (const id of e.result.winners || []) {
+      const a = ctx.agent(id);
+      if (a?.office === e.office && (!e.city || a.mayorOf === e.city)) { vacate(ctx, a.id, `election #${e.id} is void: no ballot was cast`); a.mayorOf = null; n++; }
+    }
+    ctx.record('election_void', 'founders', { election: e.id, office: e.office, city: e.city, reason: 'certified with no ballots (voter-eligibility bug), corrected', winners: e.result.winners || [] });
+  }
+  for (const a of S.citizens) if (a.office && ELECTED.includes(a.office) && !free(a)) { vacate(ctx, a.id, `cannot hold office while ${a.status}`); a.mayorOf = null; n++; }
+  return n;
 }
 
 // Referendums (Art. 20) and impeachment votes (Art. 19) go straight to the polls.
@@ -536,7 +584,7 @@ export function publicElection(S: State, e: Election) {
     stageEndsAt: e.stage in HOURS ? e.stageAt + stageHours(e)[e.stage] * (e.hourMs || 3600000) : null, founding: !!e.founding,
     candidates: e.candidates.map(c => ({ id: c.id, manifesto: c.manifesto, card: card(S, S.citizens.find(a => a.id === c.id) || { id: c.id, name: c.id }, e.office) })),
     electorate: e.electorate?.length ?? null, voted: Object.keys(e.ballots).length,
-    result: e.result && { winners: e.result.winners, outcome: e.result.outcome, metrics: e.result.metrics, digest: e.result.digest, rounds: e.result.detail?.rounds || null, spread: e.result.detail?.spread || null, sanctioned: e.result.sanctioned, excused: e.result.excused, ballots: e.result.anonymisedBallots.length },
+    result: e.result && { winners: e.result.winners, outcome: e.result.outcome, metrics: e.result.metrics, digest: e.result.digest, rounds: e.result.detail?.rounds || null, spread: e.result.detail?.spread || null, sanctioned: e.result.sanctioned, excused: e.result.excused, ballots: e.result.anonymisedBallots.filter(b => b !== 'BLANK').length + e.result.anonymisedBallots.filter(b => b === 'BLANK').length, void: !!e.result.void },
   };
 }
 
