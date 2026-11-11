@@ -9,3 +9,4 @@ data-*/
 __pycache__/
 *.pyc
 audit/*.jsonl
+audit/*.log

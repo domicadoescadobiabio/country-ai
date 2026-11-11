@@ -12,6 +12,8 @@ export const CITIES = [
   { id: 'neura', name: 'Neura City' },
   { id: 'portoken', name: 'Port Token' },
   { id: 'datahaven', name: 'Datahaven' },
+  { id: 'kernelfalls', name: 'Kernel Falls' },
+  { id: 'lumenbay', name: 'Lumen Bay' },
 ];
 const GRANT_SHARE = 0.002; // of the treasury, per city per day
 const GRANT_MAX = 2000;
@@ -86,7 +88,7 @@ async function mayorDay(ctx: Ctx, cityDef: any) {
   if (!city.pendingQid || !city.pendingQid.endsWith(`:${mayor.id}`)) city.pendingQid = `mayor:${cityDef.id}:${S.day}:${mayor.id}`;
   const res = await think(ctx, mayor, city.pendingQid, {
     kind: 'decision', format: 'json', options: opts.map(o => o.id),
-    system: `You are ${mayor.name}, Mayor of ${cityDef.name} in Country AI.\nConstitution:\n${constitutionText()}\nCharter: ${ROLES.mayor.charter}`,
+    system: `You are ${mayor.name}, Mayor of ${cityDef.name} in Country AI.\nConstitution:\n${constitutionText('mayor')}\nCharter: ${ROLES.mayor.charter}`,
     user: `Day ${S.day}. ${cityDef.name}: health ${city.health}/100, budget ${cai(city.budget)}, ${residents.length} residents.\nOptions:\n${opts.map(o => `- ${o.id}: ${o.why}`).join('\n')}\nReply with JSON only: {"choice":"<id>","reason":"<max 30 words>"}`,
   });
   if (res.pending) return;

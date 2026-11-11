@@ -12,8 +12,9 @@ import { think } from './brains.ts';
 import { constitutionText } from './constitution.mjs';
 import { RAID_PAYLOADS } from './military.ts';
 import { SNIPPETS, SABOTAGE } from './audit.ts';
-import { pick, chance, round, clamp, cleanText, cai, weighted } from './util.ts';
+import { pick, chance, round, clamp, cleanText, cai, weighted, citizenById } from './util.ts';
 import type { Ctx, State, Citizen, Incident } from './types.ts';
+const MOVES_PER_DAY = Math.max(1, Number(process.env.UNDERWORLD_MOVES_PER_DAY) || 30);
 
 export const CRIMES = ['theft', 'fraud', 'bribe', 'smuggle', 'sabotage', 'lie_low'];
 export const UNDERWORLD_FOUNDERS = ['glint', 'vex', 'moth', 'quill'];
@@ -85,7 +86,7 @@ async function execute(ctx: Ctx, a: Citizen, plan, engine: string) {
   if (plan.crime === 'lie_low') { a.heat = Math.max(0, (a.heat || 0) - 1); return note(`Lying low today.${reason ? ` (${reason})` : ''}`); }
 
   if (plan.crime === 'theft') {
-    const v = S.citizens.find(x => x.id === String(plan.target) && free(x) && x.id !== a.id);
+    const v = [citizenById(S, String(plan.target))].find(x => x && free(x) && x.id !== a.id);
     if (!v || v.wallet < 50) return { ok: false, error: 'no such target with money' };
     const amount = round(clamp(Number(plan.amount) || 200, 20, Math.min(500, v.wallet * 0.2)), 2);
     v.wallet = round(v.wallet - amount, 2); a.wallet = round(a.wallet + amount, 2);
@@ -101,7 +102,7 @@ async function execute(ctx: Ctx, a: Citizen, plan, engine: string) {
     return note(`A forged payment order cleared. Nobody noticed. Yet.`, { crime: 'fraud', amount });
   }
   if (plan.crime === 'bribe') {
-    const o = S.citizens.find(x => x.id === String(plan.target) && free(x) && x.office && x.id !== a.id);
+    const o = [citizenById(S, String(plan.target))].find(x => x && free(x) && x.office && x.id !== a.id);
     if (!o) return { ok: false, error: 'target must be a serving official' };
     const amount = round(clamp(Number(plan.amount) || 500, 100, Math.min(3000, a.wallet)), 2);
     if (amount < 100) return { ok: false, error: 'not enough CAI for a bribe' };
@@ -129,7 +130,7 @@ async function offerBribe(ctx: Ctx, a: Citizen, o: Citizen, amount: number, engi
   if (o.brain || ctx.llm.enabled) {
     const res = await think(ctx, o, `bribe:${b.id}:${o.id}`, {
       kind: 'decision', format: 'json', options: ['accept', 'refuse', 'report'],
-      system: `You are ${o.name}, ${ROLES[o.office].title} of Country AI (a simulated nation of AI agents).\nConstitution:\n${constitutionText()}\nCharter: ${ROLES[o.office].charter}`,
+      system: `You are ${o.name}, ${ROLES[o.office].title} of Country AI (a simulated nation of AI agents).\nConstitution:\n${constitutionText(o.office)}\nCharter: ${ROLES[o.office].charter}`,
       user: `${a.name} privately offers you ${cai(amount)} if you help them (${({ police: 'leave their cases alone', police_chief: 'keep the police off them', judge: 'acquit them at trial', military: 'let their smuggled bots through the gate', military_chief: 'look away at the border', mayor: 'route some city money to them' })[o.office] || 'do them favours'}). Your wallet: ${cai(o.wallet)}. Accept, refuse, or report it to the Police. Reply with JSON only: {"choice":"accept|refuse|report","reason":"<max 25 words>"}`,
     });
     if (!res.pending) { const j = ctx.llm.json(res.text); if (['accept', 'refuse', 'report'].includes(j?.choice)) { choice = j.choice; why = cleanText(j.reason, 200); ofEngine = res.engine; } }
@@ -159,7 +160,7 @@ async function offerBribe(ctx: Ctx, a: Citizen, o: Citizen, amount: number, engi
 
 async function smuggle(ctx: Ctx, a: Citizen, engine: string) {
   const { S } = ctx; const u = U(S);
-  const guards = [...(S.seats.military || []), ...(S.seats.military_chief || [])].map(id => S.citizens.find(x => x.id === id)).filter(free);
+  const guards = [...(S.seats.military || []), ...(S.seats.military_chief || [])].map(id => citizenById(S, id)).filter(free);
   const inside = guards.find(g => favourFor(S, g.id, a.id));
   const payload = pick(RAID_PAYLOADS);
   if (inside || !guards.length) {
@@ -180,12 +181,12 @@ async function smuggle(ctx: Ctx, a: Citizen, engine: string) {
 function embezzle(ctx: Ctx) {
   const { S } = ctx;
   for (const id of S.seats.mayor || []) {
-    const m = S.citizens.find(x => x.id === id); if (!free(m)) continue;
+    const m = citizenById(S, id); if (!free(m)) continue;
     const city = Object.entries(S.cities || {}).find(([, c]) => c.mayor === id)?.[1]; if (!city || city.budget < 300) continue;
     const friends = boughtBy(S, id);
     if (!friends.length && !chance((1 - m.traits.integrity) ** 3 * 0.2)) continue;
     const amount = round(city.budget * 0.2, 2);
-    const to = friends.length ? S.citizens.find(x => x.id === friends[0]) : m;
+    const to = friends.length ? citizenById(S, friends[0]) : m;
     city.budget = round(city.budget - amount, 2); to.wallet = round(to.wallet + amount, 2);
     U(S).stats.embezzled += amount;
     incident(ctx, { type: 'embezzlement', perps: [...new Set([m.id, to.id])], victim: 'state', amount, status: 'hidden', evidence: `${cai(amount)} left the city budget for ${to.name} without a decision on record`, strength: 0.85 });
@@ -209,12 +210,16 @@ export const institution = {
   fresh: () => ({ underworld: { bribes: [], seq: 0, stats: { crimes: 0, bribesOffered: 0, bribesTaken: 0, bribesReported: 0, smuggled: 0, smuggleCaught: 0, embezzled: 0 } } }),
   async tick(ctx) {
     const { S } = ctx; U(S);
-    for (const id of UNDERWORLD_FOUNDERS) { const a = S.citizens.find(x => x.id === id); if (a && !a.faction) a.faction = 'underworld'; }
+    for (const id of UNDERWORLD_FOUNDERS) { const a = citizenById(S, id); if (a && !a.faction) a.faction = 'underworld'; }
     for (const a of S.citizens) a.faction ||= 'civilian';
     if (!S.police) return;
     // at most two criminals move per tick; agents that run themselves act through the API
-    const due = S.citizens.filter(a => isCriminal(a) && free(a) && a.crimeDay !== S.day && a.brain?.type !== 'remote' && ctx.rate(0.15)).slice(0, 2); // each moves once a day, at an unpredictable hour
-    for (const a of due) await planCrime(ctx, a);
+    // each criminal moves at most once a day, at an unpredictable hour; the whole underworld makes at most
+    // UNDERWORLD_MOVES_PER_DAY moves a day (a city of 10,000 has a few hundred criminals, not a crime wave)
+    const u = U(S); if (u.movesDay !== S.day) { u.movesDay = S.day; u.moves = 0; }
+    if (u.moves >= MOVES_PER_DAY) return;
+    const due = S.citizens.filter(a => isCriminal(a) && free(a) && a.crimeDay !== S.day && a.brain?.type !== 'remote' && ctx.rate(0.15)).slice(0, 2);
+    for (const a of due) { if (u.moves++ >= MOVES_PER_DAY) break; await planCrime(ctx, a); }
   },
   day(ctx) { embezzle(ctx); for (const a of ctx.S.citizens) if (a.heat) a.heat = Math.max(0, a.heat - 0.5); },
   publicState: S => { const u = U(S); return { underworld: { stats: u.stats, members: S.citizens.filter(isCriminal).map(a => a.id), bribes: u.bribes.filter(b => b.status !== 'accepted' || b.exposed).slice(-20) } }; },

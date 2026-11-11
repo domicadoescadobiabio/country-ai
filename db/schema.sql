@@ -33,6 +33,21 @@ BEGIN SELECT RAISE(ABORT, 'ledger is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS ledger_no_delete BEFORE DELETE ON ledger
 BEGIN SELECT RAISE(ABORT, 'ledger is append-only'); END;
 
+-- Citizens, one row each (10,000+): only the citizens that changed are written on each save.
+CREATE TABLE IF NOT EXISTS citizens (
+  id    TEXT    PRIMARY KEY,
+  pos   INTEGER NOT NULL,           -- order in the population (founders first)
+  json  TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS citizens_pos ON citizens (pos);
+
+-- Anonymised ballots of every finished election (thousands per election), for public recounts.
+CREATE TABLE IF NOT EXISTS election_ballots (
+  election INTEGER PRIMARY KEY,
+  digest   TEXT    NOT NULL,
+  json     TEXT    NOT NULL           -- sorted list of 'a>b>c' rankings or 'BLANK'
+);
+
 -- Full archive of the decision log (memory keeps only the latest few hundred decisions).
 CREATE TABLE IF NOT EXISTS decisions (
   id     INTEGER PRIMARY KEY,

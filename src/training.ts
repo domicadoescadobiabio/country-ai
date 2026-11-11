@@ -7,7 +7,7 @@
 // - Accountability: two failed drills in a row, or grade D with low skill, means recall:
 //   the seat goes vacant and the Academy trains a replacement.
 import { ROLES } from './roles.mjs';
-import { answer, buildItem, vacate, LETTERS } from './academy.ts';
+import { answer, buildItem, vacate, LETTERS, ROOMS } from './academy.ts';
 import { caseStudies } from './cases.mjs';
 import { pick, round, clamp } from './util.ts';
 import type { Ctx, State, Citizen } from './types.ts';
@@ -126,7 +126,7 @@ export const institution = {
   fresh: () => ({ training: { current: null, drills: 0, passed: 0, recalls: 0, reviews: 0 } }),
   async tick(ctx) {
     const { S } = ctx; const t = T(S);
-    if (S.academy.current) return; // entrance exams first, same classroom
+    if ((S.academy.rooms || []).length >= ROOMS) return; // entrance exams first: drills use a free room
     if (t.current) return t.current.step < t.current.items.length ? step(ctx, t.current) : finish(ctx, t.current);
     const due = officials(S).filter(a => S.day - (a.lastDrillDay ?? a.sworn?.day ?? 0) >= DRILL_EVERY).sort((x, y) => (x.lastDrillDay ?? 0) - (y.lastDrillDay ?? 0))[0];
     if (due) start(ctx, due);

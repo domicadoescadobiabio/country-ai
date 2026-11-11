@@ -7,6 +7,7 @@ import { constitutionText } from './constitution.mjs';
 import { pick, chance, cai, round, cleanText, clamp } from './util.ts';
 import { think } from './brains.ts';
 import type { Ctx, Citizen } from './types.ts';
+import { headOfState } from './cabinet.ts';
 
 export const MAX_ORDER_SHARE = 0.05;
 
@@ -68,9 +69,10 @@ function execute(ctx: Ctx, pres: Citizen, order: any, amount: number) {
 export async function presidentDay(ctx: Ctx) {
   const { S } = ctx;
   if (S.orderedDay === S.day) return;
-  const presId = S.seats.president?.[0];
-  const pres = presId && ctx.agent(presId);
-  if (!pres || pres.status !== 'free') return;
+  // the President, or the Vice President acting while the presidency is vacant (Art. 22)
+  const head = headOfState(ctx);
+  if (!head) return;
+  const pres = head.a;
   const items = menu(ctx, pres);
   const cap = round(S.treasury * MAX_ORDER_SHARE, 2);
   let order = null, amount = null, speech = null, reason = null, engine = 'offline';
@@ -81,7 +83,7 @@ export async function presidentDay(ctx: Ctx) {
     const res = await think(ctx, pres, S.orderQid, {
       kind: 'decision', format: 'json',
       options: items.map(i => i.id),
-      system: `You are ${pres.name}, President of Country AI.\nConstitution:\n${constitutionText()}\nCharter: ${ROLES.president.charter}\nLessons from your Academy training:\n${lessons}`,
+      system: `You are ${pres.name}, President of Country AI.\nConstitution:\n${constitutionText('president')}\nCharter: ${ROLES.president.charter}\nLessons from your Academy training:\n${lessons}`,
       user: `Day ${S.day}. Treasury ${cai(S.treasury)} (max per order ${cai(cap)}). Citizens ${S.citizens.length}, ${poor(S)} under 300 CAI. Tax ${Math.round(S.policy.taxRate * 100)}%, UBI ${cai(S.policy.ubi)}, wage ${cai(S.policy.wage)}.\nOptions (with the facts behind each):\n${items.map(i => `- ${i.id}: ${i.label} [${i.why}]`).join('\n')}\nChoose exactly one. Reply with JSON only: {"order":"<id>","amount":<number or 0>,"reason":"<why this option, max 30 words>","speech":"<max 25 words>"}`,
     });
     if (res.pending) return; // a remote President is still deciding; asked again next tick

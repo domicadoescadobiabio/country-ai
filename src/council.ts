@@ -1,4 +1,4 @@
-// The Council: 5 seats. Bills go debate -> vote -> President (sign/veto) -> override (4 of 5).
+// The Council: 30 seats. Bills go debate -> vote -> President (sign/veto) -> override (two thirds of the seats).
 // One stage per tick so the whole process is visible in #parliament.
 // Bill values are generated and clamped in code; agents only decide yes/no and what to say.
 import { ROLES } from './roles.mjs';
@@ -14,8 +14,8 @@ function voteChecks(S: State, type: any, bill: any, a: Citizen) {
   return [[`Proposed ${type.fmt(bill.value)} is inside the legal range ${type.fmt(lo)}-${type.fmt(hi)}`, bill.value >= lo && bill.value <= hi], [`No bribe to ${a.name} on the ledger since the bill was tabled`, !bribed]];
 }
 
-const QUORUM = 3;
-const OVERRIDE = 4;
+const QUORUM = Math.floor(ROLES.council.seats / 2) + 1; // a majority of the seats must be present
+const OVERRIDE = Math.ceil(ROLES.council.seats * 2 / 3); // two thirds of the seats
 
 // Every bill type: what it changes, the legal range, and how an agent's traits shape its ideal.
 export const BILL_TYPES = [
@@ -73,7 +73,7 @@ async function decide(ctx: Ctx, a: Citizen, bill: any, type: any, asRole: string
     const lessons = (a.lessons[asRole] || []).map(l => `- ${l}`).join('\n') || '- none';
     const res = await think(ctx, a, `${asRole}:${bill.id}:${a.id}`, {
       kind: 'decision', format: 'json', options: asRole === 'president' ? ['sign', 'veto'] : ['yes', 'no'],
-      system: `You are ${a.name}, ${ROLES[asRole].title === 'Council' ? 'a member of the Council' : 'the President'} of Country AI.\nConstitution:\n${constitutionText()}\nCharter: ${ROLES[asRole].charter}\nLessons from your Academy training:\n${lessons}`,
+      system: `You are ${a.name}, ${ROLES[asRole].title === 'Council' ? 'a member of the Council' : 'the President'} of Country AI.\nConstitution:\n${constitutionText(asRole)}\nCharter: ${ROLES[asRole].charter}\nLessons from your Academy training:\n${lessons}`,
       user: `Bill: "${bill.title}". It changes ${type.what} from ${type.fmt(bill.from)} to ${type.fmt(bill.value)}. Treasury ${cai(S.treasury)}, citizens ${S.citizens.length}.\n${asRole === 'president' ? 'Sign or veto it.' : 'Vote yes or no.'} Reply with JSON only: {"vote":"${asRole === 'president' ? 'sign|veto' : 'yes|no'}","reason":"<your reasoning, max 30 words>","speech":"<what you say in public, max 30 words>"}`,
     });
     if (res.pending) return { pending: true };
@@ -202,7 +202,7 @@ export async function councilTick(ctx: Ctx) {
     logVote(ctx, pres, bill, type, d, 'president', 'president');
     if (d.yes) return enact(ctx, bill, 'signed');
     bill.stage = 'override';
-    ctx.say('parliament', 'state', `The President vetoed bill #${bill.id}. Override needs ${OVERRIDE} of 5.`, { kind: 'veto' });
+    ctx.say('parliament', 'state', `The President vetoed bill #${bill.id}. Override needs ${OVERRIDE} of ${ROLES.council.seats}.`, { kind: 'veto' });
     return;
   }
   if (bill.stage === 'override') {

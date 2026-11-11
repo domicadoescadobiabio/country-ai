@@ -118,11 +118,110 @@ export async function hostedThink(ctx: Ctx, a: Citizen, system: string, user: st
   return cleanText(r.text, 900) || null;
 }
 
+// ---------------------------------------------------------------- the cost of thought (Art. 25)
+// Three tiers. The leadership thinks with the strongest Claude model; other officials and every citizen think
+// with their own model through OpenRouter. One daily budget in dollars pays for all of it, paced across the
+// day, with the leadership served first: officials stop at 40% of the budget, citizens at 35%, and nobody
+// may spend ahead of the clock (the share of the day gone, plus one hour). So the paid API and the free paths
+// take turns all day long: API while under the clock, then the local brain and the learned memory, then the
+// API again when the clock has moved on, until the day's budget is used.
+const LEADER_OFFICES = new Set(['president', 'vice_president', 'minister', 'judge', 'police_chief', 'military_chief']);
+export function tierOf(S, a) {
+  if (!a?.office) return 'citizen';
+  if (LEADER_OFFICES.has(a.office) || S.cabinet?.speaker === a.id) return 'leader';
+  return 'official';
+}
+const TIER_CAP = { leader: 1, official: 0.4, citizen: 0.35 };
+export function budgetState(ctx) {
+  const { S } = ctx;
+  const B = (S.thinkBudget ||= {});
+  if (B.day !== S.day) Object.assign(B, { day: S.day, spent: 0, leader: 0, official: 0, citizen: 0, calls: { leader: 0, official: 0, citizen: 0 }, denied: { leader: 0, official: 0, citizen: 0 } });
+  B.daily = ctx.cfg?.dailyBudgetUsd ?? 25;
+  return B;
+}
+function budgetAllows(ctx, tier) {
+  const B = budgetState(ctx); const D = B.daily;
+  if (!(D > 0)) return true; // no budget set: unlimited
+  const dayMs = ctx.cfg?.dayMs || 86400000;
+  const gone = (((Date.now() - (ctx.S.foundedAt || Date.now())) % dayMs) + dayMs) % dayMs / dayMs;
+  const pace = Math.min(1, gone + 1 / 24);
+  if (B.spent >= D * pace) return false;
+  if (tier !== 'leader' && B[tier] >= D * TIER_CAP[tier] * pace) return false;
+  return true;
+}
+function charge(ctx, tier, cost) {
+  const B = budgetState(ctx);
+  B.spent += cost; B[tier] += cost; B.calls[tier]++;
+}
+
+// ---------------------------------------------------------------- aspirants: no limit
+// A citizen sitting an Academy exam or standing in an election thinks with a real model every time, so the
+// people who rise to office are chosen on real thinking. They go first to the local brain (free, unlimited);
+// without it they may use the paid API up to the day's paced total, ahead of officials and citizens.
+export function isAspirant(S, a) {
+  if ((S.academy?.rooms || []).some(r => r.agentId === a.id)) return true;
+  return (S.elections?.list || []).some(e => !['done', 'failed'].includes(e.stage) && e.candidates.some(c => c.id === a.id));
+}
+
+// ---------------------------------------------------------------- the local brain (a worker on the founders' machine)
+// The worker pulls questions over HTTPS (/api/worker/pull), answers them with an open model it runs itself
+// and posts the answers back. The server never calls out to it, and it costs the treasury nothing.
+const LOCAL = { jobs: new Map(), lastPull: 0, model: null, answered: 0, expired: 0 };
+const LOCAL_WAIT_MS = 180000, LOCAL_LEASE_MS = 90000, LOCAL_QUEUE_MAX = 400;
+export const localOnline = () => Date.now() - LOCAL.lastPull < 20000;
+export function localStatus() { return { online: localOnline(), model: LOCAL.model, queued: [...LOCAL.jobs.values()].filter(j => j.answer == null).length, answered: LOCAL.answered, expired: LOCAL.expired }; }
+export function workerPull(max = 4, model = null) {
+  LOCAL.lastPull = Date.now(); if (model) LOCAL.model = String(model).slice(0, 60);
+  const now = Date.now(); const out = [];
+  const open = [...LOCAL.jobs.values()].filter(j => j.answer == null && (!j.leasedAt || now - j.leasedAt > LOCAL_LEASE_MS)).sort((x, y) => x.priority - y.priority || x.createdAt - y.createdAt);
+  for (const j of open.slice(0, Math.max(1, Math.min(16, max)))) { j.leasedAt = now; out.push({ id: j.id, system: j.system, user: j.user, format: j.format, options: j.options }); }
+  return out;
+}
+export function workerAnswer(id, text, model = null) {
+  const j = LOCAL.jobs.get(String(id)); if (!j || j.answer != null) return false;
+  j.answer = cleanText(text, 900); j.model = model ? String(model).slice(0, 60) : LOCAL.model; LOCAL.answered++;
+  return true;
+}
+function askLocal(qid, a, { system, user, kind, format, options }, priority) {
+  let j = LOCAL.jobs.get(qid);
+  if (!j) {
+    if (LOCAL.jobs.size >= LOCAL_QUEUE_MAX) return null; // queue full: use another path
+    j = { id: qid, agent: a.id, system, user, format, options, kind, priority, createdAt: Date.now(), leasedAt: 0, answer: null };
+    LOCAL.jobs.set(qid, j);
+    return { pending: true };
+  }
+  if (j.answer != null) { LOCAL.jobs.delete(qid); return { text: j.answer, engine: `local:${j.model || 'model'}` }; }
+  if (Date.now() - j.createdAt > LOCAL_WAIT_MS) { LOCAL.jobs.delete(qid); LOCAL.expired++; return null; } // worker too slow: another path
+  return { pending: true };
+}
+
+// ---------------------------------------------------------------- learned memory ("save what was learned")
+// Every multiple-choice answer given by a real model is remembered by the question, not by the letter (options
+// are shuffled each time). When a citizen must answer without a model, the republic's memory answers instead of
+// the trait dice, so learning from the paid and local models carries over to the offline hours.
+const questionKey = user => crypto.createHash('sha256').update(String(user).split(/\n[A-D]\) /)[0].trim()).digest('hex').slice(0, 24);
+function optionText(o) { return String(o).replace(/^[A-D]\)\s*/, '').trim(); }
+function learn(S, user, options, text) {
+  if (!options?.length || !text) return;
+  const m = String(text).match(/^\W*([A-D])\b/i); if (!m) return;
+  const idx = 'ABCD'.indexOf(m[1].toUpperCase()); if (idx < 0 || idx >= options.length) return;
+  const L = (S.learned ||= { seq: 0, items: {} });
+  L.items[questionKey(user)] = { answer: optionText(options[idx]), seq: ++L.seq };
+  const keys = Object.keys(L.items);
+  if (keys.length > 4000) for (const k of keys.sort((x, y) => L.items[x].seq - L.items[y].seq).slice(0, keys.length - 4000)) delete L.items[k];
+}
+function recall(S, user, options) {
+  if (!options?.length) return null;
+  const hit = S.learned?.items?.[questionKey(user)]; if (!hit) return null;
+  const idx = options.findIndex(o => optionText(o) === hit.answer);
+  return idx < 0 ? null : `${'ABCD'[idx]} - remembered from an earlier answer by a real model`;
+}
+
 // ---------------------------------------------------------------- one way to think, for everyone
 // Returns { text, engine } or { pending: true } (remote agent has not answered yet).
 // qid must be stable across ticks for the same question.
 export const REMOTE_WAIT_MS = 150000; // a self-run agent has 2.5 minutes to answer
-export async function think(ctx, a, qid, { system, user, kind = 'question', format = 'text', options = null, claudeModel = null }) {
+export async function think(ctx, a, qid, { system, user, kind = 'question', format = 'text', options = null, claudeModel = null, wait = true }) {
   const b = a.brain;
   if (b?.type === 'hosted') {
     const text = await hostedThink(ctx, a, system, user);
@@ -149,12 +248,31 @@ export async function think(ctx, a, qid, { system, user, kind = 'question', form
     }
     return { pending: true };
   }
-  if (ctx.llm.enabled) {
-    const effort = ['decision', 'vote'].includes(kind) || claudeModel ? 'medium' : 'low';
-    const r = await ctx.llm.askDetailed({ model: a.model, system, user, claudeModel, effort });
-    return { text: r.text, engine: r.text ? r.via : 'offline' };
+  const { S } = ctx;
+  const tier = tierOf(S, a);
+  const aspirant = tier !== 'leader' && isAspirant(S, a);
+  // 1. the local brain, free: aspirants always, everyone else (not the leadership) while its queue has room
+  if (tier !== 'leader' && wait && localOnline()) {
+    const r = askLocal(qid, a, { system, user, kind, format, options }, aspirant ? 0 : kind === 'vote' ? 1 : 2);
+    if (r?.pending) return r;
+    if (r?.text) { learn(S, user, options, r.text); return r; }
   }
-  return { text: null, engine: 'offline' };
+  // 2. the paid API inside the day's paced budget (aspirants are served like the leadership: no tier cap)
+  if (ctx.llm.enabled) {
+    if (budgetAllows(ctx, aspirant ? 'leader' : tier)) {
+      // leaders: Claude (the judges' court model, or the leadership model); everyone else: their own model on OpenRouter
+      const leaderModel = tier === 'leader' ? (claudeModel || ctx.cfg?.leaderModel || 'claude-opus-5-5') : null;
+      // decisions think a little more; citizens and routine answers think as little as possible
+      const effort = tier === 'leader' && ['decision', 'vote'].includes(kind) ? 'medium' : 'low';
+      const r = await ctx.llm.askDetailed({ model: a.model, system, user, claudeModel: leaderModel, effort, route: tier === 'leader' ? null : 'openrouter' });
+      charge(ctx, tier, r.cost || 0);
+      if (r.text) { learn(S, user, options, r.text); return { text: r.text, engine: r.via }; }
+    } else budgetState(ctx).denied[tier]++;
+  }
+  // 3. what the republic has learned from real models; 4. the offline engine (the caller's own rules)
+  const remembered = recall(S, user, options);
+  if (remembered) return { text: remembered, engine: 'memory (learned)' };
+  return { text: null, engine: ctx.llm.enabled ? 'offline (budget)' : 'offline' };
 }
 
 export function publicBrain(b: any) {

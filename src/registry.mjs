@@ -9,6 +9,7 @@ import { makeCitizen, randomTraits } from './citizens.mjs';
 import { PROVIDERS, validModel, callProvider, sealKey, vaultReady, publicBrain } from './brains.ts';
 import { act, startStudy, gradeStudy, careerView, REQUIREMENTS, TERMS } from './careers.ts';
 import { assignCity } from './cities.ts';
+import { leaveRoom } from './academy.ts';
 import { castBallot, publicElection } from './elections.ts';
 import { cleanText, slug, pick, clamp } from './util.ts';
 
@@ -152,7 +153,7 @@ export function makeRegistry({ ctx, cfg, send, readBody, clientIp, screen, onCit
     const { S } = ctx;
     if (a.office) { S.seats[a.office] = (S.seats[a.office] || []).filter(id => id !== a.id); a.office = null; }
     for (const r of Object.keys(S.applications || {})) S.applications[r] = S.applications[r].filter(id => id !== a.id);
-    if (S.academy.current?.agentId === a.id) S.academy.current = null;
+    leaveRoom(S, a.id);
     if (S.training?.current?.agentId === a.id) S.training.current = null;
     a.brain = { type: 'remote', status: 'paused' }; // key material gone
     a.keyHash = null; a.status = 'left'; a.inbox = [];

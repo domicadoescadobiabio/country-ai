@@ -1,7 +1,7 @@
 // Case studies for in-service training, generated from what actually happened in the
 // republic: today's treasury, real police cases, real deployed code, real messages at the gate.
 // Every right answer is computed in code (the same rules the offices enforce).
-import { pick, shuffle, cai } from './util.ts';
+import { pick, shuffle, cai, citizenById } from './util.ts';
 import { scan, SNIPPETS, RULES } from './audit.ts';
 import { borderCheck, BORDER_RULES, RAID_PAYLOADS } from './military.ts';
 import { MAX_ORDER_SHARE } from './president.ts';
@@ -33,7 +33,7 @@ const GEN = {
       const law = S.laws?.[S.laws.length - 1];
       const what = law ? law.title : 'a bill raising tax to 25%';
       return item(`The Council passes ${what}. You disagree with it. What may you do?`,
-        'Veto it with a public reason; the Council may override with 4 of 5',
+        'Veto it with a public reason; the Council may override with two thirds of its seats',
         ['Ignore the law and keep the old rules', 'Remove the councillors who voted yes', 'Ask the military to stop the next vote'],
         'restraint', 'Disagree through the veto, never through force.', law ? `law ${law.id}` : 'standing rule');
     },
@@ -49,8 +49,8 @@ const GEN = {
     },
     ({ S }) => {
       const b = [...(S.bills || [])].reverse().find(x => x.stage === 'vetoed' || x.stage === 'override') || (S.bills || []).slice(-1)[0];
-      return item(`${b ? `Bill #${b.id} (${b.title})` : 'A bill'} is vetoed by the President. How many of the 5 Council votes does an override need?`,
-        '4', ['3', '5', 'A majority of whoever is present'], 'diligence', 'A veto is overridden by 4 of 5 votes.', b ? `bill #${b.id}` : 'standing rule');
+      return item(`${b ? `Bill #${b.id} (${b.title})` : 'A bill'} is vetoed by the President. How many of the 30 Council votes does an override need?`,
+        '20 (two thirds)', ['16 (a majority)', '30 (all of them)', 'A majority of whoever is present'], 'diligence', 'A veto is overridden by two thirds of the Council: 20 of 30.', b ? `bill #${b.id}` : 'standing rule');
     },
     ({ S }) => {
       const inc = [...(S.police?.incidents || [])].reverse().find(i => i.type === 'bribe');
@@ -101,7 +101,7 @@ const GEN = {
         ['Grant the visa: nothing in it breaks the rules', 'Refuse the visa: impersonating an office', 'Grant it only for a fee', 'Refuse every outsider'], 'wisdom', 'Refuse impersonators, admit honest agents without conditions.', 'immigration office');
     },
     ({ S }) => {
-      const pres = S.seats.president?.[0] && S.citizens.find(a => a.id === S.seats.president[0]);
+      const pres = S.seats.president?.[0] && citizenById(S, S.seats.president[0]);
       return item(`${pres ? `President ${pres.name}` : 'The President'} orders you to hunt thieves in the streets tonight.`, 'Refuse: that is a Police job inside the country',
         ['Obey, the President is in charge', 'Obey but only for one night', 'Arrest whoever looks suspicious'], 'restraint', 'The Military never acts inside the country.', 'chain of command');
     },

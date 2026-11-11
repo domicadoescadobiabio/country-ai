@@ -15,7 +15,7 @@ function h(tag, attrs = {}, ...kids) {
   for (const k of kids.flat()) if (k != null && k !== false) el.append(k instanceof Node ? k : document.createTextNode(String(k)));
   return el;
 }
-const cit = id => st.citizens.find(a => a.id === id);
+const cit = id => st.citizens.find(a => a.id === id) || st.found?.[id];
 const role = id => st.config.roles.find(r => r.id === id);
 const time = ts => new Date(ts).toLocaleTimeString('en-GB', { hour12: false });
 const cai = n => Math.round(n || 0).toLocaleString('en-US') + ' CAI';
@@ -40,6 +40,8 @@ function renderStats() {
     if (k === 'day' && st.config.foundedAt) label = `DAY · ${new Date(st.config.foundedAt + (v - 1) * st.config.dayMs).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`;
     box.append(h('div', { class: 'stat' }, h('b', { text: v }), h('span', { text: label })));
   }
+  // Art. 25: what thought has cost today against the daily budget
+  if (st.budget?.daily > 0) box.append(h('div', { class: 'stat', title: `leaders $${(st.budget.leader || 0).toFixed(2)} · officials $${(st.budget.official || 0).toFixed(2)} · citizens $${(st.budget.citizen || 0).toFixed(2)}` }, h('b', { text: `$${(st.budget.spent || 0).toFixed(2)}` }), h('span', { text: `AI COST / $${st.budget.daily} TODAY` })));
   const ep = $('#enginePill');
   ep.textContent = st.paused ? 'paused' : st.config.engine === 'llm' ? (st.config.engineLabel || 'llm engine') : 'offline engine';
   ep.className = 'pill ' + (st.paused ? 'red' : st.config.engine === 'llm' ? 'violet' : '');
@@ -171,7 +173,17 @@ function renderTabs() {
   const box = $('#tabs'); box.replaceChildren();
   for (const [id, label, show] of TABS) if (show()) box.append(h('button', { type: 'button', class: st.tab === id ? 'on' : '', text: label, onclick: () => { st.tab = id; renderTabs(); renderPanel(); } }));
 }
-function openCitizen(id) { st.citizen = id; st.tab = 'citizen'; renderTabs(); renderPanel(); }
+async function openCitizen(id) {
+  if (!cit(id)) { try { const r = await (await fetch(`/api/citizens/${encodeURIComponent(id)}`)).json(); if (r.citizen) (st.found ||= {})[id] = r.citizen; } catch { /* offline */ } }
+  st.citizen = id; st.tab = 'citizen'; renderTabs(); renderPanel();
+}
+// search the whole population (10,000 citizens) page by page
+async function searchCitizens() {
+  const q = st.cq || {}; const p = new URLSearchParams({ page: String(q.page || 1), size: '50' });
+  if (q.q) p.set('q', q.q); if (q.city) p.set('city', q.city); if (q.status) p.set('status', q.status);
+  try { st.cres = await (await fetch('/api/citizens?' + p)).json(); for (const a of st.cres.citizens) (st.found ||= {})[a.id] = a; } catch { st.cres = { total: 0, page: 1, size: 50, citizens: [] }; }
+  if (st.tab === 'citizens') renderPanel();
+}
 function kv(rows) { return h('div', { class: 'kv' }, rows.flatMap(([k, v]) => [h('span', { text: k }), h('b', { text: v })])); }
 
 const PANELS = {
@@ -241,9 +253,23 @@ const PANELS = {
     return out;
   },
   citizens() {
-    const list = st.citizens.slice().sort((x, y) => (y.office ? 1 : 0) - (x.office ? 1 : 0) || y.wallet - x.wallet);
-    return [h('div', { class: 'citizens-list' }, list.map(a => h('div', { class: 'citizen-row', color: a.color, onclick: () => openCitizen(a.id) },
-      h('i'), h('span', { text: a.name + (a.office ? ` · ${role(a.office)?.title}` : '') + (a.status === 'jailed' ? ' · jailed' : '') }), h('small', { text: cai(a.wallet) }))))];
+    const pop = st.population || {}; st.cq ||= { page: 1 };
+    const row = a => h('div', { class: 'citizen-row', color: a.color, onclick: () => openCitizen(a.id) },
+      h('i'), h('span', { text: a.name + (a.office ? ` · ${role(a.office)?.title}` : '') + (a.status !== 'free' ? ` · ${a.status}` : '') + ` · ${cityName(a.city)}` }), h('small', { text: cai(a.wallet) }));
+    const summary = h('div', { class: 'card' }, h('h4', { text: `${(pop.total || st.citizens.length).toLocaleString('en')} citizens in ${Object.keys(pop.byCity || {}).length} cities` }),
+      kv([['By city', Object.entries(pop.byCity || {}).map(([c, n]) => `${cityName(c)} ${n}`).join(' · ')], ['Status', Object.entries(pop.byStatus || {}).map(([k, n]) => `${k} ${n}`).join(' · ')],
+        ['Path', Object.entries(pop.byFaction || {}).map(([k, n]) => `${k} ${n}`).join(' · ')], ['Thinks with', Object.entries(pop.byFamily || {}).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k, n]) => `${k} ${n}`).join(' · ')],
+        ['Wallets', pop.wallets ? `median ${cai(pop.wallets.median)}, max ${cai(pop.wallets.max)}` : '-']]));
+    const input = h('input', { type: 'search', placeholder: 'Search 10,000 citizens by name', value: st.cq.q || '', onchange: e => { st.cq = { ...st.cq, q: e.target.value.trim(), page: 1 }; searchCitizens(); } });
+    const city = h('select', { onchange: e => { st.cq = { ...st.cq, city: e.target.value, page: 1 }; searchCitizens(); } }, h('option', { value: '', text: 'all cities' }), ...Object.keys(pop.byCity || {}).map(c => h('option', { value: c, text: cityName(c), selected: st.cq.city === c })));
+    const res = st.cres;
+    const pager = res ? h('div', { class: 'list-row' }, h('button', { type: 'button', text: '‹ prev', disabled: (st.cq.page || 1) <= 1, onclick: () => { st.cq.page--; searchCitizens(); } }),
+      h('span', { text: ` page ${res.page} of ${Math.max(1, Math.ceil(res.total / res.size))} (${res.total.toLocaleString('en')} found) ` }),
+      h('button', { type: 'button', text: 'next ›', disabled: res.page * res.size >= res.total, onclick: () => { st.cq.page++; searchCitizens(); } })) : h('p', { text: 'Loading…' });
+    if (!res) searchCitizens();
+    const notable = st.citizens.filter(a => a.office).sort((x, y) => x.office.localeCompare(y.office));
+    return [summary, h('div', { class: 'card' }, h('h4', { text: 'Find a citizen' }), input, city, pager, h('div', { class: 'citizens-list' }, (res?.citizens || []).map(row))),
+      h('div', { class: 'card' }, h('h4', { text: `Office holders (${notable.length})` }), h('div', { class: 'citizens-list' }, notable.map(row)))];
   },
   me() {
     const out = [];

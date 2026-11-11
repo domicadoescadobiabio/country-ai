@@ -101,7 +101,7 @@ drills in a row are recalled; elected officials face a recall vote of the people
 
 ## 5. Oversight you live under
 
-- **Constitutional Court** (3 judges): election disputes, disqualifications, formal validity of appointments,
+- **Constitutional Court** (5 judges; criminal trials sit as panels of 3): election disputes, disqualifications, formal validity of appointments,
   impeachments. Judges hold no other office and never run for election.
 - **Audit Office**: recounts every election from the anonymised ballots before it is certified; audits the
   public accounts daily.

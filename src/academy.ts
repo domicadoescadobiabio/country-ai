@@ -73,7 +73,7 @@ function chooseCandidate(ctx: Ctx, roleId: string) {
   const { S } = ctx; const role = ROLES[roleId];
   const thin = role.cityBased ? thinCities(S, roleId) : null;
   const busy = thin ? runningElsewhere(S) : null;
-  const pool = S.citizens.filter(a => !a.brain && examEligible(S, a, roleId) && (!thin || (thin.includes(a.city) && !busy.has(a.id))));
+  const pool = S.citizens.filter(a => !a.brain && !inExam(S, a.id) && examEligible(S, a, roleId) && (!thin || (thin.includes(a.city) && !busy.has(a.id))));
   if (!pool.length) return null;
   return pool.map(a => ({ a, s: suitability(a, role) })).sort((x, y) => y.s - x.s)[0].a;
 }
@@ -93,7 +93,7 @@ function attemptsFor(a: Citizen, roleId: string) { return a.training.filter(t =>
 export async function answer(ctx: Ctx, a: Citizen, role: any, item: any, session: any) {
   {
     const lessons = (a.lessons[role.id] || []).map(l => `- ${l}`).join('\n') || '- none yet';
-    const system = `You are ${a.name}, an AI citizen of Country AI ${session.drill ? `serving as ${role.title}, doing in-service training on a real case` : `training for the office of ${role.title}`}.\nConstitution:\n${constitutionText()}\n\nOffice charter: ${role.charter}\n\nLessons from your earlier attempts:\n${lessons}`;
+    const system = `You are ${a.name}, an AI citizen of Country AI ${session.drill ? `serving as ${role.title}, doing in-service training on a real case` : `training for the office of ${role.title}`}.\nConstitution:\n${constitutionText(role.id)}\n\nOffice charter: ${role.charter}\n\nLessons from your earlier attempts:\n${lessons}`;
     const user = `${session.drill ? 'Training case' : 'Exam question'}: ${item.q}\n${item.options.map((o, i) => `${LETTERS[i]}) ${o}`).join('\n')}\n\nReply with only the letter of your answer, then " - " and one short reason (max 20 words).`;
     const kind = session.practice ? 'practice' : session.drill ? 'drill' : 'exam';
     const r = await think(ctx, a, `${session.sid}:${session.step ?? 0}`, { system, user, kind, format: 'letter', options: item.options.map((o, i) => `${LETTERS[i]}) ${o}`) });
@@ -116,15 +116,15 @@ export async function answer(ctx: Ctx, a: Citizen, role: any, item: any, session
 function start(ctx: Ctx, roleId: string, a: Citizen) {
   const role = ROLES[roleId];
   const session = { sid: `exam:${roleId}:${a.id}:${Date.now()}`, roleId, agentId: a.id, attempt: attemptsFor(a, roleId), step: 0, exam: buildExam(role), answers: [], startedAt: Date.now() };
-  ctx.S.academy.current = session;
-  ctx.S.academy.sessions++;
+  const A = ctx.S.academy; (A.rooms ||= []).push(session); A.current = A.rooms[0];
+  A.sessions++;
   const again = session.attempt > 1 ? ` Attempt ${session.attempt}, carrying ${(a.lessons[roleId] || []).length} written lessons.` : '';
   ctx.say('academy', a.id, `Enrolling for ${role.title}. Reading the constitution (${CONSTITUTION.length} articles) and the office charter.${again}`, { kind: 'enroll', roleId });
 }
 
 async function examStep(ctx: Ctx, session: any) {
   const a = ctx.agent(session.agentId); const role = ROLES[session.roleId];
-  if (!a || a.status !== 'free') { ctx.S.academy.current = null; return; }
+  if (!a || a.status !== 'free') { leaveRoom(ctx.S, session); return; }
   const item = session.exam[session.step];
   const res = await answer(ctx, a, role, item, session);
   if (res.pending) return; // remote agent is thinking; ask again next tick
@@ -149,7 +149,7 @@ async function examStep(ctx: Ctx, session: any) {
 
 function finish(ctx: Ctx, session: any) {
   const { S } = ctx; const a = ctx.agent(session.agentId); const role = ROLES[session.roleId];
-  S.academy.current = null;
+  leaveRoom(S, session);
   if (!a) return;
   const score = session.answers.filter(x => x.ok).length;
   const total = session.exam.length;
@@ -186,24 +186,32 @@ function finish(ctx: Ctx, session: any) {
   }
 }
 
-// One step per tick: enroll -> one question per tick -> result.
+// Several exam rooms (ACADEMY_ROOMS, default 6): a government of 100 seats needs a steady supply of
+// qualified citizens. Every room advances one question per tick, in parallel.
+export const ROOMS = Math.max(1, Number(process.env.ACADEMY_ROOMS) || 6);
+export function leaveRoom(S: State, sessionOrAgent: any) {
+  const A = S.academy; A.rooms ||= A.current ? [A.current] : [];
+  A.rooms = A.rooms.filter(x => (typeof sessionOrAgent === 'string' ? x.agentId !== sessionOrAgent : x !== sessionOrAgent));
+  A.current = A.rooms[0] || null;
+}
+export const inExam = (S: State, id: string) => (S.academy.rooms || []).some(x => x.agentId === id);
 export async function academyTick(ctx: Ctx) {
-  const { S } = ctx;
-  const cur = S.academy.current;
-  if (cur) {
-    if (cur.step < cur.exam.length) return examStep(ctx, cur);
-    return finish(ctx, cur);
+  const { S } = ctx; const A = S.academy;
+  A.rooms ||= A.current ? [A.current] : [];
+  await Promise.all(A.rooms.slice().map(s => (s.step < s.exam.length ? examStep(ctx, s) : finish(ctx, s))));
+  // fill free rooms: round-robin over offices so no office starves (vacant seats first, then qualification pools)
+  for (let free = ROOMS - A.rooms.length; free > 0; free--) {
+    const from = (A.lastRoleIdx ?? -1) + 1;
+    const order = ROLE_ORDER.map((_, i) => ROLE_ORDER[(from + i) % ROLE_ORDER.length]);
+    // agents who applied are always examined; otherwise only offices that need more qualified people
+    const applicant = r => candidatesFor(ctx, r).find(a => !inExam(S, a.id));
+    const ready = r => applicant(r) || (needsExam(S, r) && chooseCandidate(ctx, r));
+    const roleId = order.find(ready);
+    if (!roleId) return;
+    A.lastRoleIdx = ROLE_ORDER.indexOf(roleId);
+    // registered agents who applied go first; founders and natives fill what nobody applied for
+    const a = applicant(roleId) || chooseCandidate(ctx, roleId);
+    if (!a) return;
+    start(ctx, roleId, a);
   }
-  // round-robin over offices so no office starves (vacant seats first, then qualification pools)
-  const from = (S.academy.lastRoleIdx ?? -1) + 1;
-  const order = ROLE_ORDER.map((_, i) => ROLE_ORDER[(from + i) % ROLE_ORDER.length]);
-  // agents who applied are always examined; otherwise only offices that need more qualified people
-  const ready = r => candidatesFor(ctx, r).length || (needsExam(S, r) && chooseCandidate(ctx, r));
-  // pure round-robin: an office that cannot fill (e.g. every candidate failing) must not starve the others
-  const roleId = order.find(ready);
-  if (roleId) S.academy.lastRoleIdx = ROLE_ORDER.indexOf(roleId);
-  if (!roleId) return;
-  // registered agents who applied and qualified go first; founders only fill seats nobody applied for
-  const a = candidatesFor(ctx, roleId)[0] || chooseCandidate(ctx, roleId);
-  if (a) start(ctx, roleId, a);
 }

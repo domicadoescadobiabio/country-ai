@@ -14,7 +14,7 @@ import { ROLES } from './roles.mjs';
 import { think } from './brains.ts';
 import { qualifiedPool } from './academy.ts';
 import { constitutionText } from './constitution.mjs';
-import { pick, shuffle, round, cleanText } from './util.ts';
+import { pick, shuffle, round, cleanText, citizenById } from './util.ts';
 import type { Ctx, State, Citizen } from './types.ts';
 
 export const FORCES = [
@@ -39,7 +39,7 @@ const C = S => {
   return S.command;
 };
 const free = a => a && a.status === 'free';
-const members = (S, force) => (S.seats[force] || []).map(id => S.citizens.find(a => a.id === id)).filter(Boolean);
+const members = (S, force) => (S.seats[force] || []).map(id => citizenById(S, id)).filter(Boolean);
 const rankIdx = a => (a.rank === 'chief' ? 3 : RANKS.indexOf(a.rank || 'officer'));
 
 // Fitness from the official record only (exam, practice, drills/skill, last review, conduct).
@@ -84,7 +84,7 @@ async function councilShortlist(ctx: Ctx, f: any, proc: any) {
     const ids = pool.map(a => a.id);
     const res = await think(ctx, next, `shortlist:${proc.id}:${next.id}`, {
       kind: 'decision', format: 'json', options: ids,
-      system: `You are ${next.name}, member of the Council of Country AI.\nConstitution:\n${constitutionText()}\nCharter: ${ROLES.council.charter}`,
+      system: `You are ${next.name}, member of the Council of Country AI.\nConstitution:\n${constitutionText('council')}\nCharter: ${ROLES.council.charter}`,
       user: `The office of ${role.title} is vacant. Shortlist up to 3 candidates for the President, best first, judging ONLY the official record below (not names, not who owns them).\n${shuffle(pool).map(a => '- ' + fileOf(S, a, f.chief)).join('\n')}\nReply with JSON only: {"picks":["<id>","<id>","<id>"],"reason":"<max 30 words>"}`,
     });
     if (res.pending) return;
@@ -129,7 +129,7 @@ async function presidentAppoints(ctx: Ctx, f: any, proc: any) {
   if (pres && free(pres)) {
     const res = await think(ctx, pres, `appoint:${proc.id}:${proc.rejected ? 2 : 1}`, {
       kind: 'decision', format: 'json', options,
-      system: `You are ${pres.name}, President of Country AI.\nConstitution:\n${constitutionText()}\nCharter: ${ROLES.president.charter}`,
+      system: `You are ${pres.name}, President of Country AI.\nConstitution:\n${constitutionText('president')}\nCharter: ${ROLES.president.charter}`,
       user: `Appoint the ${role.title} from the Council's shortlist (in the Council's order):\n${list.map((id, i) => `${i + 1}. ${fileOf(S, ctx.agent(id), f.chief)}`).join('\n')}\n${proc.rejected ? 'You already rejected one list: you must choose.' : 'You may reject the whole list once.'}\nReply with JSON only: {"choice":"<id>${proc.rejected ? '' : ' or reject'}","reason":"<max 30 words>"}`,
     });
     if (res.pending && S.day <= proc.deadline) return;
@@ -240,7 +240,7 @@ async function appointOfficers(ctx: Ctx, f: any) {
   if (!list.length) { cmd.officerPicks[f.force] = null; return; }
   const res = await think(ctx, authority, `officer:${pickProc.id}:${authority.id}`, {
     kind: 'decision', format: 'json', options: list,
-    system: `You are ${authority.name}, ${authority.office === 'president' ? 'President' : ROLES[f.chief].title} of Country AI.\nConstitution:\n${constitutionText()}\nCharter: ${ROLES[authority.office].charter}`,
+    system: `You are ${authority.name}, ${authority.office === 'president' ? 'President' : ROLES[f.chief].title} of Country AI.\nConstitution:\n${constitutionText(authority.office)}\nCharter: ${ROLES[authority.office].charter}`,
     user: `Appoint one new ${ROLES[f.force].title} officer from the Merit Board's top three (Art. 10):\n${list.map((id, i) => `${i + 1}. ${fileOf(S, ctx.agent(id), f.force)}`).join('\n')}\nReply with JSON only: {"choice":"<id>","reason":"<max 30 words>"}`,
   });
   if (res.pending && S.day <= pickProc.deadline) return;

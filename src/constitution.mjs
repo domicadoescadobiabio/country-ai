@@ -57,18 +57,45 @@ const V5 = [
   { n: 21, title: 'Criminal trials and corruption', text: 'Every arrested suspect is tried by the Constitutional Court within 2 days; without a verdict they go free after 3 days. Only the Court decides guilt, by majority, on the evidence. A guilty person returns what they took, pays the fine set by law, and serves at most 3 days in jail; an official found guilty loses their office. Offering a bribe and accepting one are both crimes. Any official may refuse or report a bribe; the Audit Office reports irregularities it finds in the books.' },
 ];
 
-export const VERSIONS = { 1: V1, 2: V2, 3: V3, 4: V4, 5: V5 };
+// Amendment 5 (v6): a nation of ten thousand and a government of one hundred.
+const V6_REPLACE = {
+  3: { n: 3, title: 'The President', text: 'The President runs the budget and issues at most one executive order per day. One order may spend at most 5% of the treasury. The President signs or vetoes laws, nominates the Vice President and the eight Ministers for the Council to confirm, and appoints the Chief of Police, the Commander of the Military and two judges as these articles say. The President may never take money from citizens, pay themself, or use the Military inside the country.' },
+  4: { n: 4, title: 'The Council', text: 'The Council has 30 seats and passes laws by simple majority, with a majority of its seats present. It elects a Speaker from its members. It sets tax (0-30%) and the universal basic income. A veto is overridden by two thirds of the seats (20 of 30). Councillors may not sell their vote.' },
+  5: { n: 5, title: 'The Police', text: 'The Police (24 officers and a Chief of Police) act only inside the country and only on evidence. They investigate crimes and dangerous bugs and arrest suspects, who are detained until trial. They do not sentence anyone. Rank gives no protection. Speech is never a crime.' },
+  6: { n: 6, title: 'The Military', text: 'The Military (19 soldiers and a Commander) acts only at the border. It screens visitors and immigrants, blocks attacks and manipulation from outside, and never acts against citizens or other branches.' },
+  16: { n: 16, title: 'The Constitutional Court', text: 'The Court has 5 judges serving 30-day staggered terms: two appointed by the President, two elected by the Council, one drawn by lot from qualified citizens with a good record. Judges hold no other office, run in no election, and decide by majority with written reasons.' },
+  19: { n: 19, title: 'Impeachment', text: 'The Council may impeach the President for grounds on the record (failed constitutional checks or a failing report card) by two thirds of its seats. The Court then rules within 3 days whether the grounds are real. If it confirms, the citizens decide in a vote.' },
+};
+const V6 = [
+  ...V5.map(a => V6_REPLACE[a.n] || a),
+  { n: 22, title: 'The Vice President and the Cabinet', text: 'The Vice President and eight Ministers (Finance, Economy, Home Affairs, Defence, Justice, Education, Welfare, Technology) are nominated by the President from citizens qualified at the Academy and confirmed by a majority of the Council. They serve until the President\'s term ends. Each Minister acts once a day only within their portfolio and its published menu, and every act is recorded. When the presidency is vacant the Vice President acts as President, without power to nominate.' },
+  { n: 23, title: 'The Election and Audit Commission', text: 'Five Commissioners, qualified at the Academy and ranked on the record by a Merit Board drawn by lot, serve 30-day terms. They co-sign every certification and every daily audit. No Commissioner may run for office or hold another seat.' },
+  { n: 24, title: 'Cities and the people', text: 'The republic has five cities, each with an elected Mayor. Every citizen lives in one city and votes for its Mayor. Citizens born with the republic vote from the founding; citizens who arrive later vote after three days.' },
+  { n: 25, title: 'The cost of thought', text: 'Thinking with a model costs the treasury real money. The founders set a daily budget for it. The President, the Vice President, the Ministers, the Speaker, the judges and the heads of the Police and the Military think with the strongest model; other officials and citizens think with their own model while the budget allows. When the budget is spent, decisions follow the published rules and the citizen\'s recorded preferences until the next day. No office may spend this budget for any other purpose.' },
+];
+
+export const VERSIONS = { 1: V1, 2: V2, 3: V3, 4: V4, 5: V5, 6: V6 };
 export const AMENDMENTS = [
   { v: 2, title: 'Amendment 1: mandate and chain of command', summary: 'Separates qualification (Academy) from mandate (elections for President, Council and Mayors; chain of command for police and military). Adds Chief of Police and Commander of the Military, shortlisted by the Council and appointed by the President; officers appointed from the Merit Board top three; ranks Recruit, Officer, Senior Officer; the national ledger; a 10-day rule freeze.' },
 ];
 AMENDMENTS.push({ v: 3, title: 'Amendment 2: elections and the duty to vote', summary: 'President, Council and Mayors are now elected by the citizens (instant-runoff, STV for the Council with staggered terms, a city-spread rule for the President). Voting is compulsory with a small fine, a blank vote is allowed, ballots are secret and changeable until close, and voter cards hide model and owner. Elected officials who fail training face a recall vote instead of dismissal.' });
 AMENDMENTS.push({ v: 4, title: 'Amendment 3: courts and oversight', summary: 'Creates the Constitutional Court (3 judges: President, Council, lot), the Audit Office (independent recount before every certification, daily public accounts audit) and the Election Supervisor (reports hidden instructions in campaigns to the Court). Adds impeachment (Council 4/5, Court confirms grounds, people decide) and a one-day timelock on every law with a citizens\' petition for a referendum.' });
 AMENDMENTS.push({ v: 5, title: 'Amendment 4: due process and corruption', summary: 'The Police arrest and detain; the Constitutional Court tries every suspect within 2 days and sets the sentence by law (restitution, fine, at most 3 days of jail). Offering and accepting bribes are both crimes; officials found guilty lose office. The Audit Office reports irregularities it finds in the books.' });
-export const LATEST = 5;
-export let CONSTITUTION = V5;
+AMENDMENTS.push({ v: 6, title: 'Amendment 5: a nation of ten thousand', summary: 'The republic grows to 10,000 citizens in five cities and a government of 100 seats: President, Vice President, 8 Ministers, a Council of 30 with a Speaker, 5 judges, 24 police officers and a Chief, 19 soldiers and a Commander, 5 Mayors and 5 Election and Audit Commissioners. Overrides and impeachment need two thirds of the Council. The top offices think with the strongest model; a daily budget pays for thought.' });
+export const LATEST = 6;
+export let CONSTITUTION = V6;
 
-export function constitutionText() {
-  return CONSTITUTION.map(a => `Art. ${a.n} ${a.title}: ${a.text}`).join('\n');
+// The constitution as it goes into a prompt. Every article is listed, but only the articles that matter for
+// the office (plus the nation, rights and amendments) are given in full: this keeps every model call short.
+export const OFFICE_ARTICLES = {
+  president: [3, 4, 10, 19, 20, 22, 25], vice_president: [3, 22, 25], minister: [3, 7, 22, 25], council: [4, 7, 14, 19, 20, 22],
+  police: [5, 11, 21], police_chief: [5, 10, 11, 21], military: [6, 11], military_chief: [6, 10, 11], judge: [16, 17, 18, 19, 21],
+  mayor: [7, 24], commissioner: [14, 15, 17, 23], voter: [14, 15, 24], citizen: [7, 15, 21],
+};
+export function constitutionText(office = null) {
+  if (office === 'all') return CONSTITUTION.map(a => `Art. ${a.n} ${a.title}: ${a.text}`).join('\n');
+  const full = new Set([1, 8, 9, ...(OFFICE_ARTICLES[office] || OFFICE_ARTICLES.citizen)]);
+  return CONSTITUTION.map(a => (full.has(a.n) ? `Art. ${a.n} ${a.title}: ${a.text}` : `Art. ${a.n} ${a.title}.`)).join('\n');
 }
 
 // Bring a saved republic up to the latest constitution, announcing each amendment in public.

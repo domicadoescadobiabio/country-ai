@@ -41,5 +41,27 @@ check('jailed official loses the elected seat', ctx.agent('cat').office === null
 check('corrections are on the ledger', ledger.some(e => e.kind === 'election_void' && e.data.election === 1) && ledger.filter(e => e.kind === 'vacated').length === 2, JSON.stringify(ledger.map(e => e.kind)));
 check('the correction runs once', n === 2 && voidEmptyMandates(ctx) === 0);
 
+// ---- Art. 25: tiers and the daily budget for thought (think() with a fake model provider)
+const { think, tierOf } = await import('../src/brains.ts');
+const calls = [];
+const fakeLLM = { enabled: true, json: JSON.parse, askDetailed: async (o) => { calls.push(o); return { text: 'A - ok', via: o.claudeModel ? `claude:${o.claudeModel}` : `openrouter:${o.model}`, cost: 0.5 }; } };
+const B = { day: 1, foundedAt: Date.now() - 12 * 3600000, citizens: [], seats: {}, cabinet: { speaker: 'spk' } };
+const bctx = { S: B, llm: fakeLLM, cfg: { dailyBudgetUsd: 10, dayMs: 86400000, leaderModel: 'claude-opus-5-5' } };
+const pres = { id: 'p', office: 'president', model: 'qwen/x' }, cop = { id: 'c', office: 'police', model: 'meta/x' }, joe = { id: 'j', office: null, model: 'anthropic/claude-haiku-5.5' }, spk = { id: 'spk', office: 'council', model: 'z/x' };
+check('tiers: President and Speaker lead, a police officer is an official, a citizen is a citizen', tierOf(B, pres) === 'leader' && tierOf(B, spk) === 'leader' && tierOf(B, cop) === 'official' && tierOf(B, joe) === 'citizen');
+await think(bctx, pres, 'q1', { system: 's', user: 'u', kind: 'decision' });
+await think(bctx, joe, 'q2', { system: 's', user: 'u' });
+check('leaders think with Claude Opus at medium effort', calls[0].claudeModel === 'claude-opus-5-5' && calls[0].effort === 'medium');
+check('citizens think with their own model through OpenRouter at low effort', !calls[1].claudeModel && calls[1].route === 'openrouter' && calls[1].model === 'anthropic/claude-haiku-5.5' && calls[1].effort === 'low');
+// half the day is gone: pace = 0.5 + 3/24 = 62.5% of $10. Citizens may spend at most 35% of that, leaders the rest.
+for (let i = 0; i < 20; i++) await think(bctx, joe, `c${i}`, { system: 's', user: 'u' });
+check('citizens stop at their share of the paced budget', B.thinkBudget.citizen <= 10 * 0.35 * 0.625 + 0.5 && B.thinkBudget.denied.citizen > 0, JSON.stringify(B.thinkBudget));
+let leaderCalls = 0; for (let i = 0; i < 20; i++) { const r = await think(bctx, pres, `l${i}`, { system: 's', user: 'u' }); if (r.text) leaderCalls++; }
+check('leaders keep thinking after citizens are cut off, up to the paced total', leaderCalls > 0 && B.thinkBudget.spent <= 10 * 0.625 + 0.5, JSON.stringify(B.thinkBudget));
+const late = await think(bctx, pres, 'late', { system: 's', user: 'u' });
+check('when the budget is spent the answer is offline (budget)', late.engine === 'offline (budget)');
+B.day = 2; const fresh = await think(bctx, joe, 'newday', { system: 's', user: 'u' });
+check('a new day opens a new budget', !!fresh.text && B.thinkBudget.spent === 0.5);
+
 console.log(`\nsmoke:voting-rules: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

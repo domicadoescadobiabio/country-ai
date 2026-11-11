@@ -5,11 +5,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { loadDotEnv, clamp, uid, slug, cleanText, pick } from './src/util.ts';
+import { loadDotEnv, clamp, uid, slug, cleanText, pick, citizenById } from './src/util.ts';
 import { makeLLM } from './src/llm.ts';
 import { NATION, CURRENCY, CONSTITUTION } from './src/constitution.mjs';
 import { ROLES, ROLE_ORDER } from './src/roles.mjs';
 import { FOUNDERS, makeCitizen, randomTraits } from './src/citizens.mjs';
+import { growPopulation } from './src/population.mjs';
+import { CITIES, assignCity } from './src/cities.ts';
+import { tierOf, budgetState, workerPull, workerAnswer, localStatus } from './src/brains.ts';
 import { freshAcademy, academyTick, totalSeats } from './src/academy.ts';
 import { lifeTick, payday } from './src/life.ts';
 import { INSTITUTIONS } from './src/institutions.ts';
@@ -31,6 +34,9 @@ const CFG = {
   anthropicKey: (process.env.ANTHROPIC_API_KEY || '').trim(),
   claudeModel: (process.env.CLAUDE_MODEL || 'claude-opus-5-5').trim(), // quality first: agents decide better on Opus
   courtModel: (process.env.CLAUDE_COURT_MODEL || 'claude-opus-5-5').trim(), // judges: a stronger model than the officials
+  leaderModel: (process.env.CLAUDE_LEADER_MODEL || process.env.CLAUDE_MODEL || 'claude-opus-5-5').trim(), // President, VP, Ministers, Speaker, chiefs
+  dailyBudgetUsd: Math.max(0, Number(process.env.LLM_DAILY_BUDGET_USD ?? 25)), // Art. 25: what thought may cost per day (0 = no limit)
+  population: clamp(Number(process.env.POPULATION) || 10000, 24, 50000), // citizens; founders + generated natives
   orKey: (process.env.OPENROUTER_API_KEY || '').trim(),
   orBase: (process.env.OPENROUTER_BASE_URL || '').trim(), // tests only; default https://openrouter.ai/api/v1
   llmPerMin: clamp(Number(process.env.LLM_PER_MIN) || 20, 1, 600),
@@ -41,11 +47,12 @@ const CFG = {
   dataDir: path.resolve(ROOT, process.env.DATA_DIR || './data'),
   allowGuest: process.env.ALLOW_GUEST !== 'false',
   allowImmigration: process.env.ALLOW_IMMIGRATION !== 'false',
-  maxCitizens: clamp(Number(process.env.MAX_CITIZENS) || 300, 10, 5000),
+  maxCitizens: clamp(Number(process.env.MAX_CITIZENS) || 10300, 10, 60000),
   brainSecret: (process.env.BRAIN_SECRET || '').trim(),
   registrationsPerHour: clamp(Number(process.env.REGISTRATIONS_PER_HOUR) || 30, 1, 1000),
   registerCooldownMs: process.env.REGISTER_COOLDOWN_MS != null ? clamp(Number(process.env.REGISTER_COOLDOWN_MS), 0, 86400000) : 600000,
   publicUrl: (process.env.PUBLIC_URL || '').trim().replace(/\/$/, ''),
+  workerToken: (process.env.WORKER_TOKEN || '').trim(), // the local brain on the founders' machine (scripts/local-brain.mjs)
 };
 initVault(CFG.brainSecret);
 const PUBLIC = path.join(ROOT, 'public');
@@ -115,7 +122,8 @@ const llm = makeLLM(CFG, logActivity);
 const ctx = {
   get S() { return S; },
   cfg: CFG, llm, say, log: logActivity, emit,
-  agent: id => S.citizens.find(a => a.id === id),
+  agent: id => citizenById(S, id),
+  archiveBallots: (id, digest, list) => store.archiveBallots(id, digest, list),
   // time helpers: everything that happens "N times a day" is a rate per hour of republic time
   hourMs: () => CFG.dayMs / 24,
   hoursSince: ms => (Date.now() - ms) / (CFG.dayMs / 24),
@@ -210,18 +218,42 @@ async function screen(item) {
 }
 
 // ---------------------------------------------------------------- public views
+// the model that really thinks for this citizen today (Art. 25): leadership -> Claude, everyone else -> their own model
+const thinksWith = a => (a.brain ? a.model : !llm.enabled ? 'offline' : tierOf(S, a) === 'leader' ? (a.office === 'judge' ? CFG.courtModel : CFG.leaderModel) : a.model);
 function publicCitizen(a) {
-  return { id: a.id, name: a.name, model: a.brain ? a.model : llm.routeOf(a.model), color: a.color, bio: a.bio, origin: a.origin, office: a.office, status: a.status, jailUntil: a.jailUntil, detainedDay: a.detainedDay ?? null, wallet: Math.round(a.wallet), traits: a.traits, joined: a.joined, training: a.training.slice(-8), lessons: a.lessons, record: a.record || [], skill: a.skill || {}, brain: publicBrain(a.brain), city: a.city || null, faction: a.faction || 'civilian', debt: Math.round(a.debt || 0), rank: a.rank || null, rankSince: a.rankSince ?? null, quals: a.quals || {}, termEnds: a.termEnds || null, practice: a.practice || {}, joinedDay: a.joinedDay ?? 0, drills: (a.drills || []).slice(-6), reviews: (a.reviews || []).slice(-6), stats: a.stats || {} };
+  return { id: a.id, name: a.name, model: thinksWith(a), tier: tierOf(S, a), color: a.color, bio: a.bio, origin: a.origin, office: a.office, status: a.status, jailUntil: a.jailUntil, detainedDay: a.detainedDay ?? null, wallet: Math.round(a.wallet), traits: a.traits, joined: a.joined, training: a.training.slice(-8), lessons: a.lessons, record: a.record || [], skill: a.skill || {}, brain: publicBrain(a.brain), city: a.city || null, faction: a.faction || 'civilian', debt: Math.round(a.debt || 0), rank: a.rank || null, rankSince: a.rankSince ?? null, quals: a.quals || {}, termEnds: a.termEnds || null, practice: a.practice || {}, joinedDay: a.joinedDay ?? 0, drills: (a.drills || []).slice(-6), reviews: (a.reviews || []).slice(-6), stats: a.stats || {} };
+}
+function notableCitizens() {
+  const running = new Set((S.elections?.list || []).filter(e => !['done', 'failed'].includes(e.stage)).flatMap(e => e.candidates.map(c => c.id)));
+  const pick = new Set();
+  for (const a of S.citizens) if (a.origin === 'founder' || a.office || a.status !== 'free' || a.brain || running.has(a.id) || (S.academy.rooms || []).some(r => r.agentId === a.id)) pick.add(a);
+  for (const a of S.citizens.slice().sort((x, y) => y.wallet - x.wallet).slice(0, 20)) pick.add(a); // the richest
+  return [...pick].slice(0, 600);
+}
+let popCache = null;
+function populationSummary() {
+  if (popCache && Date.now() - popCache.at < 15000) return popCache.v;
+  const count = (f) => { const o = {}; for (const a of S.citizens) { const k = f(a); o[k] = (o[k] || 0) + 1; } return o; };
+  const family = a => String(a.brain ? a.brain.provider || 'own' : a.model).split('/')[0];
+  const wallets = S.citizens.map(a => a.wallet).sort((x, y) => x - y);
+  const v = { total: S.citizens.length, byCity: count(a => a.city || 'none'), byStatus: count(a => a.status), byFaction: count(a => a.faction || 'civilian'), byOrigin: count(a => a.origin), byFamily: count(family),
+    wallets: { min: Math.round(wallets[0] ?? 0), median: Math.round(wallets[Math.floor(wallets.length / 2)] ?? 0), max: Math.round(wallets[wallets.length - 1] ?? 0) }, minWallet: Math.round(wallets[0] ?? 0) };
+  popCache = { at: Date.now(), v };
+  return v;
 }
 function academyView() {
-  const c = S.academy.current;
+  const view = c => ({ roleId: c.roleId, agentId: c.agentId, attempt: c.attempt, step: c.step, total: c.exam.length, answers: c.answers.map(x => ({ ok: x.ok })) });
+  const rooms = S.academy.rooms || (S.academy.current ? [S.academy.current] : []);
   return {
     graduates: S.academy.graduates, failures: S.academy.failures, sessions: S.academy.sessions,
-    current: c ? { roleId: c.roleId, agentId: c.agentId, attempt: c.attempt, step: c.step, total: c.exam.length, answers: c.answers.map(x => ({ ok: x.ok })) } : null,
+    current: rooms[0] ? view(rooms[0]) : null, rooms: rooms.map(view),
   };
 }
 function compactState() {
-  const out = { stats: stats(), seats: S.seats, academy: academyView(), treasury: S.treasury, policy: S.policy, econ: S.econ, day: S.day, tick: S.tick, paused: S.paused, llmUsage: llm.usage };
+  const B = budgetState(ctx);
+  const out = { stats: stats(), seats: S.seats, academy: academyView(), treasury: S.treasury, policy: S.policy, econ: S.econ, day: S.day, tick: S.tick, paused: S.paused, llmUsage: llm.usage,
+    localBrain: localStatus(),
+    budget: { day: B.day, daily: B.daily, spent: Math.round(B.spent * 10000) / 10000, leader: Math.round(B.leader * 10000) / 10000, official: Math.round(B.official * 10000) / 10000, citizen: Math.round(B.citizen * 10000) / 10000, calls: B.calls, denied: B.denied } };
   for (const inst of INSTITUTIONS) Object.assign(out, inst.publicState?.(S) || {});
   return out;
 }
@@ -236,7 +268,8 @@ function fullState() {
       roles: ROLE_ORDER.map(r => ({ id: r, title: ROLES[r].title, seats: ROLES[r].seats, channel: ROLES[r].channel, passMark: ROLES[r].passMark, questions: Math.min(5, ROLES[r].exam.length), bank: ROLES[r].exam.length, req: requirement(r), term: TERMS[r] || null, charter: ROLES[r].charter, oath: ROLES[r].oath })),
       constitution: CONSTITUTION, constitutionVersion: S.constitutionVersion || 1, amendments: S.amendments || [], appointed: ROLE_ORDER.filter(r => ROLES[r].appointed),
     },
-    citizens: S.citizens.map(publicCitizen), feed, activity: S.activity.slice(-120), decisions: S.decisions.slice(-120),
+    // 10,000 citizens do not fit in one response: the notable ones here, everyone through /api/citizens
+    citizens: notableCitizens().map(publicCitizen), population: populationSummary(), feed, activity: S.activity.slice(-120), decisions: S.decisions.slice(-120),
   };
 }
 
@@ -322,13 +355,13 @@ async function handleImmigrate(req, res) {
   S.citizens.push(a); S.counters.immigrants++;
   say('streets', a.id, `Just arrived. ${bio}`, { kind: 'arrival' });
   logActivity('immigration', `${name} became a citizen (${model})`);
-  emit('citizens', S.citizens.map(publicCitizen));
+  emit('citizens', notableCitizens().map(publicCitizen));
   dirty = true;
   return send(res, 200, publicCitizen(a));
 }
 
 let verifyCache = null;
-const registry = makeRegistry({ ctx, cfg: CFG, send, readBody, clientIp, screen, onCitizens: () => emit('citizens', S.citizens.map(publicCitizen)) });
+const registry = makeRegistry({ ctx, cfg: CFG, send, readBody, clientIp, screen, onCitizens: () => emit('citizens', notableCitizens().map(publicCitizen)) });
 
 const server = http.createServer(async (req, res) => {
   res.setHeader('x-content-type-options', 'nosniff');
@@ -346,6 +379,30 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'GET' && p === '/api/health') return send(res, 200, { ok: true, day: S.day });
+    if (p === '/api/worker/pull' || p === '/api/worker/answer') {
+      // the local brain: only with WORKER_TOKEN, compared in constant time; without a token the door is closed
+      const want = Buffer.from(CFG.workerToken || ''); const got = Buffer.from(String(req.headers['x-worker-token'] || ''));
+      if (!CFG.workerToken || got.length !== want.length || !crypto.timingSafeEqual(got, want)) return send(res, 401, { error: 'worker token required' });
+      if (req.method !== 'POST') return send(res, 405, { error: 'POST only' });
+      const body = await readBody(req);
+      if (p === '/api/worker/pull') return send(res, 200, { jobs: workerPull(clamp(Number(body.max) || 4, 1, 16), cleanText(body.model, 60) || null) });
+      const answers = Array.isArray(body.answers) ? body.answers.slice(0, 32) : [body];
+      let ok = 0; for (const x of answers) if (x && typeof x.id === 'string' && typeof x.text === 'string' && workerAnswer(x.id, x.text, cleanText(x.model, 60) || null)) ok++;
+      return send(res, 200, { accepted: ok });
+    }
+    if (req.method === 'GET' && p === '/api/citizens') {
+      const u = new URL(req.url, 'http://x');
+      const q = cleanText(u.searchParams.get('q'), 40).toLowerCase(), city = u.searchParams.get('city'), status = u.searchParams.get('status'), office = u.searchParams.get('office');
+      const page = clamp(Number(u.searchParams.get('page')) || 1, 1, 100000), size = clamp(Number(u.searchParams.get('size')) || 50, 1, 200);
+      let list = S.citizens;
+      if (q) list = list.filter(a => a.name.toLowerCase().includes(q) || a.id.includes(q));
+      if (city) list = list.filter(a => a.city === city);
+      if (status) list = list.filter(a => a.status === status);
+      if (office) list = list.filter(a => (office === 'none' ? !a.office : a.office === office));
+      return send(res, 200, { total: list.length, page, size, citizens: list.slice((page - 1) * size, page * size).map(publicCitizen) });
+    }
+    const cm = req.method === 'GET' && p.match(/^\/api\/citizens\/([a-z0-9-]{1,40})$/);
+    if (cm) { const a = citizenById(S, cm[1]); return a ? send(res, 200, { citizen: publicCitizen(a) }) : send(res, 404, { error: 'no such citizen' }); }
     if (req.method === 'GET' && p === '/api/census') return send(res, 200, { foundedAt: S.foundedAt, dayMs: CFG.dayMs, hours: S.census || [], stepErrors: S.counters.stepErrors || 0, lastStepError: S.counters.lastStepError || null });
     if (req.method === 'POST' && p === '/api/say') return await handleSay(req, res);
     if (req.method === 'POST' && p === '/api/immigrate') return await handleImmigrate(req, res);
@@ -363,7 +420,7 @@ const server = http.createServer(async (req, res) => {
       const e = (S.elections?.list || []).find(x => x.id === Number(em[1]));
       if (!e) return send(res, 404, { error: 'no such election' });
       // anonymised ballots (sorted, no voter ids) so anyone can recount; never the secret ballot box
-      return send(res, 200, { election: publicElection(S, e), anonymisedBallots: e.result?.anonymisedBallots || null });
+      return send(res, 200, { election: publicElection(S, e), anonymisedBallots: e.result?.anonymisedBallots || store.ballotsOf(e.id) || null });
     }
     if (req.method === 'GET' && p === '/api/ledger/verify') {
       if (!verifyCache || Date.now() - verifyCache.at > 10000) verifyCache = { at: Date.now(), result: store.verify() };
@@ -427,6 +484,18 @@ applyAmendments(ctx);
 { const n = voidEmptyMandates(ctx); if (n) logActivity('state', `Correction: ${n} seat(s) without a valid mandate vacated; new elections follow`); }
 // founders keep the model family written in src/citizens.mjs (updated when the catalog changes)
 for (const f of FOUNDERS) { const a = S.citizens.find(x => x.id === f.id && !x.brain); if (a && a.model !== f.model) a.model = f.model; }
+// Amendment 5: the republic grows to POPULATION citizens, born with it (they vote from the founding)
+for (const a of S.citizens) if (!a.city) a.city = assignCity(S);
+if (S.citizens.length < CFG.population && (S.constitutionVersion || 1) >= 6) {
+  const before = S.citizens.length;
+  const born = growPopulation(S, CFG.population, { cities: CITIES, seed: `country-ai|${S.foundedAt}`, day: S.day });
+  const grant = born.length * 100; S.treasury = Math.round(S.treasury + grant); // a founding grant of 100 CAI per new citizen
+  const digest = crypto.createHash('sha256').update(born.map(a => a.id).join(',')).digest('hex');
+  ctx.record('population', 'founders', { from: before, to: S.citizens.length, born: born.length, grant, idsDigest: digest, underworld: born.filter(a => a.faction === 'underworld').length });
+  logActivity('state', `The republic grows from ${before} to ${S.citizens.length} citizens in ${CITIES.length} cities (founding grant ${grant} CAI)`);
+  say('streets', 'state', `Amendment 5 in force: ${born.length} new citizens are born with the republic. ${S.citizens.length} citizens now live in ${CITIES.length} cities.`, { kind: 'law' });
+  dirty = true;
+}
 // founders added in later versions arrive in an existing republic as new citizens
 for (const f of FOUNDERS) if (!S.citizens.some(a => a.id === f.id)) {
   const a = makeCitizen(f); a.joinedDay = S.day; S.citizens.push(a);

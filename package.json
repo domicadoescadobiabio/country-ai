@@ -9,7 +9,9 @@
     "dev": "node --watch server.mjs",
     "smoke": "node scripts/smoke.mjs",
     "smoke:brains": "node scripts/smoke-brains.mjs",
-    "smoke:voting": "node scripts/smoke-voting-rules.mjs"
+    "smoke:voting": "node scripts/smoke-voting-rules.mjs",
+    "smoke:local": "node scripts/smoke-local-brain.mjs",
+    "local-brain": "node scripts/local-brain.mjs"
   },
   "engines": {
     "node": "24.x"

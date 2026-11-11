@@ -37,12 +37,27 @@ export function openStore(dataDir: string) {
     count: db.prepare('SELECT COUNT(*) AS n FROM ledger'),
     dec: db.prepare('INSERT OR REPLACE INTO decisions (id, day, agent, role, type, json) VALUES (?, ?, ?, ?, ?, ?)'),
     decCount: db.prepare('SELECT COUNT(*) AS n FROM decisions'),
+    citAll: db.prepare('SELECT json FROM citizens ORDER BY pos'),
+    citPut: db.prepare('INSERT INTO citizens (id, pos, json) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET pos = excluded.pos, json = excluded.json'),
+    citDel: db.prepare('DELETE FROM citizens WHERE id = ?'),
+    citCount: db.prepare('SELECT COUNT(*) AS n FROM citizens'),
+    ballotsPut: db.prepare('INSERT OR REPLACE INTO election_ballots (election, digest, json) VALUES (?, ?, ?)'),
+    ballotsGet: db.prepare('SELECT json FROM election_ballots WHERE election = ?'),
   };
+  // what was last written for each citizen: only citizens whose JSON changed are written again
+  const written = new Map<string, string>();
   let head = q.last.get() || { seq: 0, hash: GENESIS };
 
   function loadState() {
     const row = q.load.get();
-    if (row) return JSON.parse(row.json);
+    if (row) {
+      const s = JSON.parse(row.json);
+      // citizens live in their own table (10,000 of them would make the snapshot huge); older saves kept them inline
+      if (!Array.isArray(s.citizens) || q.citCount.get().n > 0) {
+        s.citizens = q.citAll.all().map(r => { written.set(JSON.parse(r.json).id, r.json); return JSON.parse(r.json); });
+      }
+      return s;
+    }
     // one-time migration from the old JSON file
     try {
       const raw = JSON.parse(fs.readFileSync(jsonFile, 'utf8'));
@@ -53,7 +68,23 @@ export function openStore(dataDir: string) {
   return {
     kind: 'sqlite',
     loadState,
-    saveState(S) { q.save.run(JSON.stringify(S), Date.now()); },
+    saveState(S) {
+      const { citizens, ...rest } = S;
+      db.exec('BEGIN');
+      try {
+        q.save.run(JSON.stringify(rest), Date.now());
+        const seen = new Set<string>();
+        citizens.forEach((a, pos) => {
+          const j = JSON.stringify(a); seen.add(a.id);
+          if (written.get(a.id) !== j) { q.citPut.run(a.id, pos, j); written.set(a.id, j); }
+        });
+        for (const id of [...written.keys()]) if (!seen.has(id)) { q.citDel.run(id); written.delete(id); }
+        db.exec('COMMIT');
+      } catch (e) { db.exec('ROLLBACK'); throw e; }
+    },
+    // anonymised ballots of finished elections (thousands per election) live here, not in the snapshot
+    archiveBallots(election, digest, list) { q.ballotsPut.run(election, digest || '', JSON.stringify(list)); },
+    ballotsOf(election) { const r = q.ballotsGet.get(election); return r ? JSON.parse(r.json) : null; },
     append(e) {
       const row = { seq: head.seq + 1, ts: Date.now(), day: e.day ?? 0, kind: String(e.kind), actor: String(e.actor || 'state'), data: e.data ?? {} };
       const prev = head.hash;
@@ -82,6 +113,7 @@ export function openStore(dataDir: string) {
 // Fallback for runtimes without node:sqlite: same interface, ledger kept inside the snapshot file.
 function jsonStore(file: string) {
   let ledger = [];
+  const ballots = {};
   let head = { seq: 0, hash: GENESIS };
   const store = {
     kind: 'json',
@@ -103,6 +135,8 @@ function jsonStore(file: string) {
       return { ok: true, checked: n, head: prev };
     },
     archiveDecision() {},
+    archiveBallots(election, digest, list) { (ballots[election] = list); },
+    ballotsOf(election) { return ballots[election] || null; },
     decisionCount: () => 0,
     close() {},
   };

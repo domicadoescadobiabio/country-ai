@@ -21,6 +21,8 @@ say "voting rules (Node unit checks)"
 node scripts/smoke-voting-rules.mjs | tail -n 1
 say "smoke: the whole republic, compressed time (Node)"
 node scripts/smoke.mjs | tail -n 3
+say "smoke: the local brain worker (Node, mocked Ollama)"
+node scripts/smoke-local-brain.mjs | tail -n 1
 say "smoke: brains and model routing (Node, mocked providers)"
 node scripts/smoke-brains.mjs | tail -n 2
 ok "all checks passed"

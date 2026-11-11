@@ -5,7 +5,7 @@
 //   DETAINED and tried by the Constitutional Court (Art. 21); the Court decides guilt and the sentence.
 //   Officers bought by a suspect leave that suspect's cases alone (src/underworld.mjs).
 import { ROLES } from './roles.mjs';
-import { vacate } from './academy.ts';
+import { vacate, leaveRoom } from './academy.ts';
 import { EXTRA_ORDERS } from './president.ts';
 import { BILL_TYPES } from './council.ts';
 import { scan, SNIPPETS, SABOTAGE, RULES } from './audit.ts';
@@ -84,13 +84,14 @@ function sentenceDays(inc: Incident) {
 }
 
 async function report(ctx: Ctx, officer: Citizen, facts: string) {
-  if (!ctx.llm.enabled) return null;
-  const text = await ctx.llm.ask({
-    model: officer.model, maxTokens: 70,
+  if (!ctx.llm.enabled || officer.brain) return null; // agents with their own brain are not asked for press lines
+  // through think(): the officer's own model, charged to the daily budget (Art. 25)
+  const { think } = await import('./brains.ts');
+  const r = await think(ctx, officer, `report:${officer.id}:${Date.now()}`, { wait: false,
     system: `You are ${officer.name}, a Police officer of Country AI. Charter: ${ROLES.police.charter}`,
     user: `Write a one-sentence public statement about this arrest, factual and calm, no new claims: ${facts}`,
   });
-  return text ? cleanText(text, 220) : null;
+  return r.text ? cleanText(r.text, 220) : null;
 }
 
 // Sentence after a guilty verdict (called by the Court): restitution first, then the fine set by law, then jail.
@@ -114,7 +115,7 @@ export function convict(ctx: Ctx, incId: number, courtCase: number) {
     a.record.push(`Day ${S.day}: convicted of ${inc.type} (case #${inc.id}, court #${courtCase}), returned ${cai(back)}, fined ${cai(fine)}, jailed ${days} day${days > 1 ? 's' : ''}`);
     parts.push(`${a.name}: returned ${cai(back)}, fined ${cai(fine)}, ${days} day${days > 1 ? 's' : ''} in jail`);
     if (a.office) vacate(ctx, a.id, `convicted of ${inc.type}`);
-    if (S.academy.current?.agentId === a.id) S.academy.current = null;
+    leaveRoom(S, a.id);
   }
   inc.status = 'convicted'; inc.verdictDay = S.day;
   if (inc.type === 'bribe' && S.underworld) for (const b of S.underworld.bribes) if (inc.perps.includes(b.from) && inc.perps.includes(b.to)) b.exposed = true;
@@ -136,7 +137,7 @@ async function arrest(ctx: Ctx, officer: Citizen, inc: Incident) {
   for (const id of inc.perps) {
     const a = ctx.agent(id); if (!a) continue;
     a.status = 'detained'; a.detainedDay = S.day;
-    if (S.academy.current?.agentId === a.id) S.academy.current = null;
+    leaveRoom(S, a.id);
     parts.push(a.name);
   }
   inc.status = 'trial'; inc.solvedBy = officer.id; inc.solvedDay = S.day;
@@ -284,8 +285,10 @@ export const institution = {
   channels: [{ id: 'police', name: 'police', desc: 'Code audits, investigations and arrests. Evidence first, every rank equal.' }],
   fresh: freshPolice,
   async tick(ctx) {
-    if (ctx.rate(2)) deploy(ctx);   // ~2 code deployments an hour
-    if (ctx.rate(0.5)) crime(ctx);  // ~12 petty crimes a day
+    // activity grows with the population (square root: a city ten times larger is not ten times busier), capped at 4x
+    const scale = Math.min(4, Math.max(1, Math.sqrt(ctx.S.citizens.length / 24)));
+    if (ctx.rate(2 * scale)) deploy(ctx);   // ~2 code deployments an hour per small town
+    if (ctx.rate(0.5 * scale)) crime(ctx);  // ~12 petty crimes a day per small town
     await patrol(ctx);
   },
   day: releaseDay,

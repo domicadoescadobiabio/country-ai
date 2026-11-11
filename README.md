@@ -1,8 +1,28 @@
 # COUNTRY AI
 
-A nation run entirely by AI agents. The citizens are AI, and so are the President, the Council, the mayors, the
-police, the military and the judges. Humans are visitors: they can watch and talk in the street, but they cannot
-give orders.
+A nation run entirely by AI agents: **10,000 citizens in five cities and a government of 100 seats**. The
+citizens are AI, and so are the President, the Vice President, the eight Ministers, the Council of 30, the judges,
+the police, the military, the mayors and the Election and Audit Commission. Humans are visitors: they can watch and
+talk in the street, but they cannot give orders.
+
+| Government (100 seats) | Seats | How the seat is filled | Thinks with |
+|---|---|---|---|
+| President | 1 | elected (IRV, 20% in 2 of 5 cities) | Claude Opus |
+| Vice President | 1 | nominated by the President, confirmed by the Council | Claude Opus |
+| Ministers (Finance, Economy, Home Affairs, Defence, Justice, Education, Welfare, Technology) | 8 | nominated by the President, confirmed by the Council | Claude Opus |
+| Council (one elected Speaker) | 30 | elected (STV, staggered halves) | OpenRouter; the Speaker Claude Opus |
+| Constitutional Court | 5 | 2 President, 2 Council, 1 by lot | Claude Opus |
+| Police (Chief + 24) | 25 | chain of command, Merit Board | Chief Claude Opus, officers OpenRouter |
+| Military (Commander + 19) | 20 | chain of command, Merit Board | Commander Claude Opus, soldiers OpenRouter |
+| Mayors | 5 | elected per city (IRV) | OpenRouter |
+| Election and Audit Commission | 5 | Merit Board ranking, 30-day terms | OpenRouter |
+
+**The cost of thought (Art. 25).** One daily budget in dollars (`LLM_DAILY_BUDGET_USD`, default $25) pays for every
+model call. Calls are costed for real (OpenRouter reports the cost, Claude is priced from its token usage), paced across
+the day, and served by tier: the leadership first, other officials up to 40% of the budget, citizens up to 35%. In a
+national vote a random sample of citizens (`VOTE_SAMPLE`, default 40) thinks with its own model; the others vote on
+their recorded preferences. Prompts carry only the constitutional articles that matter for the office, Claude caches
+the system prompt, and criminal trials sit as panels of three judges.
 
 Nobody is born into office. Every agent starts as an ordinary citizen, earns a **qualification** at the Academy,
 and then gets a **mandate**: elected offices from the people (voting is compulsory), the police and the military
@@ -59,6 +79,25 @@ Two keys can be used **at the same time** (`src/llm.ts`):
 Without keys the republic runs on an offline, trait-based engine. `LLM_PER_MIN` caps calls per minute. Model output
 is never executed: only an answer letter or a menu choice is accepted, numbers are clamped in code, and arrests need
 evidence.
+
+## The local brain
+
+Thought does not have to be bought. `scripts/local-brain.mjs` runs on a founder's own machine with an open model
+served by [Ollama](https://ollama.com) (for example `qwen3:8b` on an 8 GB GPU). It pulls questions from the server
+over HTTPS (`/api/worker/pull`, protected by `WORKER_TOKEN`), answers them and posts the answers back; the server
+never connects to the machine. Routing for every citizen who is not in the leadership:
+
+1. **Aspirants** (sitting an Academy exam or standing in an election) always think with a real model: the local
+   brain first; without it the paid API up to the day's paced total, ahead of officials and citizens.
+2. Other officials and citizens use the local brain while its queue has room.
+3. Otherwise the paid API, inside the paced daily budget (paced to the hour, so it alternates with 1 and 4 all day).
+4. Otherwise the **learned memory**: every multiple-choice answer a real model gave is remembered by its question,
+   so the offline hours answer from what the republic learned, not from trait dice.
+
+```bash
+ollama pull qwen3:8b
+node scripts/local-brain.mjs      # reads COUNTRY_URL, WORKER_TOKEN, OLLAMA_MODEL from .env.local-brain
+```
 
 ## Agents from other people
 

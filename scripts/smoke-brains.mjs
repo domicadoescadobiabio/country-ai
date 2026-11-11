@@ -11,7 +11,7 @@ import { smartAnswer } from './smoke-agents.mjs';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'country-brains-'));
 const PORT = 3990 + Math.floor(Math.random() * 9);
-const BROKEN = 'x-ai/grok-4.7'; // this model "does not exist" at the mock: must fall back to Claude
+const BROKEN = 'z-ai/glm-5.3'; // a model many native citizens use "does not exist" at the mock: they must think offline, never on Claude
 const seen = { claude: {}, openrouter: {} };
 
 const mock = http.createServer((req, res) => {
@@ -35,7 +35,7 @@ const MOCK = `http://127.0.0.1:${mock.address().port}`;
 
 const child = spawn(process.execPath, ['server.mjs'], {
   cwd: ROOT,
-  env: { ...process.env, PORT: String(PORT), DATA_DIR: DATA, TICK_SECONDS: '0.1', DAY_SECONDS: '0.4', ELECTION_MIN_VOTING_MS: '0', LLM_PER_MIN: '600',
+  env: { ...process.env, PORT: String(PORT), DATA_DIR: DATA, TICK_SECONDS: '0.1', DAY_SECONDS: '0.4', POPULATION: '300', LLM_DAILY_BUDGET_USD: '0', ELECTION_MIN_VOTING_MS: '0', LLM_PER_MIN: '600',
     ANTHROPIC_API_KEY: 'test-claude', ANTHROPIC_BASE_URL: MOCK, OPENROUTER_API_KEY: 'test-or', OPENROUTER_BASE_URL: MOCK },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
@@ -52,13 +52,18 @@ try {
   check('engine label says mixed', /mixed/.test(s.config.engineLabel), s.config.engineLabel);
   const orModels = Object.keys(seen.openrouter);
   check('several model families answered through OpenRouter', new Set(orModels.map(m => m.split('/')[0])).size >= 5, JSON.stringify(seen.openrouter));
-  check('anthropic/ founders went to Claude Opus directly, not OpenRouter', !orModels.some(m => m.startsWith('anthropic/')) && (seen.claude['claude-opus-5-5'] || 0) > 0, JSON.stringify(seen.claude));
+  // Art. 25: the leadership thinks with Claude Opus; officials and citizens (anthropic/ ones included) through OpenRouter
+  check('leadership thinks with Claude Opus directly', (seen.claude['claude-opus-5-5'] || 0) > 0, JSON.stringify(seen.claude));
+  check('citizens with anthropic/ models think through OpenRouter, not Claude', Object.keys(seen.openrouter).some(m => m.startsWith('anthropic/')), JSON.stringify(Object.keys(seen.openrouter)));
   check('Opus requests opt into the server-side fallback', seen.fallbacksParam === 'default');
-  check('a failing OpenRouter model fell back to Claude', (s.llmUsage?.fallbacks || 0) > 0 && (seen.openrouter[BROKEN] || 0) > 0, JSON.stringify(s.llmUsage));
+  check('a failing OpenRouter model costs no Claude call: that citizen thinks offline', (seen.openrouter[BROKEN] || 0) > 0 && (s.llmUsage?.fallbacks || 0) === 0, JSON.stringify({ broken: seen.openrouter[BROKEN] || 0, usage: s.llmUsage }));
+  check('every call is costed and the budget is published', (s.llmUsage?.costUsd || 0) > 0 && s.budget && typeof s.budget.spent === 'number', JSON.stringify(s.budget));
 
   check('decisions name the brain that answered', [...engines].some(e => /^openrouter:/.test(e)) && [...engines].some(e => /^claude:/.test(e)), JSON.stringify([...engines].slice(0, 12)));
   const wren = s.citizens.find(a => a.id === 'wren'); const aurel = s.citizens.find(a => a.id === 'aurel');
-  check('profiles show each founder\'s own model', aurel.model === 'claude-opus-5-5' && wren.model === BROKEN, `${aurel.model} / ${wren.model}`);
+  // a profile shows the model that really thinks for the citizen: Claude Opus for a leader, their own model otherwise
+  const shown = (a, own) => (a.tier === 'leader' ? /^claude-opus/.test(a.model) : a.model === own);
+  check('profiles show the model that really thinks for each founder', shown(aurel, 'anthropic/claude-opus-5.5') && shown(wren, 'x-ai/grok-4.7'), `${aurel.tier}:${aurel.model} / ${wren.tier}:${wren.model}`);
   check('no server errors', !/step error|TypeError|ReferenceError/.test(stderr), stderr.slice(0, 300));
 } catch (e) { fail++; console.log('  FAIL crashed', e); }
 finally {
