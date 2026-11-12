@@ -392,7 +392,8 @@ async function poll(ctx: Ctx) {
   for (const [qid, p] of [...pending]) {
     const a = ctx.agent(p.agent);
     if (!a || a.status !== 'free') { pending.delete(qid); continue; }
-    const r = await think(ctx, a, qid, { system: p.system, user: p.user, kind: 'life', format: p.stage === 'study' ? 'letter' : 'json', options: p.options || null, paid: false });
+    // night school asks with kind 'night': the lowest priority on the local brain, behind exams, votes and pokes
+    const r = await think(ctx, a, qid, { system: p.system, user: p.user, kind: p.stage === 'night' ? 'night' : 'life', format: p.stage === 'day' ? 'json' : 'letter', options: p.options || null, paid: false });
     if (r.pending) continue;
     pending.delete(qid);
     if (!r.text) continue; // the local brain went away: this thought is dropped, nothing paid

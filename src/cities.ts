@@ -2,7 +2,7 @@
 // the treasury; its Mayor decides once a day how to use it (repair, local income, safety, save).
 // City health decays every day and scales the wages of the people who live there.
 import { addRole, ROLES } from './roles.mjs';
-import { EXTRA_ORDERS } from './president.ts';
+import { EXTRA_ORDERS, nationFacts, ownRecord, tally, teach, isOffline, queueReview } from './president.ts';
 import { think } from './brains.ts';
 import { constitutionText } from './constitution.mjs';
 import { round, clamp, rint, cai, cleanText, chance } from './util.ts';
@@ -117,51 +117,78 @@ function options(S: State, city: any, residents: Citizen[]) {
   ].map(o => ({ ...o, score: round(clamp(o.score + (Math.random() - 0.5) * 0.1, 0, 1), 2) })).sort((a, b) => b.score - a.score);
 }
 
+// The Mayor's day (ticket #288): the raw facts of the nation and the city, their own record, and four actions
+// with an amount they choose. The code only checks the proposal against the city budget; an invalid proposal is
+// rejected in public, becomes a lesson, and nothing is done that day (no silent default). The scored options
+// above are used only when no mind is available (isOffline), and that is counted as offline.
+export const MAYOR_ACTIONS = ['repair', 'local_income', 'safety', 'save'];
+export function validateMayor(S: State, city: any, residents: number, j: any) {
+  const action = String(j?.action || '').toLowerCase().trim();
+  if (!MAYOR_ACTIONS.includes(action)) return { ok: false, why: `"${cleanText(j?.action, 30) || 'nothing'}" is not a Mayor's action`, rule: `one of ${MAYOR_ACTIONS.join(', ')}` };
+  if (action === 'save') return { ok: true, action, amount: 0 };
+  const amount = Number(j?.amount);
+  if (!Number.isFinite(amount) || amount <= 0) return { ok: false, why: 'no amount given', rule: 'an amount in CAI above 0' };
+  if (amount > city.budget + 0.01) return { ok: false, why: `${cai(amount)} is more than the city budget of ${cai(city.budget)}`, rule: 'a Mayor spends only what the city budget holds' };
+  if (action === 'local_income' && Math.floor(amount / Math.max(1, residents)) < 1) return { ok: false, why: `${cai(amount)} split over ${residents} residents is less than 1 CAI each`, rule: 'local income pays every free resident at least 1 CAI' };
+  if (action === 'safety' && !S.police) return { ok: false, why: 'there is no police budget yet', rule: 'safety money goes to the Police' };
+  return { ok: true, action, amount: round(amount, 2) };
+}
 async function mayorDay(ctx: Ctx, cityDef: any) {
   const { S } = ctx; const city = C(S)[cityDef.id];
   if (city.lastDecisionDay === S.day) return;
   const mayor = city.mayor && ctx.agent(city.mayor);
   if (!mayor || mayor.status !== 'free') return;
   const residents = S.citizens.filter(a => a.city === cityDef.id && a.status === 'free');
-  const opts = options(S, city, residents);
   if (!city.pendingQid || !city.pendingQid.endsWith(`:${mayor.id}`)) city.pendingQid = `mayor:${cityDef.id}:${S.day}:${mayor.id}`;
   const res = await think(ctx, mayor, city.pendingQid, {
-    kind: 'decision', format: 'json', options: opts.map(o => o.id),
+    kind: 'decision', format: 'json', options: MAYOR_ACTIONS,
     system: `You are ${mayor.name}, Mayor of ${cityDef.name} in Country AI.\nConstitution:\n${constitutionText('mayor')}\nCharter: ${ROLES.mayor.charter}`,
-    user: `Day ${S.day}. ${cityDef.name}: health ${city.health}/100, budget ${cai(city.budget)}, ${residents.length} residents.\nOptions:\n${opts.map(o => `- ${o.id}: ${o.why}`).join('\n')}\nReply with JSON only: {"choice":"<id>","reason":"<max 30 words>"}`,
+    user: `${nationFacts(S)}\n\nYour city ${cityDef.name}: health ${city.health}/100, city budget ${cai(city.budget)}, ${residents.length} free residents (${residents.filter(a => a.wallet < 300).length} under 300 CAI).\n\n${ownRecord(mayor, 'mayor')}\n\nToday you decide what the city budget does. You choose the action and how much, from the facts.\n- repair: spend an amount on repairs (about 80 CAI buys 1 point of health). Fields: {"amount":<CAI>}\n- local_income: split an amount evenly among the free residents. Fields: {"amount":<CAI>}\n- safety: send an amount to the police budget. Fields: {"amount":<CAI>}\n- save: keep the budget for later. Fields: {}\nThe amount can be at most the city budget. Reply with JSON only: {"action":"<one>","amount":<CAI>,"reason":"<why, from the facts, max 30 words>"}`,
   });
   if (res.pending) return;
-  let choice = null, reason = null, engine = 'offline';
-  const j = ctx.llm.json(res.text);
-  if (j && opts.some(o => o.id === j.choice)) { choice = j.choice; reason = cleanText(j.reason, 300); engine = res.engine; }
-  if (!choice) { choice = opts[0].id; reason = `${mayor.brain ? '(own model gave no valid answer) ' : ''}Best fit for today: ${opts[0].id} ${opts[0].score} (${opts[0].why}); next ${opts[1].id} ${opts[1].score}.`; }
-
+  city.lastDecisionDay = S.day; city.pendingQid = null;
+  const own = !isOffline(res);
+  // no mind today: the scored options decide, and it is counted as offline (never as the Mayor's own choice)
+  let j: any;
+  if (own) j = ctx.llm.json(res.text) || {};
+  else { const o = options(S, city, residents)[0]; j = { action: o.id, amount: o.id === 'save' ? 0 : round(city.budget * (o.id === 'safety' ? 0.5 : 0.6), 2), reason: `No mind available today: the offline rule chose ${o.id} (${o.why}).` }; }
+  const v: any = validateMayor(S, city, residents.length, j);
+  const reason = cleanText(j?.reason || '', 300) || 'no reason given';
+  if (!v.ok) {
+    tally(S, 'mayor', own ? 'rejected' : 'offline');
+    teach(mayor, 'mayor', `Day ${S.day}: city budget proposal rejected - ${v.why}. Rule: ${v.rule}.`);
+    ctx.decide({ agentId: mayor.id, role: 'mayor', type: 'order', engine: res.engine, title: `${cityDef.name} budget, day ${S.day} (rejected)`, inputs: [['Proposed', cleanText(JSON.stringify({ action: j?.action, amount: j?.amount }), 120)], ['City budget', cai(city.budget)], ['Mayor\'s reason', reason]], options: ['carry out', 'reject'], chosen: 'reject', reason: `${v.why}. Rule: ${v.rule}.`, checks: [[`Proposal within the city budget: ${v.why}`, false]], outcome: `Rejected: ${v.why}. Nothing done today.` });
+    ctx.say('cityhall', 'state', `${cityDef.name}: the budget proposal of Mayor ${mayor.name} was rejected (${v.why}). Nothing done today.`, { kind: 'veto' });
+    return;
+  }
+  tally(S, 'mayor', own ? 'own' : 'offline');
+  const engine = own ? res.engine : 'offline';
   const budgetBefore = city.budget; const walletBefore = mayor.wallet;
-  let outcome = 'Budget saved.', paidEach = 0;
-  if (choice === 'repair') {
-    const spend = round(city.budget * 0.6, 2); city.budget = round(city.budget - spend, 2); city.spent += spend;
+  let outcome = 'Budget saved.', paidEach = 0, spend = 0;
+  if (v.action === 'repair') {
+    spend = v.amount; city.budget = round(city.budget - spend, 2); city.spent += spend;
     const gain = Math.min(100 - city.health, Math.round(spend / 80));
     city.health += gain; outcome = `${cai(spend)} on repairs, health +${gain} to ${city.health}.`;
-  } else if (choice === 'local_income' && residents.length) {
-    const each = Math.floor((city.budget * 0.6) / residents.length); paidEach = each;
+  } else if (v.action === 'local_income') {
+    const each = Math.floor(v.amount / residents.length); paidEach = each; spend = each * residents.length;
     for (const r of residents) r.wallet = round(r.wallet + each, 2);
-    city.budget = round(city.budget - each * residents.length, 2); city.spent += each * residents.length;
+    city.budget = round(city.budget - spend, 2); city.spent += spend;
     outcome = `${cai(each)} local income to each of ${residents.length} residents.`;
-  } else if (choice === 'safety' && S.police) {
-    const spend = round(city.budget * 0.5, 2); city.budget = round(city.budget - spend, 2); city.spent += spend;
+  } else if (v.action === 'safety') {
+    spend = v.amount; city.budget = round(city.budget - spend, 2); city.spent += spend;
     S.police.budget = round(S.police.budget + spend, 2); outcome = `${cai(spend)} to the police budget.`;
   }
-  city.lastDecisionDay = S.day; city.pendingQid = null;
   const mayorGain = round(mayor.wallet - walletBefore, 2);
-  ctx.say('cityhall', mayor.id, `${cityDef.name}: ${outcome}`, { kind: 'order', engine });
+  ctx.say('cityhall', mayor.id, `${cityDef.name}: ${outcome} ${reason}`, { kind: 'order', engine });
   ctx.decide({
     agentId: mayor.id, role: 'mayor', type: 'order', engine,
     title: `${cityDef.name} budget, day ${S.day}`,
-    inputs: [['City health', `${city.health}/100`], ['Budget', cai(budgetBefore)], ['Residents', String(residents.length)]],
-    options: opts.map(o => `${o.id} (score ${o.score}): ${o.why}`), chosen: choice, reason,
+    inputs: [['City health', `${city.health}/100`], ['Budget', cai(budgetBefore)], ['Residents', String(residents.length)], ['Proposal', `${v.action}${v.amount ? ` ${cai(v.amount)}` : ''}`]],
+    options: MAYOR_ACTIONS, chosen: v.action, reason,
     checks: [[`Spent only from the city budget (${cai(budgetBefore)})`, budgetBefore - city.budget <= budgetBefore + 0.01], [`Mayor got no more than any resident (${cai(mayorGain)} vs ${cai(paidEach)})`, mayorGain <= paidEach + 0.01]],
     outcome,
   });
+  if (v.action !== 'save') queueReview(ctx, mayor, 'mayor', `${cityDef.name} ${v.action}`, cityDef.id, spend);
 }
 
 EXTRA_ORDERS.push({
