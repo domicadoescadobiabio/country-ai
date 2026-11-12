@@ -45,6 +45,7 @@ function renderStats() {
   const ep = $('#enginePill');
   ep.textContent = st.paused ? 'paused' : st.config.engine === 'llm' ? (st.config.engineLabel || 'llm engine') : 'offline engine';
   ep.className = 'pill ' + (st.paused ? 'red' : st.config.engine === 'llm' ? 'violet' : '');
+  ep.title = ep.textContent;
 }
 
 // ------------------------------------------------------------ government chart
@@ -197,7 +198,9 @@ const PANELS = {
       out.push(h('div', { class: 'card' }, h('h4', { text: `Now training: ${a?.name || c.agentId} for ${r?.title}` }),
         h('p', { text: `Attempt ${c.attempt}. Needs ${r?.passMark}/${c.total} correct to be sworn in.` }), dots));
     } else out.push(h('div', { class: 'card' }, h('h4', { text: 'No exam right now' }), h('p', { text: 'Every office has enough qualified candidates. Seats are filled by elections and appointments; the Academy opens again when more candidates are needed.' })));
-    out.push(h('div', { class: 'card' }, h('h4', { text: 'Entrance exams' }), kv([['Sessions', st.academy.sessions], ['Sworn in', st.academy.graduates], ['Failed', st.academy.failures]])));
+    const ru = st.academy.rules;
+    const rules = ru?.asked > 0 ? `${ru.right}/${ru.asked} (${pct(ru.right / ru.asked)})` : '—';
+    out.push(h('div', { class: 'card' }, h('h4', { text: 'Entrance exams' }), kv([['Sessions', st.academy.sessions], ['Sworn in', st.academy.graduates], ['Failed', st.academy.failures], ['Rule questions right', rules]])));
     const t = st.training;
     if (t) {
       const card = h('div', { class: 'card' }, h('h4', { text: 'In-service training' }),
@@ -425,6 +428,20 @@ const PANELS = {
     const orders = (st.orders || []).slice().reverse();
     out.push(h('div', { class: 'card' }, h('h4', { text: 'Executive orders' }),
       orders.length ? orders.map(o => h('div', { class: 'list-row' }, h('small', { text: `day ${o.day} · ${cit(o.by)?.name || o.by}` }), h('div', { text: o.text }))) : h('p', { text: 'No President yet.' })));
+    const u = st.llmUsage;
+    if (u) {
+      // per-model failures (kind + HTTP status + time only, never the provider's message)
+      const bad = Object.entries(u.errorsByModel || {}).sort((a, b) => b[1].errors - a[1].errors);
+      out.push(h('div', { class: 'card' }, h('h4', { text: 'AI calls' }),
+        kv([['Calls', (u.calls || 0).toLocaleString('en-US')], ['Errors', (u.errors || 0).toLocaleString('en-US')], ['Fallbacks', u.fallbacks || 0], ['Cost', `$${(u.costUsd || 0).toFixed(2)}`]]),
+        h('h4', { class: 'sub', text: 'Models with errors' }),
+        bad.length ? h('table', { class: 'utable' },
+          h('thead', {}, h('tr', {}, h('th', { text: 'MODEL' }), h('th', { text: 'ERR' }), h('th', { text: 'LAST' }))),
+          h('tbody', {}, bad.map(([m, e]) => h('tr', {},
+            h('td', { class: 'm', text: m.replace(/^(claude|openrouter):/, '') }),
+            h('td', { class: 'n', text: e.errors }),
+            h('td', {}, `${e.lastKind || '?'}${e.lastStatus ? ' ' + e.lastStatus : ''}`, h('br'), h('small', { text: e.lastAt ? new Date(e.lastAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false }) : '-' })))))) : h('p', { text: 'No model errors.' })));
+    }
     return out;
   },
   ledger() {
@@ -534,6 +551,9 @@ async function load() {
   Object.assign(st, d);
   if (!st.config.channels.some(c => c.id === st.ch)) st.ch = st.config.channels[0]?.id;
   if (d.config.ca) { $('#cabar').hidden = false; $('#caAddr').textContent = d.config.ca; }
+  // shareable tab links: /#treasury opens the Treasury tab
+  const want = location.hash.slice(1);
+  if (TABS.some(([id, , show]) => id === want && show())) st.tab = want;
   renderAll();
 }
 function connect() {
