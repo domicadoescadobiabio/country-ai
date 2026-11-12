@@ -25,4 +25,6 @@ say "smoke: the local brain worker (Node, mocked Ollama)"
 node scripts/smoke-local-brain.mjs | tail -n 1
 say "smoke: brains and model routing (Node, mocked providers)"
 node scripts/smoke-brains.mjs | tail -n 2
+say "smoke: citizens' feelings and nudges (Node)"
+node scripts/smoke-feelings.mjs | tail -n 1
 ok "all checks passed"
