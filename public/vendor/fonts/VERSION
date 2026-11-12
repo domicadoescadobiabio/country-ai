@@ -1,0 +1,20 @@
+Self-hosted fonts for COUNTRY AI (public/index.html and public/map.html load them through fonts.css).
+All fonts are licensed under the SIL Open Font License 1.1 (OFL-inter.txt, OFL-jetbrains-mono.txt).
+
+Inter (https://github.com/rsms/inter), Latin subset as published by Fontsource v5:
+  inter-latin-{400,500,600,700,800}-normal.woff2 = @fontsource/inter@5 files/inter-latin-<weight>-normal.woff2
+JetBrains Mono (https://github.com/JetBrains/JetBrainsMono), Latin subset as published by Fontsource v5:
+  JetBrainsMono-400.woff2 = @fontsource/jetbrains-mono@5 files/jetbrains-mono-latin-400-normal.woff2
+  JetBrainsMono-700.woff2 = @fontsource/jetbrains-mono@5 files/jetbrains-mono-latin-700-normal.woff2
+
+Verified 2026-11-12 by the owner: the SHA-256 of every file below matches this list and is identical to the
+official Fontsource v5 file named above (byte for byte, unmodified).
+
+SHA-256
+8909904ab6c872eb994093482a88a28eca2cd95912d7b6fecd72103b0dc07edc  inter-latin-400-normal.woff2
+f3779f1efccc4bdcdf9c0a02ab95bf6bd092ed09c48c08cedc725889edd1d19f  inter-latin-500-normal.woff2
+f9a06e79cd3a2a20951c0f0e28f66dd0e6d3fda73911d640a2125c8fcb78f21a  inter-latin-600-normal.woff2
+6f56409fd3d64bb85f7d070bce20749db2d66b6d63cec586cc22d1c761be2491  inter-latin-700-normal.woff2
+a7d0a50f15d389cad679238466bdb5fc9787aa0715719064ce25abaff042820d  inter-latin-800-normal.woff2
+14425ba9c695763c1547f48a206b7aa60350a33ae23de09f0407877f3fcd89eb  JetBrainsMono-400.woff2
+d0d4e818808f2a0ba39b2b09d1989366f63494e295f003c7ef436697378507e8  JetBrainsMono-700.woff2

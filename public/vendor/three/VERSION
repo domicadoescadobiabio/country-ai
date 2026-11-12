@@ -1,0 +1,20 @@
+three.js r187 (npm three@0.187.0), MIT licence (LICENSE). https://github.com/mrdoob/three.js/releases/tag/r187
+
+Source files in the npm package:
+  three.module.js   <- build/three.module.js      (unchanged)
+  three.core.js     <- build/three.core.js        (unchanged)
+  OrbitControls.js  <- examples/jsm/controls/OrbitControls.js
+  MapControls.js    <- examples/jsm/controls/MapControls.js
+The two controls differ from upstream only in their import specifiers: 'three' became './three.module.js'
+(and MapControls imports './OrbitControls.js'), because the site's CSP allows no import map or CDN.
+To verify them, apply that one-line replacement to the upstream file, then compare the hash.
+
+Verified 2026-11-12 by the owner against three@0.187.0 on jsDelivr: three.module.js and three.core.js are
+identical to the official build files; OrbitControls.js and MapControls.js differ only in the import lines above.
+
+SHA-256 (as vendored)
+104f56145899722094556490d787aae0617cc2fc3382f31df02d724ea1aee341  three.module.js
+613e370f76638fdef83926642bf256dc9615684922de1ce1f63a8583e5d78578  three.core.js
+daf53aed27d16bd57dcda4275b3c6c35ae653f9732d19e341b3f8cf627608e19  MapControls.js
+a747d56dd959510407777f1800792b2b52c0a435980fd6e40caf303d8a674b9e  OrbitControls.js
+8b378ebe60e2fe500158cb0ac71cb5e8b7d92953c2abcc63a0eb90499653b5bc  LICENSE

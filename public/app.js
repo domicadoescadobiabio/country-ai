@@ -40,12 +40,19 @@ function renderStats() {
     if (k === 'day' && st.config.foundedAt) label = `DAY · ${new Date(st.config.foundedAt + (v - 1) * st.config.dayMs).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`;
     box.append(h('div', { class: 'stat' }, h('b', { text: v }), h('span', { text: label })));
   }
-  // Art. 25: what thought has cost today against the daily budget
-  if (st.budget?.daily > 0) box.append(h('div', { class: 'stat', title: `leaders $${(st.budget.leader || 0).toFixed(2)} · officials $${(st.budget.official || 0).toFixed(2)} · citizens $${(st.budget.citizen || 0).toFixed(2)}` }, h('b', { text: `$${(st.budget.spent || 0).toFixed(2)}` }), h('span', { text: `AI COST / $${st.budget.daily} TODAY` })));
+  // (the AI cost in dollars is not shown in the header; it stays in the Treasury tab)
   const ep = $('#enginePill');
-  ep.textContent = st.paused ? 'paused' : st.config.engine === 'llm' ? (st.config.engineLabel || 'llm engine') : 'offline engine';
+  ep.textContent = st.paused ? 'paused' : st.config.engine === 'llm' ? brainMix() : 'offline engine';
   ep.className = 'pill ' + (st.paused ? 'red' : st.config.engine === 'llm' ? 'violet' : '');
-  ep.title = ep.textContent;
+  ep.title = [st.config.engineLabel, st.localBrain?.model ? `citizens: local ${st.localBrain.model}${st.localBrain.online ? '' : ' (offline)'}` : null].filter(Boolean).join(' · ') || ep.textContent;
+}
+// "mix: Claude · OpenRouter · Ollama": which brains the republic thinks with (leaders, officials, citizens)
+function brainMix() {
+  const label = String(st.config.engineLabel || '').toLowerCase(); const parts = [];
+  if (label.includes('claude')) parts.push('Claude');
+  if (label.includes('openrouter')) parts.push('OpenRouter');
+  if (st.localBrain?.model) parts.push(/ollama/i.test(st.localBrain.model) ? 'Ollama' : 'local');
+  return parts.length ? `mix: ${parts.join(' · ')}` : (st.config.engineLabel || 'llm engine');
 }
 
 // ------------------------------------------------------------ government chart

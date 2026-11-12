@@ -3,7 +3,7 @@
 // that exact citizen walking to the place that matches their action.
 import * as THREE from '../vendor/three/three.module.js';
 import { ACT_DEST, ACT_COLOR } from './catalog.js';
-import { PITCH, hash, rng } from './gen.js';
+import { PITCH, BLOCK, hash, rng } from './gen.js';
 
 const SPEED = 46; // metres per second on screen (time-lapse)
 const tmp = new THREE.Object3D(); const col = new THREE.Color();
@@ -40,7 +40,39 @@ export class Agents {
     for (const k of Object.keys(this.weights)) w[k] = Math.max(0.3, byAct[k] || 0);
     this.weights = w;
   }
-  add(a) { if (this.list.length >= this.max) return null; a.slot = this.list.length; this.list.push(a); this.byId.set(a.id, a); this.mesh.count = this.list.length; return a; }
+  // Real addresses from the server (citizen.home: col/row on the city's house grid, see homeLayout in
+  // /api/state). The house grid is laid over the city's outline and the house goes to the nearest housing
+  // block, at its place inside that block. Without an address (older server) the hash-based home stays.
+  setHomes(lookup) { this.lookup = lookup; }
+  realHome(id, cityId) {
+    const r = this.lookup?.(id); const h = r?.home; const L = r?.layout;
+    if (!h || !L || h.city !== cityId || !Number.isFinite(h.col) || !Number.isFinite(h.row) || !(L.blockCols > 0 && L.blockW > 0 && L.blockH > 0)) return null;
+    const c = this.data.cities[cityId]; if (!c?.blocks?.length) return null;
+    const bb = c.bbox ||= c.blocks.reduce((m, b) => ({ x0: Math.min(m.x0, b.x), x1: Math.max(m.x1, b.x), z0: Math.min(m.z0, b.z), z1: Math.max(m.z1, b.z) }), { x0: Infinity, x1: -Infinity, z0: Infinity, z1: -Infinity });
+    const W = L.blockCols * L.blockW, H = Math.max(1, Math.ceil((r.blocks || L.minBlocks || 100) / L.blockCols)) * L.blockH;
+    const px = bb.x0 + Math.min(1, (h.col + 0.5) / W) * (bb.x1 - bb.x0), pz = bb.z0 + Math.min(1, (h.row + 0.5) / H) * (bb.z1 - bb.z0);
+    const pool = c.homes ||= HOUSING.flatMap(t => c.byType[t] || []); if (!pool.length) return null;
+    let b = pool[0], bd = Infinity; for (const q of pool) { const d = (q.x - px) ** 2 + (q.z - pz) ** 2; if (d < bd) { bd = d; b = q; } }
+    const step = (BLOCK - 10); // spread the houses of one server block over the map block
+    return { b, x: b.x + ((h.col % L.blockW) + 0.5 - L.blockW / 2) * step / L.blockW, z: b.z + ((h.row % L.blockH) + 0.5 - L.blockH / 2) * step / L.blockH, address: typeof h.address === 'string' ? h.address : null };
+  }
+  add(a) {
+    if (this.list.length >= this.max) return null;
+    if (a.name && !a.scene) { const r = this.realHome(a.id, a.city); if (r) { a.home = r.b; a.door = { x: r.x, z: r.z }; a.address = r.address; a.x = r.x; a.z = r.z; } }
+    a.slot = this.list.length; this.list.push(a); this.byId.set(a.id, a); this.mesh.count = this.list.length; return a;
+  }
+  // swap-remove keeps the instanced mesh dense (slot = index in list)
+  remove(a) {
+    if (!a || this.list[a.slot] !== a) return;
+    const last = this.list.pop();
+    if (last !== a) { this.list[a.slot] = last; last.slot = a.slot; }
+    this.byId.delete(a.id); this.mesh.count = this.list.length;
+  }
+  // Scripted actors driven by real state (exams, trials, prison, polling queues). They stand still ('pin'),
+  // run a training track ('loop'), or walk a route first and then stand ('walk' with a.after).
+  pin(a, x, z) { a.state = 'pin'; a.x = x; a.z = z; a.path = null; }
+  loop(a, track, phase) { a.state = 'loop'; a.track = track; a.t = phase; }
+  walkTo(a, x, z, after) { a.path = route(this.cityOf(a.city), a.x, a.z, x, z, 0); a.seg = 0; a.state = 'walk'; a.target = { x, z }; a.after = after; }
 
   // background population: n per city
   populate(perCity) {
@@ -68,7 +100,10 @@ export class Agents {
       const home = this.homeFor(e.agent, e.city);
       if (!home) return null;
       a = this.add({ id: e.agent, name: e.name || nameOf(e.agent), city: e.city, home, x: home.x, z: home.z, state: 'home', wait: 0, scale: 1 });
-      if (!a) { a = this.list[Math.floor(this.r() * this.list.length)]; } // full: reuse a background walker
+      if (!a) { // full: reuse a background walker (never a scene actor or an office holder)
+        for (let k = 0; k < 20 && (!a || a.scene || a.seat || a.name); k++) a = this.list[Math.floor(this.r() * this.list.length)];
+        if (!a || a.scene || a.seat) return null;
+      }
     }
     a.liveUntil = performance.now() + 45000; a.thought = e; a.name = e.name || a.name;
     this.go(a, e.act === 'rest' ? null : e.act, true);
@@ -87,7 +122,7 @@ export class Agents {
   go(a, act, force) {
     const dest = act || a.seat ? this.destFor(a, act) : null;
     a.act = act || (a.seat ? a.seat : 'rest');
-    if (!dest) { a.target = a.home; } else a.target = dest;
+    if (!dest) { a.target = a.door || a.home; } else a.target = dest;
     if (!a.seat || act) a.color = ACT_COLOR[act] || ACT_COLOR.rest;
     a.path = route(this.cityOf(a.city), a.x, a.z, a.target.x, a.target.z, (hash(a.id) % 7) - 3);
     a.seg = 0; a.state = 'walk'; a.dest = dest;
@@ -95,10 +130,18 @@ export class Agents {
   update(dt, now) {
     const list = this.list;
     for (const a of list) {
-      if (a.state === 'home' || a.state === 'stay') {
+      if (a.state === 'pin') { /* stands where the scene put it */ }
+      else if (a.state === 'loop') {
+        const { x, z, w, d } = a.track; const per = 2 * (w + d);
+        a.t = (a.t + (a.pace || 9) * dt) % per; let s = a.t;
+        if (s < w) { a.x = x - w / 2 + s; a.z = z - d / 2; a.heading = Math.PI / 2; }
+        else if ((s -= w) < d) { a.x = x + w / 2; a.z = z - d / 2 + s; a.heading = 0; }
+        else if ((s -= d) < w) { a.x = x + w / 2 - s; a.z = z + d / 2; a.heading = -Math.PI / 2; }
+        else { s -= w; a.x = x - w / 2; a.z = z + d / 2 - s; a.heading = Math.PI; }
+      } else if (a.state === 'home' || a.state === 'stay') {
         a.wait -= dt;
         if (a.wait <= 0) {
-          if (a.state === 'stay') { a.target = a.home; a.path = route(this.cityOf(a.city), a.x, a.z, a.home.x, a.home.z, (hash(a.id) % 7) - 3); a.seg = 0; a.state = 'walk'; a.dest = null; }
+          if (a.state === 'stay') { const hm = a.door || a.home; a.target = hm; a.path = route(this.cityOf(a.city), a.x, a.z, hm.x, hm.z, (hash(a.id) % 7) - 3); a.seg = 0; a.state = 'walk'; a.dest = null; }
           else if (a.seat) this.go(a, null);
           else this.go(a, pickWeighted(this.r, this.weights));
         }
@@ -108,14 +151,15 @@ export class Agents {
           const [x2, z2] = a.path[a.seg + 1]; const dx = x2 - a.x, dz = z2 - a.z; const d = Math.hypot(dx, dz);
           if (d <= step) { a.x = x2; a.z = z2; a.seg++; step -= d; } else { a.x += dx / d * step; a.z += dz / d * step; a.heading = Math.atan2(dx, dz); step = 0; }
         }
-        if (a.seg >= a.path.length - 1) {
-          const atHome = a.target === a.home;
+        if (a.seg >= a.path.length - 1 && a.after) { const f = a.after; a.after = null; f(a); }
+        else if (a.seg >= a.path.length - 1) {
+          const atHome = a.target === a.home || (a.door && a.target === a.door);
           a.state = atHome ? 'home' : 'stay';
           a.wait = atHome ? 6 + this.r() * 30 : (a.seat ? 4 + this.r() * 10 : 4 + this.r() * 14);
           if (atHome && !a.seat) { a.color = ACT_COLOR.rest; a.act = 'rest'; }
         }
       }
-      const visible = a.state === 'walk' || (a.liveUntil > now);
+      const visible = a.state === 'walk' || a.state === 'pin' || a.state === 'loop' || (a.liveUntil > now);
       const s = visible ? a.scale * (a.liveUntil > now ? 1.9 : 1) : 0;
       tmp.position.set(a.x, 0, a.z); tmp.rotation.set(0, a.heading || 0, 0); tmp.scale.set(s, s, s); tmp.updateMatrix();
       this.mesh.setMatrixAt(a.slot, tmp.matrix);

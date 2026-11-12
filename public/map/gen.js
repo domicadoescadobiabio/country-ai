@@ -336,6 +336,7 @@ function drawFacility(out, r, bld) {
     case 'court': pave('#ded6c2'); part(out, bld, 'box', x, 0, z, 40, 11, 30, '#ebe3cf'); part(out, bld, 'gable', x, 11, z, 42, 5, 32, '#8d7b5a'); for (let k = -2; k <= 2; k++) part(out, bld, 'cyl', x + k * 7, 0, z + 16, 1.2, 11, 1.2, '#fff'); label(out, bld, 20); return;
     case 'academy': {
       green('#8bc472'); ground(out, x + 30, z + 30, 70, 44, '#c2410c', 0.09); ground(out, x + 30, z + 30, 56, 30, '#65a30d', 0.11);
+      bld.extra.track = { x: x + 30, z: z + 30, w: 63, d: 37 }; bld.extra.yard = { x: x + 30, z: z + 30 };
       part(out, bld, 'box', x - 40, 0, z - 30, 50, 18, 26, '#f1ede1'); part(out, bld, 'gable', x - 40, 18, z - 30, 52, 6, 28, '#7c2d12'); part(out, bld, 'box', x - 40, 0, z - 30, 9, 34, 9, '#f1ede1'); part(out, bld, 'cone', x - 40, 34, z - 30, 6.5, 7, 6.5, '#7c2d12');
       part(out, bld, 'box', x + 30, 0, z - 40, 50, 12, 20, '#e7e2d3'); part(out, bld, 'box', x - 45, 0, z + 25, 22, 10, 44, '#e7e2d3');
       treesIn(out, r, x, z, W - 20, D - 20, 18); label(out, bld, 40); return;
@@ -347,6 +348,7 @@ function drawFacility(out, r, bld) {
     case 'police_hq': pave('#cbd5e1'); part(out, bld, 'box', x, 0, z, 36, 52, 30, '#e2e8f0'); part(out, bld, 'box', x, 52, z, 36, 3, 30, '#1d4ed8'); part(out, bld, 'box', x, 0, z + 18, 46, 10, 8, '#1e3a8a'); part(out, bld, 'cyl', x + 10, 55, z, 3, 0.4, 3, '#f8fafc'); label(out, bld, 62); return;
     case 'police_academy': {
       green('#9cc27f'); ground(out, x + 50, z, 110, 60, '#57534e', 0.09); ground(out, x + 50, z, 90, 40, '#9cc27f', 0.11);
+      bld.extra.track = { x: x + 50, z, w: 100, d: 50 }; bld.extra.yard = { x: x + 50, z };
       part(out, bld, 'box', x - 70, 0, z - 30, 60, 14, 24, '#e2e8f0'); part(out, bld, 'box', x - 70, 14, z - 30, 62, 1.2, 26, '#1d4ed8');
       part(out, bld, 'box', x - 70, 0, z + 20, 60, 8, 20, '#f1f5f9');
       ground(out, x - 10, z + 52, 90, 12, '#a8a29e', 0.1); for (let k = 0; k < 6; k++) part(out, bld, 'box', x + 30, 0, z + 47 + k * 2, 0.6, 2.2, 1.4, '#f97316'); part(out, bld, 'box', x - 50, 0, z + 52, 6, 3, 12, '#78716c');
@@ -356,6 +358,7 @@ function drawFacility(out, r, bld) {
     case 'army_base': case 'military_academy': {
       ground(out, x, z, W, D, '#a7b08d', 0.06); wall(out, bld, x, z, W - 4, D - 4, 4, '#6b7258');
       ground(out, x, z, W * 0.35, D * 0.3, '#d6d3c4', 0.09);
+      bld.extra.track = { x, z, w: W * 0.35 + 6, d: D * 0.3 + 6 }; bld.extra.yard = { x, z };
       const rows = type === 'army_base' ? 6 : 4;
       for (let k = 0; k < rows; k++) { part(out, bld, 'box', x - W / 2 + 30, 0, z - D / 2 + 30 + k * 26, 44, 8, 14, '#9aa27d'); part(out, bld, 'gable', x - W / 2 + 30, 8, z - D / 2 + 30 + k * 26, 46, 3, 15, '#4d5639'); }
       ground(out, x + W / 2 - 40, z + D / 2 - 30, 60, 40, '#6b7258', 0.09);
@@ -370,7 +373,7 @@ function drawFacility(out, r, bld) {
     case 'air_base': ground(out, x, z, W, D, '#a7b08d', 0.06); ground(out, x, z + 30, W - 20, 26, '#3a3d42', 0.1); for (let k = 0; k < 4; k++) { part(out, bld, 'cyl', x - 110 + k * 50, 0, z - 40, 16, 12, 16, '#6b7258'); } part(out, bld, 'cyl', x + 120, 0, z - 40, 2, 20, 2, '#e5e7eb'); part(out, bld, 'sphere', x + 120, 22, z - 40, 6, 6, 6, '#f1f5f9'); label(out, bld, 30); return;
     case 'prison': ground(out, x, z, W, D, '#b7b1a3', 0.06); wall(out, bld, x, z, W - 6, D - 6, 9, '#78716c');
       for (const [dx, dz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) part(out, bld, 'box', x + dx * (W / 2 - 4), 0, z + dz * (D / 2 - 4), 6, 16, 6, '#57534e');
-      for (let k = 0; k < 3; k++) part(out, bld, 'box', x - 30 + k * 30, 0, z - 10, 18, 12, 50, '#a8a29e'); ground(out, x, z + 40, 60, 20, '#d6d3d1', 0.1); label(out, bld, 26); return;
+      for (let k = 0; k < 3; k++) part(out, bld, 'box', x - 30 + k * 30, 0, z - 10, 18, 12, 50, '#a8a29e'); ground(out, x, z + 40, 60, 20, '#d6d3d1', 0.1); bld.extra.yard = { x, z: z + 40 }; label(out, bld, 26); return;
     case 'police_housing': case 'military_housing': {
       pave('#d6d3d1'); const col = type === 'police_housing' ? '#dbeafe' : '#d9dfc6'; const roof = type === 'police_housing' ? '#1e40af' : '#4d5639';
       for (let k = 0; k < 3; k++) { part(out, bld, 'box', x, 0, z - 20 + k * 20, 52, 10, 11, col); part(out, bld, 'gable', x, 10, z - 20 + k * 20, 54, 3, 12, roof); }

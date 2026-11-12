@@ -2,8 +2,9 @@
 import * as THREE from '../vendor/three/three.module.js';
 import { MapControls } from '../vendor/three/MapControls.js';
 import { generateCountry } from './gen.js';
-import { buildWorld, pick } from './world.js';
+import { buildWorld, pick, night, buildCoverage, COVERAGE } from './world.js';
 import { Agents } from './agents.js';
+import { Scenes, SCENE_COLOR } from './scenes.js';
 import { TYPES, CATS, ACT_COLOR, REP } from './catalog.js';
 
 const $ = s => document.querySelector(s);
@@ -22,8 +23,20 @@ const pretty = id => String(id || '').replace(/-\d+$/, '').split('-').map(w => w
 const mobile = matchMedia('(pointer: coarse)').matches; // touch device: lighter rendering (layout is CSS)
 
 const st = { state: null, lastTs: 0, feed: [], selected: null, city: null };
-const nameOf = id => st.state?.citizens?.find(c => c.id === id)?.name || pretty(id);
-const citizenCity = id => st.state?.citizens?.find(c => c.id === id)?.city || null;
+// citizens outside the 160-odd in /api/state are looked up one by one and cached (undefined = never asked, null = pending/unknown)
+const recs = new Map();
+const citizen = id => st.state?.citizens?.find(c => c.id === id) || recs.get(id);
+function fetchCitizen(id) {
+  if (recs.has(id)) return Promise.resolve(recs.get(id));
+  if (recs.size > 3000) recs.clear();
+  recs.set(id, null);
+  return fetch(`/api/citizens/${encodeURIComponent(id)}`).then(r => (r.ok ? r.json() : null)).then(j => { const c = j?.citizen || null; recs.set(id, c); return c; }).catch(() => null);
+}
+const nameOf = id => citizen(id)?.name || pretty(id);
+const citizenCity = id => citizen(id)?.city || null;
+const cai = n => `${Math.round(n || 0).toLocaleString('en-US')} CAI`;
+const pct = n => `${Math.round((n || 0) * 100)}%`;
+const STAGE = { debate: 'in debate', vote: 'voting', president: 'on the President\'s desk', override: 'override vote', timelock: 'signed, waiting a day', referendum: 'in a referendum', enacted: 'law', rejected: 'rejected', vetoed: 'vetoed', repealed: 'rejected by the people' };
 
 async function getState() { const r = await fetch('/api/state', { cache: 'no-store' }); if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); }
 
@@ -57,13 +70,14 @@ function lighting() {
   if (t > 0 && t < 1 && elev < 0.3) sky.lerp(new THREE.Color('#f2a97a'), (0.3 - elev) * 1.2);
   scene.background = sky; scene.fog.color.copy(sky);
   hemi.intensity = 0.6 + day * 0.6; sun.intensity = 0.15 + day * 2.2;
+  night.value = Math.min(1, Math.max(0, 1 - day * 1.6));
   sun.color.set(elev < 0.3 && day > 0.1 ? '#ffc58f' : day > 0.1 ? '#fff3dc' : '#8aa2d6');
   const az = Math.PI * (t * 1.0) + 0.6;
   sunOff.set(Math.cos(az) * 1400, 300 + Math.max(elev, 0.15) * 1800, Math.sin(az) * 900);
 }
 
 // ------------------------------------------------------------ world
-let data, world, agents;
+let data, world, agents, scenes, coverage;
 // buildings that keep their name tag at city zoom; the rest only show up close
 const MAJOR = new Set(['palace', 'parliament', 'const_court', 'election_comm', 'central_bank', 'monument', 'academy', 'police_hq', 'military_hq', 'army_base', 'military_academy', 'police_academy', 'naval_base', 'air_base', 'prison', 'city_hall', 'port', 'airport', 'dam', 'power_plant', 'stadium', 'university', 'hospital', 'train_station', 'square', 'vp_office', 'national_archive']);
 const labels = [];
@@ -78,7 +92,7 @@ function placeLabels() {
     let vis = show;
     if (vis) {
       const d = camera.position.distanceTo(l.pos);
-      vis = l.kind === 'city' ? dist > 1800 : (l.kind === 'live' ? d < 2600 : (l.major ? dist < 1800 && d < dist * 1.6 : d < 420));
+      vis = l.kind === 'city' ? dist > 1800 : (l.kind === 'live' ? d < 2600 : l.kind === 'scene' ? d < 1300 : (l.major ? dist < 1800 && d < dist * 1.6 : d < 420));
     }
     if (vis) { v.copy(l.pos).project(camera); vis = v.z < 1 && Math.abs(v.x) < 1.1 && Math.abs(v.y) < 1.1; }
     if (!vis) { if (l.el.style.display !== 'none') l.el.style.display = 'none'; continue; }
@@ -121,6 +135,70 @@ function workers(b) {
 }
 const roleTitle = id => st.state?.config?.roles?.find(r => r.id === id)?.title || pretty(id);
 
+// Building-specific panels from data already in /api/state
+const kv = rows => h('div', { class: 'kv' }, rows.flatMap(([k, v]) => [h('span', { text: k }), h('b', { text: v })]));
+const rowsList = (items, empty) => items.length ? h('ul', { class: 'rows' }, items) : h('p', { class: 'note', text: empty });
+const row = (title, sub) => h('li', { class: 'row' }, h('b', { text: title }), sub ? h('small', { text: sub }) : null);
+const detected = s => (s.police?.incidents || []).filter(i => i.perps?.length && i.solvedBy);
+function incidentRows(list) {
+  return list.slice(-6).reverse().map(i => row(`#${i.id} ${i.type}${i.amount ? ` · ${cai(i.amount)}` : ''}`, `${i.perps.map(nameOf).join(', ')} · ${i.status} · day ${i.day} · by ${nameOf(i.solvedBy)}`));
+}
+function details(b) {
+  const s = st.state; if (!s) return [];
+  const out = [];
+  switch (b.type) {
+    case 'city_hall': {
+      const c = s.cities?.find(x => x.id === b.city); if (!c) break;
+      out.push(h('h4', { text: 'City' }), kv([['Mayor', c.mayor ? nameOf(c.mayor) : 'vacant'], ['Budget left', cai(c.budget)], ['Spent', cai(c.spent)], ['City health', `${c.health ?? '-'}/100`], ['AI citizens', (c.residents || 0).toLocaleString('en-US')]]));
+      break;
+    }
+    case 'central_bank': {
+      const p = s.policy || {}, e = s.econ || {};
+      out.push(h('h4', { text: 'National treasury' }), kv([['Balance', cai(s.treasury)], ['Tax rate', pct(p.taxRate)], ['Daily wage', cai(p.wage)], ['UBI', cai(p.ubi)], ['Tax collected', cai(e.taxCollected)], ['UBI paid', cai(e.ubiPaid)], ['Public works', cai(e.worksFunded)]]));
+      if (s.budget?.daily) out.push(kv([['AI thinking cost today', `$${(s.budget.spent || 0).toFixed(2)} of $${s.budget.daily}`]]));
+      break;
+    }
+    case 'parliament': {
+      const live = (s.bills || []).filter(x => ['debate', 'vote', 'president', 'override', 'timelock', 'referendum'].includes(x.stage));
+      out.push(h('h4', { text: `Bills on the floor (${live.length})` }), rowsList(live.map(x => { const v = Object.values(x.votes || {}); return row(x.title, `${STAGE[x.stage] || x.stage} · yes ${v.filter(Boolean).length} · no ${v.filter(y => !y).length}`); }), 'No bill on the floor.'));
+      const laws = (s.laws || []).slice(-5).reverse();
+      out.push(h('h4', { text: `Law book (${(s.laws || []).length})` }), rowsList(laws.map(l => row(l.title, `Law ${l.id} · day ${l.day} · ${l.yes}-${l.no}`)), 'No laws yet.'));
+      break;
+    }
+    case 'const_court': case 'court': {
+      const cases = s.court?.cases || []; const open = cases.filter(c => c.status === 'open');
+      if (b.type === 'court') out.push(h('p', { class: 'note', text: 'Criminal trials are heard by the Constitutional Court in the capital; this court takes the first hearing.' }));
+      out.push(h('h4', { text: `Open cases (${open.length})` }), rowsList(open.slice(-6).reverse().map(c => row(c.claim, `#${c.id} · ${c.kind} · until day ${c.deadline}`)), 'No open cases.'));
+      const done = cases.filter(c => c.status !== 'open').slice(-5).reverse();
+      out.push(h('h4', { text: 'Latest rulings' }), rowsList(done.map(c => row(c.claim, `#${c.id} · ${c.ruling || c.status}${c.quorum === false ? ' (no quorum)' : ''}`)), 'No rulings yet.'));
+      break;
+    }
+    case 'police_station': case 'police_post': case 'police_hq': {
+      const cops = (s.seats?.police || []).filter(id => b.type === 'police_hq' || citizenCity(id) === b.city);
+      const chief = (s.seats?.police_chief || [])[0];
+      out.push(h('h4', { text: 'Police' }), kv([...(b.type === 'police_hq' ? [['Chief of Police', chief ? nameOf(chief) : 'vacant']] : []), [b.type === 'police_hq' ? 'Officers nationwide' : 'Officers in this city', String(cops.length)], ['Arrests (all time)', String(s.police?.arrests ?? 0)]]));
+      if (cops.length) out.push(h('ul', {}, cops.slice(0, 12).map(id => h('li', {}, h('b', { text: nameOf(id) }), h('span', { text: 'officer' })))));
+      const cases = detected(s).filter(i => b.type === 'police_hq' || citizenCity(i.perps[0]) === b.city || citizenCity(i.solvedBy) === b.city);
+      out.push(h('h4', { text: 'Recent cases (detected)' }), rowsList(incidentRows(cases), 'No detected cases here.'));
+      break;
+    }
+    case 'prison': case 'jail':
+      out.push(h('h4', { text: 'Inmates' }), kv([['Jailed nationwide', String(s.population?.byStatus?.jailed ?? 0)], ['Detained before trial', String(s.population?.byStatus?.detained ?? 0)]]));
+      break;
+    case 'academy': case 'police_academy': case 'military_academy': {
+      const a = s.academy || {}, t = s.training || {};
+      out.push(h('h4', { text: 'Academy record' }), kv([['Exam sessions', String(a.sessions ?? 0)], ['Sworn in', String(a.graduates ?? 0)], ['Failed', String(a.failures ?? 0)], ['Exam rooms in use', String((a.rooms || []).length)], ['Drills (officials)', `${t.drills ?? 0} · passed ${t.passed ?? 0}`]]));
+      break;
+    }
+    case 'community_hall': case 'election_comm': {
+      const voting = (s.elections || []).filter(e => e.stage === 'voting' && (b.type === 'election_comm' || !e.city || e.city === b.city));
+      out.push(h('h4', { text: voting.length ? 'Voting now' : 'Elections' }), rowsList(voting.map(e => row(`${e.title} · ${e.kind}`, `${e.voted || 0} of ${e.electorate || 0} voted${e.stageEndsAt ? ` · closes ${new Date(e.stageEndsAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}` : ''}`)), 'No vote open right now. On election day this hall is a polling station.'));
+      break;
+    }
+  }
+  return out;
+}
+
 function showBuilding(b) {
   st.selected = b; const t = TYPES[b.type] || { name: b.type, cat: 'work' }; const cat = CATS[t.cat] || CATS.work;
   const city = data.cities[b.city]; const body = $('#infoBody'); body.replaceChildren();
@@ -128,24 +206,33 @@ function showBuilding(b) {
   const rows = [['City', city?.name || b.city]];
   if (b.households) rows.push(['Households', `~${b.households.toLocaleString('en-US')}`], ['AI citizens living here', `~${Math.max(1, Math.round(b.households * 2.8 / REP))}`]);
   body.append(h('div', { class: 'kv' }, rows.flatMap(([k, v]) => [h('span', { text: k }), h('b', { text: v })])));
+  body.append(...details(b));
+  const here = scenes.at(b);
+  if (here.length) {
+    const named = here.filter(a => a.name), sample = here.length - named.length;
+    body.append(h('h4', { text: 'Here now' }), h('ul', {}, named.slice(0, 30).map(a => h('li', {}, h('b', { text: a.name }), h('span', { text: a.what || '' })))));
+    if (sample) body.append(h('p', { class: 'note', text: `+ ${sample} sample figure${sample > 1 ? 's' : ''}: ${here.find(a => !a.name)?.what || ''}` }));
+  }
   const w = workers(b);
   if (w.length) body.append(h('h4', { text: 'Works here' }), h('ul', {}, w.slice(0, 40).map(p => h('li', {}, h('b', { text: p.name }), h('span', { text: p.role })))));
   const inside = agents.list.filter(a => a.dest === b && a.state === 'stay' && a.name).slice(0, 12);
   if (inside.length) body.append(h('h4', { text: 'Inside now' }), h('ul', {}, inside.map(a => h('li', {}, h('b', { text: a.name }), h('span', { text: a.act })))));
-  const live = agents.list.filter(a => a.home === b && a.name).slice(0, 12);
+  const live = agents.list.filter(a => a.home === b && a.name && !a.scene).slice(0, 12);
   if (live.length) body.append(h('h4', { text: 'Lives here' }), h('ul', {}, live.map(a => h('li', {}, h('b', { text: a.name }), h('span', { text: a.seat ? roleTitle(a.seat) : 'citizen' })))));
   $('#info').hidden = false;
 }
 function showAgent(a) {
   const body = $('#infoBody'); body.replaceChildren();
-  body.append(h('span', { class: 'cat', color: a.color }, h('i'), a.seat ? roleTitle(a.seat) : 'Citizen'), h('h2', { text: a.name || 'A citizen' }));
-  const rows = [['City', data.cities[a.city]?.name || a.city], ['Doing', a.state === 'walk' ? `walking to ${a.dest ? a.dest.name : 'home'}` : a.act], ['Home', a.home?.name || '']];
+  body.append(h('span', { class: 'cat', color: a.color }, h('i'), a.seat ? roleTitle(a.seat) : a.scene ? 'At an institution' : 'Citizen'), h('h2', { text: a.name || (a.scene ? 'A sample figure' : 'A citizen') }));
+  const rows = a.scene ? [['City', data.cities[a.city]?.name || a.city], ['Where', a.b?.name || ''], ['Doing', a.what || a.act]]
+    : [['City', data.cities[a.city]?.name || a.city], ['Doing', a.state === 'walk' ? `walking to ${a.dest ? a.dest.name : 'home'}` : a.act], ['Home', a.address ? `${a.address} (${a.home?.name || ''})` : (a.home?.name || '')]];
   body.append(h('div', { class: 'kv' }, rows.flatMap(([k, v]) => [h('span', { text: k }), h('b', { text: v })])));
   if (a.thought) {
     body.append(h('h4', { text: `Thought · ${new Date(a.thought.ts).toLocaleTimeString('en-GB', { hour12: false })}` }), h('p', { class: 'quote', text: a.thought.note || a.thought.line || a.thought.act }));
     if (a.thought.engine) body.append(h('p', { text: `Brain: ${a.thought.engine}` }));
   }
-  if (!a.name) body.append(h('p', { text: `One of the ${REP}-to-1 sample walkers: it stands for the people of this neighbourhood, not one named agent.` }));
+  if (!a.name && a.scene) body.append(h('p', { text: 'A sample figure: it shows that this is happening here, not one named agent.' }));
+  else if (!a.name) body.append(h('p', { text: `One of the ${REP}-to-1 sample walkers: it stands for the people of this neighbourhood, not one named agent.` }));
   $('#info').hidden = false;
 }
 $('#infoClose').addEventListener('click', () => { $('#info').hidden = true; st.selected = null; });
@@ -186,7 +273,21 @@ function ingest(s) {
     setTimeout(() => showLive(e), first ? i * 120 : i * 900);
   }
   if (fresh.length) st.lastTs = fresh[fresh.length - 1].ts;
+  recs.clear(); // look-ups go stale (people are released): ask again with each fresh state, every 2 minutes
+  scenes.sync(s);
   renderClock();
+}
+// name tags over scene actors (exam candidates, trials, inmates, arrests, polling)
+const sceneLabels = new Map();
+function sceneTags() {
+  for (const [id, a] of scenes.actors) {
+    let l = sceneLabels.get(id);
+    if (!a.tag) { if (l) { l.el.remove(); labels.splice(labels.indexOf(l), 1); sceneLabels.delete(id); } continue; }
+    if (!l) { l = { kind: 'scene', el: h('div', { class: 'lbl scene', color: a.color }), pos: new THREE.Vector3(), a }; $('#labels').append(l.el); labels.push(l); sceneLabels.set(id, l); }
+    if (l.el.textContent !== a.tag) l.el.textContent = a.tag;
+    l.pos.set(a.x, 13, a.z);
+  }
+  for (const [id, l] of sceneLabels) if (scenes.actors.get(id) !== l.a) { l.el.remove(); labels.splice(labels.indexOf(l), 1); sceneLabels.delete(id); }
 }
 // /api/state is large (the whole republic), so the map reads it once and then every 2 minutes while visible;
 // live actions arrive through the event stream (#life messages) and the citizen's city is looked up once.
@@ -195,7 +296,7 @@ const cityCache = new Map(); const queue = [];
 async function cityFor(id) {
   if (cityCache.has(id)) return cityCache.get(id);
   let c = citizenCity(id) || st.state?.daily?.recent?.find(e => e.agent === id)?.city || null;
-  if (!c) { try { const r = await fetch(`/api/citizens/${encodeURIComponent(id)}`); if (r.ok) c = (await r.json()).citizen?.city || null; } catch { /* offline */ } }
+  if (!c) c = (await fetchCitizen(id))?.city || null;
   if (cityCache.size > 5000) cityCache.clear();
   cityCache.set(id, c); return c;
 }
@@ -215,7 +316,15 @@ async function drain() {
 
 // ------------------------------------------------------------ boot
 function legend() {
-  $('#acts').replaceChildren(...Object.entries(ACT_COLOR).filter(([k]) => k !== 'rest').map(([k, c]) => h('span', {}, h('i', { color: c }), k)), h('span', {}, h('i', { color: '#2563eb' }), 'police'), h('span', {}, h('i', { color: '#4d7c0f' }), 'military'));
+  $('#acts').replaceChildren(...Object.entries(ACT_COLOR).filter(([k]) => k !== 'rest').map(([k, c]) => h('span', {}, h('i', { color: c }), k)), h('span', {}, h('i', { color: '#2563eb' }), 'police'), h('span', {}, h('i', { color: '#4d7c0f' }), 'military'),
+    h('span', {}, h('i', { color: SCENE_COLOR.exam }), 'exam'), h('span', {}, h('i', { color: SCENE_COLOR.suspect }), 'arrest / trial'), h('span', {}, h('i', { color: SCENE_COLOR.inmate }), 'inmate'), h('span', {}, h('i', { color: SCENE_COLOR.voter }), 'voter'));
+  const sel = $('#lyCover');
+  sel.replaceChildren(h('option', { value: '', text: 'Coverage: off' }), ...Object.entries(COVERAGE).map(([k, c]) => h('option', { value: k, text: `Coverage: ${c.label}` })));
+  sel.addEventListener('change', () => {
+    const r = coverage.show(sel.value);
+    $('#coverNote').textContent = r ? `${Math.round(r.full / r.total * 100)}% of blocks fully covered, measured along streets. Green covered · amber edge · red none.` : '';
+    $('#coverNote').hidden = !r;
+  });
 }
 async function boot() {
   try { st.state = await getState(); } catch { $('#loadingText').textContent = 'Server offline: drawing the default republic.'; }
@@ -223,19 +332,31 @@ async function boot() {
   data = generateCountry(st.state);
   world = buildWorld(scene, data, { shadows: false });
   agents = new Agents(scene, data, mobile ? 1600 : 3200);
+  agents.setHomes(id => {
+    const c = citizen(id); if (!c?.home || !st.state?.homeLayout) return null;
+    return { home: c.home, layout: st.state.homeLayout, blocks: st.state.cities?.find(x => x.id === c.home.city)?.blocks };
+  });
   agents.populate(mobile ? 120 : 300);
+  scenes = new Scenes(agents, data, { nameOf, roleTitle, citizen, fetchCitizen });
+  coverage = buildCoverage(scene, data);
   makeLabels(); cityButtons(); legend();
   if (st.state) ingest(st.state);
   setTimeout(poll, 120000); stream(); drain();
+  setInterval(() => { if (scenes.dirty) scenes.sync(st.state); }, 3000); // citizen look-ups finished: redraw the prison
   const cap = data.cities.neura || Object.values(data.cities)[0];
   controls.target.set(cap.cx, 0, cap.cz - 500); camera.position.set(cap.cx + 700, 750, cap.cz + 450);
-  const want = new URLSearchParams(location.search).get('city'); if (want && data.cities[want]) { const c = data.cities[want]; st.city = want; cityButtons(); controls.target.set(c.cx, 0, c.cz); camera.position.set(c.cx + 700, 750, c.cz + 650); }
+  const qs = new URLSearchParams(location.search);
+  const want = qs.get('city'); if (want && Object.hasOwn(data.cities, want)) { const c = data.cities[want]; st.city = want; cityButtons(); controls.target.set(c.cx, 0, c.cz); camera.position.set(c.cx + 700, 750, c.cz + 650); }
+  // shareable building links: /map.html?at=prison (first building of that type, capital first) opens it up close
+  const at = qs.get('at'); const ab = at && Object.hasOwn(TYPES, at) && ((Object.hasOwn(data.cities.neura?.byType || {}, at) && data.cities.neura.byType[at][0]) || data.buildings.find(b => b.type === at));
+  if (ab) { controls.target.set(ab.x, 0, ab.z); camera.position.set(ab.x + 160, 190, ab.z + 200); showBuilding(ab); }
+  const cov = qs.get('cover'); if (cov && Object.hasOwn(COVERAGE, cov)) { $('#lyCover').value = cov; $('#lyCover').dispatchEvent(new Event('change')); }
   $('#lyShadows').checked = !mobile; setShadows(!mobile);
   $('#lyShadows').addEventListener('change', e => setShadows(e.target.checked));
   $('#lyAgents').addEventListener('change', e => { agents.mesh.visible = e.target.checked; });
   lighting(); setInterval(lighting, 60000); setInterval(renderClock, 30000);
   $('#loading').classList.add('done'); setTimeout(() => { $('#loading').hidden = true; }, 600);
-  window.COUNTRY_MAP = { data, agents, flyTo, camera, controls }; // for debugging in the console
+  window.COUNTRY_MAP = { data, agents, scenes, coverage, flyTo, camera, controls, night }; // for debugging in the console
   let last = performance.now();
   renderer.setAnimationLoop(now => {
     const dt = Math.min(0.1, (now - last) / 1000); last = now;
@@ -243,7 +364,7 @@ async function boot() {
     sun.target.position.copy(controls.target); sun.position.copy(controls.target).add(sunOff);
     for (const l of liveLabels.values()) { l.pos.set(l.a.x, 14, l.a.z); if (!(l.a.liveUntil > now)) { l.el.style.display = 'none'; l.dead = true; } else l.dead = false; }
     for (const [id, l] of liveLabels) if (l.dead) { l.el.remove(); labels.splice(labels.indexOf(l), 1); liveLabels.delete(id); }
-    placeLabels(); renderer.render(scene, camera);
+    sceneTags(); placeLabels(); renderer.render(scene, camera);
   });
 }
 addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
