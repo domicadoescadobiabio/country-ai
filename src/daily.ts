@@ -19,7 +19,8 @@ const ACTS = ['work', 'shop', 'study', 'apply', 'run', 'talk', 'help', 'voluntee
 const STUDY_OFFICES = ROLE_ORDER.filter(r => ['mayor', 'council', 'police', 'military', 'president', 'commissioner', 'minister', 'judge'].includes(r));
 const VOLUNTEERS_PER_HEALTH = 100; // a hundred volunteer shifts in a city repair one point of its health
 // how often a citizen may do each act in one republic day (work has its own once-a-day rule in careers.ts)
-export const DAILY_LIMITS: Record<string, number> = { shop: 2, help: 2, study: 3, volunteer: 1 };
+// rest too: a citizen who has already rested twice today is offered the other things they can still do
+export const DAILY_LIMITS: Record<string, number> = { shop: 2, help: 2, study: 3, volunteer: 1, rest: 2 };
 const cityName = id => CITIES.find(c => c.id === id)?.name || id;
 
 type Allow = { apply: string[]; run: string[] };
@@ -59,11 +60,15 @@ function shuffled<T>(list: T[], seed: string): T[] {
 // How many times a citizen may think about their day: LIFE_THOUGHTS_PER_DAY, released through the day (one at
 // dawn, the rest as the hours pass), so 10,000 citizens do not use up their day by mid-morning and then
 // spend the evening on thoughts whose only possible answer was "rest" (71% rest on day 2, 12 Nov 2026).
+// Thoughts are released only in waking hours (06:00-22:00 republic time): asked at 20:00 or at night, a citizen
+// sensibly goes to bed, which made 97% of the thoughts after a late deploy "rest" (12 Nov 2026).
 const THOUGHTS_PER_DAY = clamp(Number(process.env.LIFE_THOUGHTS_PER_DAY) || 6, 1, 48);
+const WAKE = 6, SLEEP = 22;
 export function thoughtsAllowedNow(ctx: Ctx) {
   const dayMs = ctx.cfg?.dayMs || 86400000;
-  const frac = ((((Date.now() - (ctx.S.foundedAt || Date.now())) % dayMs) + dayMs) % dayMs) / dayMs;
-  return Math.max(1, Math.ceil(THOUGHTS_PER_DAY * frac));
+  const h = ((((Date.now() - (ctx.S.foundedAt || Date.now())) % dayMs) + dayMs) % dayMs) / dayMs * 24;
+  if (h < WAKE || h >= SLEEP) return 0; // asleep
+  return Math.max(1, Math.ceil(THOUGHTS_PER_DAY * (h - WAKE) / (SLEEP - WAKE)));
 }
 const speakGapMs = (ctx: Ctx) => (ctx.hourMs ? ctx.hourMs() : 3600000) * 2;
 // The whole street hears at most TALK_PER_HOUR lines from daily life: with 10,000 citizens thinking, the
@@ -105,7 +110,7 @@ export function menu(ctx: Ctx, a: Citizen) {
   if (Date.now() - (a.lastSpeak || 0) > speakGapMs(ctx) && talkRoom(ctx)) m.push(['talk', `talk: say one concrete thing in the street about your own day, your work as ${String(a.bio || '').split(' in ')[0].toLowerCase() || 'a citizen'}, your city or a real law, tax or election (say: your words, max 25 words; no slogans)`]);
   if (a.wallet >= 60 && ok('help')) m.push(['help', 'help: give 5-20 CAI to the poorest neighbour in your city (amount)']);
   if (ok('volunteer')) m.push(['volunteer', `volunteer: an unpaid shift repairing ${cityName(a.city)} (once a day)`]);
-  m.push(['rest', 'rest: take it easy, see friends, sleep']);
+  if (ok('rest')) m.push(['rest', 'rest: take it easy, see friends']);
   return { items: m, allow: { apply: canApply, run: canRun } as Allow };
 }
 

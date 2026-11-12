@@ -50,6 +50,45 @@ export function assignCity(S: State) {
   for (const a of S.citizens) if (a.city && counts[a.city] != null) counts[a.city]++;
   return CITIES.map(c => c.id).sort((x, y) => counts[x] - counts[y])[0];
 }
+// Homes: every citizen has a fixed address in their city, a house in a block, on a grid the map draws the same
+// way the server does. A city is a grid of blocks HOME_LAYOUT.blockCols wide; each block is blockW x blockH
+// houses. The first choice of house comes from a hash of the citizen's id (so it does not depend on who
+// joined first), the next free house is taken on a collision, and once given an address never changes
+// unless the citizen moves to another city. Cities grow by whole rows of blocks when they fill up.
+export const HOME_LAYOUT = { blockCols: 10, blockW: 5, blockH: 4, housesPerBlock: 20, minBlocks: 100, spare: 1.25 };
+const fnv = (s: string) => { let h = 2166136261; for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619); return h >>> 0; };
+export function homeAt(city: string, slot: number) {
+  const L = HOME_LAYOUT; const b = Math.floor(slot / L.housesPerBlock), h = slot % L.housesPerBlock;
+  const col = (b % L.blockCols) * L.blockW + (h % L.blockW), row = Math.floor(b / L.blockCols) * L.blockH + Math.floor(h / L.blockW);
+  const name = CITIES.find(c => c.id === city)?.name || city;
+  return { city, block: b + 1, house: h + 1, slot, col, row, address: `House ${h + 1}, Block ${b + 1}, ${name}` };
+}
+export function cityBlocks(residents: number) {
+  const L = HOME_LAYOUT;
+  const blocks = Math.max(L.minBlocks, Math.ceil((residents * L.spare) / L.housesPerBlock));
+  return Math.ceil(blocks / L.blockCols) * L.blockCols; // whole rows
+}
+// Give a home to everyone without a valid one. Returns how many were (re)housed.
+export function assignHomes(S: State) {
+  const byCity: Record<string, Citizen[]> = {}; const taken: Record<string, Set<number>> = {};
+  for (const a of S.citizens) { if (!a.city) continue; (byCity[a.city] ||= []).push(a); taken[a.city] ||= new Set(); }
+  const need: Citizen[] = [];
+  for (const a of S.citizens) {
+    if (!a.city) continue;
+    const h = a.home; const cap = cityBlocks(byCity[a.city].length) * HOME_LAYOUT.housesPerBlock;
+    const ok = h && h.city === a.city && Number.isInteger(h.slot) && h.slot >= 0 && h.slot < cap && !taken[a.city].has(h.slot);
+    if (ok) taken[a.city].add(h.slot); else need.push(a);
+  }
+  // deterministic order: by city, then id, so the same state always gives the same addresses
+  need.sort((x, y) => (x.city === y.city ? (x.id < y.id ? -1 : 1) : x.city < y.city ? -1 : 1));
+  for (const a of need) {
+    const cap = cityBlocks(byCity[a.city].length) * HOME_LAYOUT.housesPerBlock; const used = taken[a.city];
+    let slot = fnv(`${a.city}|${a.id}`) % cap;
+    for (let i = 0; i < cap && used.has(slot); i++) slot = (slot + 1) % cap;
+    used.add(slot); a.home = homeAt(a.city, slot);
+  }
+  return need.length;
+}
 export const cityWageFactor = (S, a) => (S.cities?.[a.city] ? 0.7 + 0.3 * (S.cities[a.city].health / 100) : 1);
 
 function syncMayors(ctx: Ctx) {
@@ -144,7 +183,9 @@ export const institution = {
   fresh: () => ({ cities: Object.fromEntries(CITIES.map(c => [c.id, { health: 80, budget: 0, spent: 0, mayor: null, lastDecisionDay: null }])) }),
   async tick(ctx) {
     const { S } = ctx; C(S);
-    for (const a of S.citizens) a.city ||= assignCity(S);
+    let homeless = false;
+    for (const a of S.citizens) { a.city ||= assignCity(S); if (!a.home || a.home.city !== a.city) homeless = true; }
+    if (homeless) { const n = assignHomes(S); if (n > 50) ctx.log?.('state', `${n} citizens were given a home address`); }
     syncMayors(ctx);
     for (const c of CITIES) await mayorDay(ctx, c);
   },
@@ -158,5 +199,8 @@ export const institution = {
     }
   },
   stats: S => ({}),
-  publicState: S => ({ cities: CITIES.map(c => ({ ...c, ...(S.cities?.[c.id] || {}), residents: S.citizens.filter(a => a.city === c.id).length })) }),
+  publicState: S => ({
+    cities: CITIES.map(c => { const residents = S.citizens.filter(a => a.city === c.id).length; return { ...c, ...(S.cities?.[c.id] || {}), residents, blocks: cityBlocks(residents) }; }),
+    homeLayout: HOME_LAYOUT, // how block/house numbers map to the grid (see homeAt in src/cities.ts)
+  }),
 };

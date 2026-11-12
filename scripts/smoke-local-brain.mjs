@@ -71,7 +71,10 @@ try {
   const spent = { ...me, id: 'spent', wallet: 30, workedDay: S.day, lastSpeak: Date.now(), lifeDay: S.day, lifeCount: { study: 3, volunteer: 1 }, quals: {}, practice: {} };
   check('a citizen who has done everything today has only rest on the menu', menu(ctx, spent).items.map(([id]) => id).join() === 'rest', menu(ctx, spent).items.map(([id]) => id).join());
   const at = frac => thoughtsAllowedNow({ S: { foundedAt: Date.now() - frac * 86400000 }, cfg: { dayMs: 86400000 } });
-  check('thoughts are released through the day (1 at dawn, 6 by evening)', at(0.05) === 1 && at(0.5) === 3 && at(0.99) === 6, `${at(0.05)} ${at(0.5)} ${at(0.99)}`);
+  // waking hours 06:00-22:00: none at night, 1 at 07:00, 3 at noon, all 6 by 21:36, none again at 23:45
+  check('thoughts are released through waking hours only', at(0.05) === 0 && at(7 / 24) === 1 && at(0.5) === 3 && at(0.9) === 6 && at(0.99) === 0, `${at(0.05)} ${at(7 / 24)} ${at(0.5)} ${at(0.9)} ${at(0.99)}`);
+  const rester = { ...spent, id: 'rester', lifeCount: { rest: 2 }, workedDay: 0 };
+  check('after two rests a citizen is offered what they can still do, not rest again', !menu(ctx, rester).items.some(([id]) => id === 'rest') && menu(ctx, rester).items.some(([id]) => id === 'work'), menu(ctx, rester).items.map(([id]) => id).join());
 
   // ticket 2: apply only for an office the menu offered; careers only accepts the roles' own keys
   const before = Object.keys(S.applications).length;
@@ -133,6 +136,24 @@ try {
   for (const [i, t] of talkers.entries()) await doAct(ctx, t, { act: 'talk', say: `Line number ${i} about my own ${['bench', 'garden', 'shift', 'wallet', 'roof'][i % 5]} ${'x'.repeat(i)}` }, 'test');
   const spoken = said.filter(m => m.c === 'streets').length;
   check('daily life talk is capped per hour for the whole street', spoken === 30 && !menu(ctx, { ...me, lastSpeak: 0 }).items.some(([id]) => id === 'talk'), String(spoken));
+
+  // ticket #194: every citizen has a fixed home address the map can draw like the server
+  const { assignHomes, homeAt, cityBlocks, HOME_LAYOUT } = await import('../src/cities.ts');
+  const town = (n, order) => ({ citizens: Array.from({ length: n }, (_, i) => ({ id: `h${order ? n - 1 - i : i}`, city: ['neura', 'portoken'][(order ? n - 1 - i : i) % 2] })) });
+  const H1 = town(3000), H2 = town(3000, true);
+  assignHomes(H1); assignHomes(H2);
+  const key = a => `${a.city}:${a.home.slot}`;
+  const perCity = c => H1.citizens.filter(a => a.city === c).map(key);
+  check('every citizen gets a home, unique within their city', H1.citizens.every(a => a.home?.address) && ['neura', 'portoken'].every(c => new Set(perCity(c)).size === perCity(c).length));
+  const byId = Object.fromEntries(H2.citizens.map(a => [a.id, a.home.slot]));
+  check('home addresses do not depend on the order citizens are listed', H1.citizens.every(a => byId[a.id] === a.home.slot));
+  const homesBefore = H1.citizens.map(key).join();
+  H1.citizens.push({ id: 'newcomer', city: 'neura' }); assignHomes(H1);
+  check('existing homes never move when someone new arrives', H1.citizens.slice(0, 3000).map(key).join() === homesBefore && !!H1.citizens.at(-1).home);
+  const mover = H1.citizens[0]; const was = mover.home.city; mover.city = was === 'neura' ? 'portoken' : 'neura'; assignHomes(H1);
+  check('a citizen who moves city gets a home in the new city', mover.home.city === mover.city && mover.home.city !== was);
+  const L = HOME_LAYOUT; const g = homeAt('neura', 23); // block 2 (index 1), house 4 (index 3)
+  check('block and house map to grid cells the same way for server and map', g.block === 2 && g.house === 4 && g.col === L.blockW + 3 && g.row === 0 && cityBlocks(2000) % L.blockCols === 0 && cityBlocks(2000) * L.housesPerBlock >= 2000, JSON.stringify(g));
 
   // ticket 4: hermes-4-405b is retired and its citizens move to the replacement (owners' own brains stay)
   const gone = Object.keys(RETIRED_MODELS);
