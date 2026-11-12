@@ -293,7 +293,23 @@ const hits = { say: new Map(), imm: new Map() };
 const windows = { say: [], imm: [] };
 const GUEST_PER_MIN = clamp(Number(process.env.GUEST_PER_MIN) || 12, 1, 120);
 const IMMIGRANTS_PER_HOUR = clamp(Number(process.env.IMMIGRANTS_PER_HOUR) || 20, 1, 1000);
-setInterval(() => { const now = Date.now(); for (const m of Object.values(hits)) for (const [k, v] of m) if (now - v > 3600000) m.delete(k); }, 600000).unref();
+setInterval(() => { const now = Date.now(); for (const m of Object.values(hits)) for (const [k, v] of m) if (now - v > 3600000) m.delete(k); for (const [k, w] of archiveHits) if (now - w.t > 60000) archiveHits.delete(k); }, 600000).unref();
+// The archive reads (/api/ledger, /api/decisions) run SQLite queries of up to 500 rows: ARCHIVE_PER_MIN per IP
+// per minute (fixed window). A full read of the ledger at 500 per page still fits 30,000 entries in a minute.
+// Local callers (tests, the auditor on this machine) are not counted: loopback without a proxy header.
+const ARCHIVE_PER_MIN = clamp(Number(process.env.ARCHIVE_PER_MIN) || 60, 1, 6000);
+const archiveHits = new Map();
+function archiveLimited(req, res) {
+  if (isLoopback(req)) return false;
+  const ip = clientIp(req), now = Date.now();
+  let w = archiveHits.get(ip);
+  if (!w || now - w.t >= 60000) { w = { t: now, n: 0 }; archiveHits.set(ip, w); }
+  if (++w.n <= ARCHIVE_PER_MIN) return false;
+  const wait = Math.max(1, Math.ceil((w.t + 60000 - now) / 1000));
+  res.setHeader('retry-after', String(wait));
+  send(res, 429, { error: `slow down: ${ARCHIVE_PER_MIN} archive reads per minute`, retryAfter: wait });
+  return true;
+}
 
 function clientIp(req) {
   // last hop is the one our proxy (Railway) appended; earlier entries are client-controlled
@@ -423,6 +439,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && p === '/api/immigrate') return await handleImmigrate(req, res);
 
     if (req.method === 'GET' && p === '/api/ledger') {
+      if (archiveLimited(req, res)) return;
       const u = new URL(req.url, 'http://x');
       const after = Math.max(0, Math.floor(Number(u.searchParams.get('after'))) || 0);
       // ?kind=brain_ladder: read-only filter by entry kind; the chain is untouched (verify still walks every entry)
@@ -431,6 +448,7 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { head: store.head(), kind: kind || null, entries: store.page(after, Number(u.searchParams.get('limit')) || 100, kind || null) });
     }
     if (req.method === 'GET' && p === '/api/decisions') {
+      if (archiveLimited(req, res)) return;
       // the whole decision log (read-only): ?type=election&agent=<id>&after=<id>&limit=1..500, oldest first.
       // Same records as /api/state.decisions and the live #decisions feed, only without the 120-entry window.
       const u = new URL(req.url, 'http://x');

@@ -131,6 +131,13 @@ try {
   check('/api/ledger?kind= returns only that kind', lk.kind === 'amendment' && lk.entries.length > 0 && lk.entries.every(e => e.kind === 'amendment'), JSON.stringify(lk.entries.map(e => e.kind).slice(0, 5)));
   const lb = await fetch(BASE + "/api/ledger?kind=x'%20OR%201=1");
   check('/api/ledger rejects a malformed kind', lb.status === 400, String(lb.status));
+  // archive reads are rate limited per IP (60/min by default); local callers without a proxy header are not counted
+  const viaProxy = ip => fetch(BASE + '/api/ledger?limit=1', { headers: { 'x-forwarded-for': ip } });
+  const burst = []; for (let i = 0; i < 61; i++) burst.push((await viaProxy('203.0.113.9')).status);
+  const over = await fetch(BASE + '/api/decisions?limit=1', { headers: { 'x-forwarded-for': '203.0.113.9' } });
+  check('archive reads: the 61st request in a minute from one IP gets 429 with retry-after', burst.slice(0, 60).every(s => s === 200) && burst[60] === 429 && over.status === 429 && Number(over.headers.get('retry-after')) > 0, JSON.stringify({ last: burst.slice(-2), decisions: over.status }));
+  const other = await viaProxy('203.0.113.10'); const local = await fetch(BASE + '/api/ledger?limit=1');
+  check('archive reads: other IPs and local callers are not blocked', other.status === 200 && local.status === 200, `${other.status} ${local.status}`);
   const r9 = await postRaw('/api/say', 'x'.repeat(9000));
   check('large body rejected', r9.status === 413 || r9.status === 429, String(r9.status));
 
