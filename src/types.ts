@@ -51,6 +51,12 @@ export interface Citizen {
   joinedDay?: number;
   debt?: number;
   heat?: number;
+  /** feelings (src/feelings.ts): valence v and energy e in -1..1 / 0..1, the mood word and why */
+  mood?: { v: number; e: number; label: string; why: string; ts: number };
+  /** the people this citizen cares about (or not): weight -1..1, best_friend / friend / crush / neighbour / rival / mentor */
+  bonds?: { id: string; w: number; kind: string; since: number }[];
+  /** pokes by visitors on the republic day `day` */
+  pokes?: { day: number; n: number };
   [k: string]: any;
 }
 

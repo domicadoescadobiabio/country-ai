@@ -241,6 +241,9 @@ export const REMOTE_WAIT_MS = 150000; // a self-run agent has 2.5 minutes to ans
 // paid: false = this thought may only use the free local brain (daily life); no API, no memory, no cost
 export async function think(ctx, a, qid, { system, user, kind = 'question', format = 'text', options = null, claudeModel = null, wait = true, paid = true }) {
   const b = a.brain;
+  // an agent with its own brain is never asked a free-only thought: a hosted brain would bill its owner's API key,
+  // and a remote one would get its inbox (ballots, exams) filled with idle questions such as a visitor's poke
+  if (!paid && b) return { text: null, engine: 'offline' };
   if (b?.type === 'hosted') {
     const text = await hostedThink(ctx, a, system, user);
     return { text, engine: text ? `${b.provider}:${b.model}` : 'offline' };

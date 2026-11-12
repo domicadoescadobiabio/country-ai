@@ -72,6 +72,13 @@ try {
   const rc = cleanRunner({ version: 2, lifeTemperature: 0.9, examTemperature: 0.4, parallel: 99, context: 8192, supervised: true, path: 'C:/secret', version2: 'x', nested: { a: 1 } });
   check('runner info keeps only validated numbers and a boolean', JSON.stringify(rc) === JSON.stringify({ version: 2, lifeTemperature: 0.9, examTemperature: 0.4, parallel: 64, context: 8192, supervised: true }), JSON.stringify(rc));
   check('runner info rejects junk', cleanRunner('v2') === null && cleanRunner([2]) === null && cleanRunner({ version: '2', supervised: 'yes' }) === null && cleanRunner({ version: NaN }) === null && cleanRunner(undefined) === null);
+  // paid: false (daily life, a visitor's poke) never reaches an agent's own brain: no bill on the owner's key, no inbox spam
+  const { think } = await import('../src/brains.ts');
+  const hosted = { id: 'h1', brain: { type: 'hosted', provider: 'anthropic', model: 'x', key: 'never-used' } };
+  const remote = { id: 'r1', brain: { type: 'remote', status: 'active' }, inbox: [] };
+  const th = await think({ S: {}, cfg: {} }, hosted, 'poke:h1:1', { system: 's', user: 'u', kind: 'poke', paid: false });
+  const tr = await think({ S: {}, cfg: {} }, remote, 'poke:r1:1', { system: 's', user: 'u', kind: 'poke', paid: false });
+  check('a free-only thought never calls an agent\'s hosted brain or fills a remote inbox', th.text === null && th.engine === 'offline' && tr.engine === 'offline' && remote.inbox.length === 0, JSON.stringify({ th, tr, inbox: remote.inbox.length }));
   check('/api/state.localBrain.runner is published (null without a runner)', s.localBrain && 'runner' in s.localBrain && s.localBrain.runner === null, JSON.stringify(s.localBrain));
   check('no server errors', !/step error|TypeError|ReferenceError/.test(stderr), stderr.slice(0, 300));
 } catch (e) { fail++; console.log('  FAIL crashed', e); }

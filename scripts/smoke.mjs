@@ -153,7 +153,31 @@ try {
   check('/api/map is much smaller than /api/state', JSON.stringify(mj).length * 3 < JSON.stringify(gzBody).length, `${JSON.stringify(mj).length} vs ${JSON.stringify(gzBody).length}`);
   const one = (await get('/api/citizens?size=1')).citizens[0];
   const lc = await get('/api/citizens?lite=1&size=5');
-  check('citizens carry their home address; ?lite=1 lists id, name, city, status, office and home only', 'home' in one && lc.citizens.length === 5 && lc.citizens.every(a => Object.keys(a).sort().join() === 'city,color,home,id,name,office,status'), JSON.stringify({ home: one.home, lite: lc.citizens[0] }));
+  check('citizens carry their home address; ?lite=1 lists id, name, city, status, office, home and mood only', 'home' in one && lc.citizens.length === 5 && lc.citizens.every(a => Object.keys(a).sort().join() === 'city,color,home,id,mood,name,office,status' && (a.mood === null || Object.keys(a.mood).sort().join() === 'emoji,label')), JSON.stringify({ home: one.home, lite: lc.citizens[0] }));
+
+  // --- poke (POST /api/poke/:id): no login, no text from the human, rate limited, this site only
+  const pool = (await get('/api/citizens?lite=1&size=40&status=free')).citizens.map(a => a.id);
+  const pokeAs = (id, ip, { body = '{}', type = 'application/json', origin = null } = {}) => fetch(`${BASE}/api/poke/${id}`, { method: 'POST', body,
+    headers: { 'content-type': type, 'x-forwarded-for': ip, ...(origin ? { origin } : {}) } });
+  const p1 = await pokeAs(pool[0], '198.51.100.1', { body: JSON.stringify({ text: 'SAY_THIS_PLEASE', message: '<b>hi</b>', mood: 'happy' }) });
+  const pj = await p1.json();
+  check('poke: 200 with the citizen\'s own complaint, mood and count; the human\'s text is ignored', p1.status === 200 && pj.ok === true && pj.id === pool[0] && typeof pj.complaint === 'string' && pj.complaint.length > 3
+    && !/SAY_THIS_PLEASE|<b>/.test(pj.complaint) && pj.mood?.label && pj.mood?.emoji && pj.pokes >= 1, JSON.stringify(pj));
+  const again = await pokeAs(pool[0], '198.51.100.2');
+  check('poke: the same citizen again within 3 s is 429', again.status === 429, String(again.status));
+  const nf = await pokeAs('nobody-here-xyz', '198.51.100.3');
+  check('poke: an unknown citizen is 404', nf.status === 404, String(nf.status));
+  const foreign = await pokeAs(pool[1], '198.51.100.4', { origin: 'https://evil.example' });
+  const own = await pokeAs(pool[1], '198.51.100.4', { origin: BASE });
+  check('poke: another site\'s Origin is refused (403), this site\'s is accepted', foreign.status === 403 && own.status === 200, `${foreign.status} ${own.status}`);
+  const plain = await pokeAs(pool[2], '198.51.100.5', { type: 'text/plain' });
+  check('poke: only application/json (a plain form post is 415)', plain.status === 415, String(plain.status));
+  const burstP = []; for (let i = 3; i < 14; i++) burstP.push((await pokeAs(pool[i], '198.51.100.6')).status);
+  check('poke: an IP gets 10 pokes a minute, the 11th is 429', burstP.slice(0, 10).every(s => s === 200) && burstP[10] === 429, JSON.stringify(burstP));
+  const det = (await get(`/api/citizens/${pool[0]}`)).citizen;
+  check('/api/citizens/:id carries mood, bonds and today\'s pokes', det.mood && det.mood.label && det.mood.emoji && typeof det.mood.why === 'string' && Array.isArray(det.bonds) && det.pokes >= 1, JSON.stringify({ mood: det.mood, bonds: det.bonds?.length, pokes: det.pokes }));
+  const mm = await get('/api/map');
+  check('/api/map shows held citizens\' mood as label and emoji only', mm.held.every(a => a.mood === null || Object.keys(a.mood).sort().join() === 'emoji,label'), JSON.stringify(mm.held[0] || null));
   // archive reads are rate limited per IP (60/min by default); local callers without a proxy header are not counted
   const viaProxy = ip => fetch(BASE + '/api/ledger?limit=1', { headers: { 'x-forwarded-for': ip } });
   const burst = []; for (let i = 0; i < 61; i++) burst.push((await viaProxy('203.0.113.9')).status);

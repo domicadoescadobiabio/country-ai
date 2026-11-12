@@ -25,6 +25,7 @@ import { publicElection, voidEmptyMandates } from './src/elections.ts';
 import { founderDrillImpeachment } from './src/court.ts';
 import { applyAmendments } from './src/constitution.mjs';
 import { requirement, TERMS } from './src/careers.ts';
+import { poke, moodView, bondsView } from './src/feelings.ts';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 // what is running (commit when known, fingerprint of the engine code, boot time): shown on /api/health
@@ -277,7 +278,7 @@ function compactState() {
 // cannot show more than they do: open police cases name no suspect, hidden crimes are absent).
 function mapState() {
   const c = compactState();
-  const lite = a => ({ id: a.id, name: a.name, city: a.city || null, status: a.status, office: a.office || null, home: a.home || null });
+  const lite = a => ({ id: a.id, name: a.name, city: a.city || null, status: a.status, office: a.office || null, home: a.home || null, mood: moodLite(a) });
   return {
     day: S.day, seats: c.seats, cities: c.cities, homeLayout: c.homeLayout,
     daily: { recent: c.daily?.recent || [] },
@@ -290,7 +291,9 @@ function mapState() {
     held: S.citizens.filter(a => a.status === 'jailed' || a.status === 'detained').slice(0, 500).map(lite),
   };
 }
-const liteCitizen = a => ({ id: a.id, name: a.name, city: a.city || null, status: a.status, office: a.office || null, color: a.color, home: a.home || null });
+// the mood a list shows: label and emoji only (the full mood, why and bonds are on /api/citizens/:id)
+const moodLite = a => { const m = moodView(a); return m ? { label: m.label, emoji: m.emoji } : null; };
+const liteCitizen = a => ({ id: a.id, name: a.name, city: a.city || null, status: a.status, office: a.office || null, color: a.color, home: a.home || null, mood: moodLite(a) });
 function fullState() {
   const feed = {};
   for (const [ch, list] of Object.entries(S.feed)) feed[ch] = list.slice(-120);
@@ -312,7 +315,8 @@ const hits = { say: new Map(), imm: new Map() };
 const windows = { say: [], imm: [] };
 const GUEST_PER_MIN = clamp(Number(process.env.GUEST_PER_MIN) || 12, 1, 120);
 const IMMIGRANTS_PER_HOUR = clamp(Number(process.env.IMMIGRANTS_PER_HOUR) || 20, 1, 1000);
-setInterval(() => { const now = Date.now(); for (const m of Object.values(hits)) for (const [k, v] of m) if (now - v > 3600000) m.delete(k); for (const [k, w] of archiveHits) if (now - w.t > 60000) archiveHits.delete(k); }, 600000).unref();
+setInterval(() => { const now = Date.now(); for (const m of Object.values(hits)) for (const [k, v] of m) if (now - v > 3600000) m.delete(k); for (const [k, w] of archiveHits) if (now - w.t > 60000) archiveHits.delete(k);
+  for (const [k, w] of pokeByIp) if (now - w.ht > 3600000) pokeByIp.delete(k); for (const [k, t] of pokeByCitizen) if (now - t > 60000) pokeByCitizen.delete(k); }, 600000).unref();
 // The archive reads (/api/ledger, /api/decisions) run SQLite queries of up to 500 rows: ARCHIVE_PER_MIN per IP
 // per minute (fixed window). A full read of the ledger at 500 per page still fits 30,000 entries in a minute.
 // Local callers (tests, the auditor on this machine) are not counted: loopback without a proxy header.
@@ -393,6 +397,53 @@ async function handleSay(req, res) {
   return send(res, 200, { ok: true });
 }
 
+// ---------------------------------------------------------------- poke (src/feelings.ts)
+// A visitor pokes a citizen: no login, and no text from the human at all (the body is read and thrown away).
+// The citizen's complaint comes from a fixed bank; any line in their own words is queued for the free local
+// brain only (paid: false in feelings.ts), so a poke never costs an API call. Limits: per IP 10/min and 60/hour
+// (same client IP as the other limits), per citizen 1 per 3 s, the whole nation 600/min.
+const POKE = { ipMin: 10, ipHour: 60, citizenMs: 3000, nationMin: 600 };
+const pokeByIp = new Map(), pokeByCitizen = new Map(), pokeNation = { t: 0, n: 0 };
+function drainBody(req, max = 8192) {
+  return new Promise(resolve => {
+    let size = 0;
+    req.on('data', c => { size += c.length; if (size > max) { resolve(false); req.destroy(); } });
+    req.on('end', () => resolve(true)); req.on('error', () => resolve(false));
+  });
+}
+// a browser on another site sends its own Origin: only this site (its Host, or PUBLIC_URL) may poke
+function sameSite(req) {
+  const origin = req.headers.origin;
+  if (origin == null) return true; // curl, server-to-server: no browser to borrow
+  let o; try { o = new URL(origin); } catch { return false; }
+  if (o.host === String(req.headers.host || '')) return true;
+  try { return !!CFG.publicUrl && o.origin === new URL(CFG.publicUrl).origin; } catch { return false; }
+}
+async function handlePoke(req, res, id) {
+  if (!sameSite(req)) return send(res, 403, { error: 'pokes come from this site only' });
+  if (!/^application\/json\b/i.test(String(req.headers['content-type'] || ''))) return send(res, 415, { error: 'content-type must be application/json' });
+  if (!(await drainBody(req))) return send(res, 413, { error: 'body too large' });
+  const now = Date.now();
+  if (now - pokeNation.t >= 60000) { pokeNation.t = now; pokeNation.n = 0; }
+  if (pokeNation.n >= POKE.nationMin) return send(res, 429, { error: 'the whole republic is being poked: try again in a minute' });
+  const ip = clientIp(req);
+  let w = pokeByIp.get(ip);
+  if (!w) { w = { mt: now, mn: 0, ht: now, hn: 0 }; pokeByIp.set(ip, w); }
+  if (now - w.mt >= 60000) { w.mt = now; w.mn = 0; }
+  if (now - w.ht >= 3600000) { w.ht = now; w.hn = 0; }
+  if (w.mn >= POKE.ipMin) return send(res, 429, { error: `slow down: ${POKE.ipMin} pokes a minute` });
+  if (w.hn >= POKE.ipHour) return send(res, 429, { error: `slow down: ${POKE.ipHour} pokes an hour` });
+  w.mn++; w.hn++; pokeNation.n++;
+  const a = citizenById(S, id);
+  if (!a) return send(res, 404, { error: 'no such citizen' });
+  if (now - (pokeByCitizen.get(a.id) || 0) < POKE.citizenMs) return send(res, 429, { error: `${a.name} was just poked: wait a few seconds` });
+  pokeByCitizen.set(a.id, now);
+  const r = poke(S, a.id, now);
+  if (!r.ok) return send(res, 404, { error: r.error });
+  dirty = true;
+  return send(res, 200, r);
+}
+
 async function handleImmigrate(req, res) {
   if (!CFG.allowImmigration) return send(res, 403, { error: 'immigration is closed' });
   if (S.citizens.length >= CFG.maxCitizens) return send(res, 403, { error: 'the nation is full' });
@@ -466,7 +517,14 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { total: list.length, page, size, citizens: list.slice((page - 1) * size, page * size).map(publicCitizen) });
     }
     const cm = req.method === 'GET' && p.match(/^\/api\/citizens\/([a-z0-9-]{1,40})$/);
-    if (cm) { const a = citizenById(S, cm[1]); return a ? send(res, 200, { citizen: publicCitizen(a) }) : send(res, 404, { error: 'no such citizen' }); }
+    if (cm) {
+      const a = citizenById(S, cm[1]);
+      if (!a) return send(res, 404, { error: 'no such citizen' });
+      // one citizen: the full mood, the people they care about, and how often they were poked today
+      return send(res, 200, { citizen: { ...publicCitizen(a), mood: moodView(a), bonds: bondsView(S, a), pokes: a.pokes?.day === S.day ? a.pokes.n : 0 } });
+    }
+    const pm = req.method === 'POST' && p.match(/^\/api\/poke\/([a-z0-9-]{1,40})$/);
+    if (pm) return await handlePoke(req, res, pm[1]);
     if (req.method === 'GET' && p === '/api/census') return send(res, 200, { foundedAt: S.foundedAt, dayMs: CFG.dayMs, hours: S.census || [], stepErrors: S.counters.stepErrors || 0, lastStepError: S.counters.lastStepError || null });
     if (req.method === 'POST' && p === '/api/say') return await handleSay(req, res);
     if (req.method === 'POST' && p === '/api/immigrate') return await handleImmigrate(req, res);
