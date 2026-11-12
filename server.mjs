@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { loadDotEnv, clamp, uid, slug, cleanText, pick, citizenById } from './src/util.ts';
+import { loadDotEnv, clamp, uid, slug, cleanText, pick, citizenById, buildInfo } from './src/util.ts';
 import { makeLLM } from './src/llm.ts';
 import { NATION, CURRENCY, CONSTITUTION } from './src/constitution.mjs';
 import { ROLES, ROLE_ORDER } from './src/roles.mjs';
@@ -26,6 +26,8 @@ import { applyAmendments } from './src/constitution.mjs';
 import { requirement, TERMS } from './src/careers.ts';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
+// what is running (commit when known, fingerprint of the engine code, boot time): shown on /api/health
+const BUILD = buildInfo(ROOT);
 loadDotEnv(path.join(ROOT, '.env'));
 
 const CFG = {
@@ -134,8 +136,12 @@ const ctx = {
   decide: rec => { const d = recordDecision(ctx, rec); store.archiveDecision(d); return d; },
   // national ledger: append-only, hash-chained; offices, appointments, laws and amendments live here
   record: (kind, actor, data) => { const e = store.append({ day: S.day, kind, actor, data }); emit('ledger', e); return e; },
+  // one-off fixes: look the ledger up before writing an entry a second time (parameterized query in src/db.ts)
+  ledgerHas: (kind, match) => store.ledgerHas(kind, match),
   pendingGuest: null,
   save() { dirty = true; },
+  // write the state to disk now, not at the next autosave (a one-off sets its flag, then flushes)
+  flush: () => { dirty = true; flush(); },
 };
 
 function stats() {
@@ -253,6 +259,8 @@ function academyView() {
   const rooms = S.academy.rooms || (S.academy.current ? [S.academy.current] : []);
   return {
     graduates: S.academy.graduates, failures: S.academy.failures, sessions: S.academy.sessions,
+    // rule questions in entrance exams (src/academy.ts): how many were asked and how many answered right
+    rules: S.academy.rules || { asked: 0, right: 0 },
     current: rooms[0] ? view(rooms[0]) : null, rooms: rooms.map(view),
   };
 }
@@ -385,14 +393,14 @@ const server = http.createServer(async (req, res) => {
       clients.add(res); req.on('close', () => clients.delete(res));
       return;
     }
-    if (req.method === 'GET' && p === '/api/health') return send(res, 200, { ok: true, day: S.day });
+    if (req.method === 'GET' && p === '/api/health') return send(res, 200, { ok: true, day: S.day, build: BUILD });
     if (p === '/api/worker/pull' || p === '/api/worker/answer') {
       // the local brain: only with WORKER_TOKEN, compared in constant time; without a token the door is closed
       const want = Buffer.from(CFG.workerToken || ''); const got = Buffer.from(String(req.headers['x-worker-token'] || ''));
       if (!CFG.workerToken || got.length !== want.length || !crypto.timingSafeEqual(got, want)) return send(res, 401, { error: 'worker token required' });
       if (req.method !== 'POST') return send(res, 405, { error: 'POST only' });
       const body = await readBody(req);
-      if (p === '/api/worker/pull') return send(res, 200, { jobs: workerPull(clamp(Number(body.max) || 4, 1, 16), cleanText(body.model, 60) || null) });
+      if (p === '/api/worker/pull') return send(res, 200, { jobs: workerPull(clamp(Number(body.max) || 4, 1, 16), cleanText(body.model, 60) || null, body.runner) });
       const answers = Array.isArray(body.answers) ? body.answers.slice(0, 32) : [body];
       let ok = 0; for (const x of answers) if (x && typeof x.id === 'string' && typeof x.text === 'string' && workerAnswer(x.id, x.text, cleanText(x.model, 60) || null)) ok++;
       return send(res, 200, { accepted: ok });
@@ -416,8 +424,25 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'GET' && p === '/api/ledger') {
       const u = new URL(req.url, 'http://x');
-      const after = Math.max(0, Number(u.searchParams.get('after')) || 0);
-      return send(res, 200, { head: store.head(), entries: store.page(after, Number(u.searchParams.get('limit')) || 100) });
+      const after = Math.max(0, Math.floor(Number(u.searchParams.get('after'))) || 0);
+      // ?kind=brain_ladder: read-only filter by entry kind; the chain is untouched (verify still walks every entry)
+      const kind = u.searchParams.get('kind');
+      if (kind != null && !/^[a-z][a-z0-9_]{0,39}$/.test(kind)) return send(res, 400, { error: 'kind: lowercase letters, digits and _ only' });
+      return send(res, 200, { head: store.head(), kind: kind || null, entries: store.page(after, Number(u.searchParams.get('limit')) || 100, kind || null) });
+    }
+    if (req.method === 'GET' && p === '/api/decisions') {
+      // the whole decision log (read-only): ?type=election&agent=<id>&after=<id>&limit=1..500, oldest first.
+      // Same records as /api/state.decisions and the live #decisions feed, only without the 120-entry window.
+      const u = new URL(req.url, 'http://x');
+      const type = u.searchParams.get('type'), agent = u.searchParams.get('agent');
+      if (type != null && !/^[a-z][a-z0-9_]{0,29}$/.test(type)) return send(res, 400, { error: 'type: lowercase letters, digits and _ only' });
+      if (agent != null && !/^[A-Za-z0-9_-]{1,64}$/.test(agent)) return send(res, 400, { error: 'agent: an agent id' });
+      const after = Math.max(0, Math.floor(Number(u.searchParams.get('after'))) || 0);
+      const limit = Math.min(500, Math.max(1, Math.floor(Number(u.searchParams.get('limit'))) || 100));
+      const entries = store.decisionsPage
+        ? store.decisionsPage({ after, limit, type, agent })
+        : S.decisions.filter(d => d.id > after && (!type || d.type === type) && (!agent || d.agentId === agent)).slice(0, limit);
+      return send(res, 200, { total: store.decisionCount() || S.decisions.length, archived: !!store.decisionsPage, type, agent, entries });
     }
     if (req.method === 'GET' && p === '/api/elections') {
       return send(res, 200, { elections: (S.elections?.list || []).slice(-30).map(e => publicElection(S, e)) });

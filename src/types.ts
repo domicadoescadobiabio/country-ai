@@ -170,6 +170,10 @@ export interface Ctx {
   ticksPerHour(): number;
   rate(perHour: number): boolean;
   save(): void;
+  /** write the state to disk now (one-off fixes set their flag, then flush, so a crash cannot replay them) */
+  flush?(): void;
+  /** true when the ledger already holds an entry of this kind whose data has these top-level field values */
+  ledgerHas?(kind: string, match: Record<string, string | number | boolean | null | undefined>): boolean;
   pendingGuest: unknown;
 }
 

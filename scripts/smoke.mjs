@@ -51,7 +51,33 @@ async function until(fn, ms, step = 200) {
 }
 
 try {
+  // --- ledgerHas (src/db.ts): one-off fixes look the ledger up so a crash before the state is saved cannot write
+  // the same pardon twice. Straight against a real store in its own temp dir.
+  {
+    const { openStore } = await import('../src/db.ts');
+    const LD = fs.mkdtempSync(path.join(os.tmpdir(), 'country-ledger-'));
+    let st = openStore(LD);
+    st.append({ day: 1, kind: 'pardon', actor: 'state', data: { citizen: 'c_1', case: 42, court: null, freed: true } });
+    st.close(); st = openStore(LD); // "restart after a crash": the ledger row survived
+    check('ledgerHas finds an entry by kind and data fields after a restart', st.ledgerHas('pardon', { citizen: 'c_1', case: 42 }) && st.ledgerHas('pardon', { citizen: 'c_1', case: 42, court: null, freed: true }));
+    check('ledgerHas does not match another case, citizen or kind', !st.ledgerHas('pardon', { citizen: 'c_1', case: 43 }) && !st.ledgerHas('pardon', { citizen: 'c_2', case: 42 }) && !st.ledgerHas('correction', { citizen: 'c_1', case: 42 }) && !st.ledgerHas('pardon', { citizen: 'c_1', case: '42x' }));
+    check('ledgerHas rejects odd field names and values (no SQL, no JSON-path tricks)', !st.ledgerHas('pardon', { "citizen') OR 1=1 --": 'x' }) && !st.ledgerHas('pardon', { 'citizen.x': 'c_1' }) && !st.ledgerHas('pardon', { citizen: { $ne: 1 } }) && !st.ledgerHas("pardon' OR '1'='1", {}));
+    st.append({ day: 1, kind: 'census', actor: 'state', data: { n: 1 } });
+    st.append({ day: 1, kind: 'pardon', actor: 'state', data: { citizen: 'c_3', case: 7 } });
+    const pk = st.page(0, 100, 'pardon');
+    check('ledger pages filter by kind and keep each entry\'s own seq and hash', pk.length === 2 && pk.every(e => e.kind === 'pardon') && pk[1].seq === 3 && pk[1].prev === st.page(1, 1)[0].hash, JSON.stringify(pk.map(e => [e.seq, e.kind])));
+    check('a kind page chains on seq (after) and a negative limit is not "everything"', st.page(1, 100, 'pardon').length === 1 && st.page(0, -1).length === 1 && st.page(0, 100, 'nothing_here').length === 0);
+    check('the ledger chain still verifies', st.verify().ok);
+    st.close(); try { fs.rmSync(LD, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch { /* windows handle */ }
+  }
+
   for (let i = 0; i < 50; i++) { try { await get('/api/health'); break; } catch { await wait(100); } }
+  const hb = (await get('/api/health')).build;
+  const { codeHash, buildInfo } = await import('../src/util.ts');
+  check('/api/health names the running code: its fingerprint matches this checkout', hb && hb.code === codeHash(ROOT) && /^[0-9a-f]{16}$/.test(hb.code) && !Number.isNaN(Date.parse(hb.startedAt)), JSON.stringify(hb));
+  const bi = buildInfo(ROOT, { RAILWAY_GIT_COMMIT_SHA: 'ABCDEF1234567', RAILWAY_DEPLOYMENT_ID: '3f5c7652-aa' });
+  const bj = buildInfo(ROOT, { BUILD_COMMIT: '<script>', RAILWAY_DEPLOYMENT_ID: 'x y/../z' });
+  check('build info shows a commit and deployment id only when they look like one', bi.commit === 'abcdef1234567' && bi.deployment === '3f5c7652-aa' && bj.commit === null && bj.deployment === null, JSON.stringify([bi, bj]));
   const s0 = await get('/api/state');
   const roles = s0.config.roles.map(r => r.id);
   console.log(`institutions: ${roles.join(', ')}`);
@@ -65,6 +91,8 @@ try {
   const pt = pres?.training.find(t => t.roleId === 'president' && t.passed);
   check('president passed the exam (>= pass mark)', pt && pt.score >= s1.config.roles[0].passMark, JSON.stringify(pt && { score: pt.score }));
   check('exam answers are recorded', pt && pt.answers.length === 5 && pt.answers.every(a => a.q && a.chosen));
+  const ar = s1.academy?.rules;
+  check('academy publishes rule questions asked and answered right', ar && Number.isInteger(ar.asked) && Number.isInteger(ar.right) && ar.right <= ar.asked, JSON.stringify(ar));
 
   const s2 = await until(s => s.orders?.length >= 2, 30000);
   check('president issued executive orders', s2.orders.length >= 2);
@@ -99,6 +127,10 @@ try {
   check('admin token accepted', r7.status === 200, String(r7.status));
   const r8 = await fetch(BASE + '/..%2f..%2fserver.mjs');
   check('no path traversal', r8.status === 403 || r8.status === 404, String(r8.status));
+  const lk = await get('/api/ledger?kind=amendment&limit=500');
+  check('/api/ledger?kind= returns only that kind', lk.kind === 'amendment' && lk.entries.length > 0 && lk.entries.every(e => e.kind === 'amendment'), JSON.stringify(lk.entries.map(e => e.kind).slice(0, 5)));
+  const lb = await fetch(BASE + "/api/ledger?kind=x'%20OR%201=1");
+  check('/api/ledger rejects a malformed kind', lb.status === 400, String(lb.status));
   const r9 = await postRaw('/api/say', 'x'.repeat(9000));
   check('large body rejected', r9.status === 413 || r9.status === 429, String(r9.status));
 
@@ -115,6 +147,18 @@ try {
   await uw.run({ BASE, get, until, check });
   const agents = await import('./smoke-agents.mjs');
   await agents.run({ BASE, DATA, get, until, check, wait, mock });
+
+  // --- /api/decisions: the archived decision log, beyond the 120 shown in /api/state
+  const sd = await get('/api/state');
+  const all = [];
+  for (let after = 0; ;) { const pg = await get(`/api/decisions?type=election&after=${after}&limit=50`); all.push(...pg.entries); if (pg.entries.length < 50) break; after = pg.entries.at(-1).id; }
+  const winElections = sd.decisions.filter(d => d.type === 'election').map(d => d.id);
+  check('/api/decisions?type=election pages through every archived election decision', all.length > 0 && all.every(d => d.type === 'election') && all.every((d, i) => !i || d.id > all[i - 1].id) && winElections.every(id => all.some(d => d.id === id)), JSON.stringify({ archived: all.length, inState: winElections.length }));
+  const dall = await get('/api/decisions?limit=500');
+  check('/api/decisions reaches past the /api/state window', dall.archived && dall.total >= sd.decisions.length && (dall.total <= 120 || dall.entries[0].id < sd.decisions[0].id), JSON.stringify({ total: dall.total, first: dall.entries[0]?.id, stateFirst: sd.decisions[0]?.id }));
+  const dbad = await fetch(BASE + "/api/decisions?type=x'%20OR%201=1");
+  const dbad2 = await fetch(BASE + '/api/decisions?agent=../../etc');
+  check('/api/decisions rejects a malformed type or agent', dbad.status === 400 && dbad2.status === 400, `${dbad.status} ${dbad2.status}`);
 
   check('no server errors logged', !/step error|TypeError|ReferenceError/.test(stderr), stderr.slice(0, 400));
 } catch (e) {

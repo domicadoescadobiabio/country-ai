@@ -166,12 +166,29 @@ export function isAspirant(S, a) {
 // ---------------------------------------------------------------- the local brain (a worker on the founders' machine)
 // The worker pulls questions over HTTPS (/api/worker/pull), answers them with an open model it runs itself
 // and posts the answers back. The server never calls out to it, and it costs the treasury nothing.
-const LOCAL = { jobs: new Map(), lastPull: 0, model: null, answered: 0, expired: 0 };
+const LOCAL = { jobs: new Map(), lastPull: 0, model: null, answered: 0, expired: 0, runner: null };
 const LOCAL_WAIT_MS = 180000, LOCAL_LEASE_MS = 90000, LOCAL_QUEUE_MAX = 400;
 export const localOnline = () => Date.now() - LOCAL.lastPull < 20000;
-export function localStatus() { return { online: localOnline(), model: LOCAL.model, queued: [...LOCAL.jobs.values()].filter(j => j.answer == null).length, answered: LOCAL.answered, expired: LOCAL.expired }; }
-export function workerPull(max = 4, model = null) {
+export function localStatus() { return { online: localOnline(), model: LOCAL.model, queued: [...LOCAL.jobs.values()].filter(j => j.answer == null).length, answered: LOCAL.answered, expired: LOCAL.expired, runner: LOCAL.runner }; }
+// What the runner says it is (scripts/local-brain.mjs sends it with every pull). Shown on /api/state, so only
+// known fields survive, each a clamped number or a boolean; anything else (strings, nested objects) is dropped.
+// A pull without it (a runner older than version 2) clears it, so the state always describes the live runner.
+const RUNNER_FIELDS = { version: [0, 1000, true], lifeTemperature: [0, 2, false], examTemperature: [0, 2, false], parallel: [1, 64, true], context: [0, 1048576, true] };
+export function cleanRunner(r) {
+  if (!r || typeof r !== 'object' || Array.isArray(r)) return null;
+  const out = {};
+  for (const [k, [lo, hi, int]] of Object.entries(RUNNER_FIELDS)) {
+    const v = r[k];
+    if (typeof v !== 'number' || !Number.isFinite(v)) continue;
+    const c = Math.min(hi, Math.max(lo, v));
+    out[k] = int ? Math.round(c) : Math.round(c * 100) / 100;
+  }
+  if (typeof r.supervised === 'boolean') out.supervised = r.supervised;
+  return Object.keys(out).length ? out : null;
+}
+export function workerPull(max = 4, model = null, runner = undefined) {
   LOCAL.lastPull = Date.now(); if (model) LOCAL.model = String(model).slice(0, 60);
+  LOCAL.runner = cleanRunner(runner);
   const now = Date.now(); const out = [];
   const open = [...LOCAL.jobs.values()].filter(j => j.answer == null && (!j.leasedAt || now - j.leasedAt > LOCAL_LEASE_MS)).sort((x, y) => x.priority - y.priority || x.createdAt - y.createdAt);
   for (const j of open.slice(0, Math.max(1, Math.min(16, max)))) { j.leasedAt = now; out.push({ id: j.id, system: j.system, user: j.user, format: j.format, options: j.options }); }

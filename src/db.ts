@@ -18,6 +18,23 @@ export function canon(v: unknown): string {
   if (Array.isArray(v)) return '[' + v.map(canon).join(',') + ']';
   return '{' + Object.keys(v).sort().map(k => JSON.stringify(k) + ':' + canon(v[k])).join(',') + '}';
 }
+// ledgerHas(kind, match): match is a few top-level data fields. Names must be plain identifiers and values
+// scalars (undefined = null, as canon() stores it); anything else returns null and the caller sees "not found".
+function matchPairs(match): [string, string | number | boolean | null][] | null {
+  if (!match || typeof match !== 'object' || Array.isArray(match)) return null;
+  const pairs = Object.entries(match);
+  if (pairs.length > 8) return null;
+  const out = [];
+  for (const [k, v0] of pairs) {
+    const v = v0 === undefined ? null : v0;
+    if (!/^[A-Za-z_][A-Za-z0-9_]{0,40}$/.test(k)) return null;
+    if (!(v === null || typeof v === 'string' || typeof v === 'boolean' || (typeof v === 'number' && Number.isFinite(v)))) return null;
+    out.push([k, v]);
+  }
+  return out;
+}
+// Ledger pages hold 1..500 entries. SQLite reads a negative LIMIT as "no limit", so clamp both ends.
+const pageSize = limit => Math.min(500, Math.max(1, Math.floor(Number(limit)) || 100));
 export const entryHash = (prev, e) => crypto.createHash('sha256').update(prev + '|' + canon({ seq: e.seq, ts: e.ts, day: e.day, kind: e.kind, actor: e.actor, data: e.data })).digest('hex');
 
 export function openStore(dataDir: string) {
@@ -33,16 +50,29 @@ export function openStore(dataDir: string) {
     last: db.prepare('SELECT seq, hash FROM ledger ORDER BY seq DESC LIMIT 1'),
     add: db.prepare('INSERT INTO ledger (seq, ts, day, kind, actor, data, prev, hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'),
     page: db.prepare('SELECT * FROM ledger WHERE seq > ? ORDER BY seq LIMIT ?'),
+    pageKind: db.prepare('SELECT * FROM ledger WHERE kind = ? AND seq > ? ORDER BY seq LIMIT ?'), // index ledger_kind (kind, seq)
     all: db.prepare('SELECT * FROM ledger ORDER BY seq'),
     count: db.prepare('SELECT COUNT(*) AS n FROM ledger'),
     dec: db.prepare('INSERT OR REPLACE INTO decisions (id, day, agent, role, type, json) VALUES (?, ?, ?, ?, ?, ?)'),
     decCount: db.prepare('SELECT COUNT(*) AS n FROM decisions'),
+    // archive pages (oldest first, after an id): all, by type, by agent; indexes decisions_type / decisions_agent
+    decPage: db.prepare('SELECT json FROM decisions WHERE id > ? ORDER BY id LIMIT ?'),
+    decPageType: db.prepare('SELECT json FROM decisions WHERE type = ? AND id > ? ORDER BY id LIMIT ?'),
+    decPageAgent: db.prepare('SELECT json FROM decisions WHERE agent = ? AND id > ? ORDER BY id LIMIT ?'),
+    decPageBoth: db.prepare('SELECT json FROM decisions WHERE agent = ? AND type = ? AND id > ? ORDER BY id LIMIT ?'),
     citAll: db.prepare('SELECT json FROM citizens ORDER BY pos'),
     citPut: db.prepare('INSERT INTO citizens (id, pos, json) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET pos = excluded.pos, json = excluded.json'),
     citDel: db.prepare('DELETE FROM citizens WHERE id = ?'),
     citCount: db.prepare('SELECT COUNT(*) AS n FROM citizens'),
     ballotsPut: db.prepare('INSERT OR REPLACE INTO election_ballots (election, digest, json) VALUES (?, ?, ?)'),
     ballotsGet: db.prepare('SELECT json FROM election_ballots WHERE election = ?'),
+  };
+  // ledgerHas: one prepared statement per number of fields matched. Field names travel as JSON-path
+  // parameters, never inside the SQL text; uses the (kind, seq) index, then checks the data of that kind.
+  const hasQ = new Map<number, any>();
+  const hasStmt = n => {
+    if (!hasQ.has(n)) hasQ.set(n, db.prepare(`SELECT 1 FROM ledger WHERE kind = ?${' AND json_extract(data, ?) IS ?'.repeat(n)} LIMIT 1`));
+    return hasQ.get(n);
   };
   // what was last written for each citizen: only citizens whose JSON changed are written again
   const written = new Map<string, string>();
@@ -93,7 +123,18 @@ export function openStore(dataDir: string) {
       head = { seq: row.seq, hash };
       return { ...row, prev, hash };
     },
-    page(after = 0, limit = 100) { return q.page.all(after, Math.min(500, limit)).map(r => ({ ...r, data: JSON.parse(r.data) })); },
+    // kind: optional read-only filter (entries keep their own seq, prev and hash; pages chain on seq as before)
+    page(after = 0, limit = 100, kind = null) {
+      const rows = kind ? q.pageKind.all(String(kind), after, pageSize(limit)) : q.page.all(after, pageSize(limit));
+      return rows.map(r => ({ ...r, data: JSON.parse(r.data) }));
+    },
+    ledgerHas(kind, match = {}) {
+      const pairs = matchPairs(match); if (!pairs) return false;
+      const args: any[] = [String(kind)];
+      // json_extract gives 1/0 for JSON true/false and NULL for a missing field, so `IS` compares all of them
+      for (const [k, v] of pairs) args.push(`$.${k}`, typeof v === 'boolean' ? Number(v) : v);
+      return !!hasStmt(pairs.length).get(...args);
+    },
     head: () => ({ ...head, count: q.count.get().n }),
     verify() {
       let prev = GENESIS, n = 0;
@@ -106,6 +147,15 @@ export function openStore(dataDir: string) {
     },
     archiveDecision(d) { q.dec.run(d.id, d.day, d.agentId || null, d.role || null, d.type || null, JSON.stringify(d)); },
     decisionCount: () => q.decCount.get().n,
+    // read-only: the full decision log, the same records /api/state and #decisions already show live
+    decisionsPage({ after = 0, limit = 100, type = null, agent = null } = {}) {
+      const n = pageSize(limit);
+      const rows = agent && type ? q.decPageBoth.all(String(agent), String(type), after, n)
+        : type ? q.decPageType.all(String(type), after, n)
+        : agent ? q.decPageAgent.all(String(agent), after, n)
+        : q.decPage.all(after, n);
+      return rows.map(r => JSON.parse(r.json));
+    },
     close() { db.close(); },
   };
 }
@@ -127,7 +177,11 @@ function jsonStore(file: string) {
       ledger.push({ ...row, prev: head.hash, hash }); head = { seq: row.seq, hash };
       return { ...row, hash };
     },
-    page(after = 0, limit = 100) { return ledger.filter(r => r.seq > after).slice(0, Math.min(500, limit)); },
+    page(after = 0, limit = 100, kind = null) { return ledger.filter(r => r.seq > after && (!kind || r.kind === String(kind))).slice(0, pageSize(limit)); },
+    ledgerHas(kind, match = {}) {
+      const pairs = matchPairs(match); if (!pairs) return false;
+      return ledger.some(r => r.kind === String(kind) && pairs.every(([k, v]) => (r.data?.[k] ?? null) === v));
+    },
     head: () => ({ ...head, count: ledger.length }),
     verify() {
       let prev = GENESIS, n = 0;
@@ -138,6 +192,7 @@ function jsonStore(file: string) {
     archiveBallots(election, digest, list) { (ballots[election] = list); },
     ballotsOf(election) { return ballots[election] || null; },
     decisionCount: () => 0,
+    decisionsPage: null, // no archive without sqlite: the server falls back to the decisions kept in memory
     close() {},
   };
   return store;

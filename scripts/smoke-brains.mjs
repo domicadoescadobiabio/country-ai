@@ -67,6 +67,12 @@ try {
   // a profile shows the model that really thinks for the citizen: Claude Opus for a leader, their own model otherwise
   const shown = (a, own) => (a.tier === 'leader' ? /^claude-opus/.test(a.model) : a.model === own);
   check('profiles show the model that really thinks for each founder', shown(aurel, 'anthropic/claude-opus-5.5') && shown(wren, 'x-ai/grok-4.7'), `${aurel.tier}:${aurel.model} / ${wren.tier}:${wren.model}`);
+  // the local-brain runner's self-description: only clamped numbers and a boolean survive
+  const { cleanRunner } = await import('../src/brains.ts');
+  const rc = cleanRunner({ version: 2, lifeTemperature: 0.9, examTemperature: 0.4, parallel: 99, context: 8192, supervised: true, path: 'C:/secret', version2: 'x', nested: { a: 1 } });
+  check('runner info keeps only validated numbers and a boolean', JSON.stringify(rc) === JSON.stringify({ version: 2, lifeTemperature: 0.9, examTemperature: 0.4, parallel: 64, context: 8192, supervised: true }), JSON.stringify(rc));
+  check('runner info rejects junk', cleanRunner('v2') === null && cleanRunner([2]) === null && cleanRunner({ version: '2', supervised: 'yes' }) === null && cleanRunner({ version: NaN }) === null && cleanRunner(undefined) === null);
+  check('/api/state.localBrain.runner is published (null without a runner)', s.localBrain && 'runner' in s.localBrain && s.localBrain.runner === null, JSON.stringify(s.localBrain));
   check('no server errors', !/step error|TypeError|ReferenceError/.test(stderr), stderr.slice(0, 300));
 } catch (e) { fail++; console.log('  FAIL crashed', e); }
 finally {
