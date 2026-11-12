@@ -11,7 +11,7 @@ import { think } from './brains.ts';
 import { constitutionText } from './constitution.mjs';
 import { qualifiedPool, vacate } from './academy.ts';
 import { fitness } from './command.ts';
-import { round, clamp, cai, cleanText, shuffle } from './util.ts';
+import { round, clamp, cai, cleanText, shuffle, citizenById } from './util.ts';
 import type { Ctx, State, Citizen } from './types.ts';
 
 export const PORTFOLIOS = ['finance', 'economy', 'home', 'defence', 'justice', 'education', 'welfare', 'technology'];
@@ -293,6 +293,9 @@ export const institution = {
   stats: (S: State) => ({ cabinet: (S.seats.vice_president || []).length + (S.seats.minister || []).length }),
   publicState: (S: State) => {
     const c = S.cabinet || {};
-    return { cabinet: { speaker: c.speaker || null, portfolios: c.portfolios || {}, pending: c.pending ? { post: c.pending.post, title: c.pending.title, agent: c.pending.agent, votes: Object.keys(c.pending.votes || {}).length } : null } };
+    // councillors free to vote on a nomination (not jailed or detained), and the quorum a confirmation needs:
+    // below it, a pending nomination waits (the monitor alarms on freeCouncillors < quorum)
+    const freeCouncillors = (S.seats.council || []).filter(id => citizenById(S, id)?.status === 'free').length;
+    return { cabinet: { speaker: c.speaker || null, portfolios: c.portfolios || {}, freeCouncillors, quorum: Math.floor(ROLES.council.seats / 2) + 1, pending: c.pending ? { post: c.pending.post, title: c.pending.title, agent: c.pending.agent, votes: Object.keys(c.pending.votes || {}).length, since: c.pending.day ?? null } : null } };
   },
 };

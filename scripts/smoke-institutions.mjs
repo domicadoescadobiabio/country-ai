@@ -51,6 +51,11 @@ export async function run({ get, until, check }) {
   await ruleQuestionChecks(check);
   await lostSeatDrillChecks(check);
   const s = await get('/api/state');
+  const cab = s.cabinet;
+  if (cab) {
+    const free = (s.seats.council || []).filter(id => s.citizens.find(a => a.id === id)?.status === 'free').length;
+    check('cabinet shows the free councillors and the confirmation quorum', Number.isInteger(cab.freeCouncillors) && cab.quorum === 16 && cab.freeCouncillors <= (s.seats.council || []).length && (!s.citizens.length || cab.freeCouncillors >= 0), JSON.stringify({ free: cab.freeCouncillors, quorum: cab.quorum, seats: (s.seats.council || []).length, seenFree: free }));
+  }
   const tr = s.training?.rules;
   check('rule questions in drills are counted in public state', tr && Number.isInteger(tr.asked) && tr.right <= tr.asked, JSON.stringify(tr));
   const roles = s.config.roles.map(r => r.id);
