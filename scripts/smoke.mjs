@@ -131,6 +131,25 @@ try {
   check('/api/ledger?kind= returns only that kind', lk.kind === 'amendment' && lk.entries.length > 0 && lk.entries.every(e => e.kind === 'amendment'), JSON.stringify(lk.entries.map(e => e.kind).slice(0, 5)));
   const lb = await fetch(BASE + "/api/ledger?kind=x'%20OR%201=1");
   check('/api/ledger rejects a malformed kind', lb.status === 400, String(lb.status));
+  // gzip, CSP, self-hosted fonts, /api/map, citizens' homes
+  const gz = await fetch(BASE + '/api/state', { headers: { 'accept-encoding': 'gzip' } });
+  const gzBody = await gz.json();
+  check('/api/state is gzipped for clients that accept it', gz.headers.get('content-encoding') === 'gzip' && /accept-encoding/.test(gz.headers.get('vary') || '') && gzBody.day >= 1, String(gz.headers.get('content-encoding')));
+  const hz = await fetch(BASE + '/api/health', { headers: { 'accept-encoding': 'gzip' } });
+  check('small responses are sent as they are', !hz.headers.get('content-encoding') && (await hz.json()).ok === true);
+  const csp = gz.headers.get('content-security-policy') || '';
+  check('CSP allows fonts and styles from this site only', /style-src 'self';/.test(csp) && /font-src 'self';/.test(csp) && !/googleapis|gstatic/.test(csp), csp);
+  const fcss = await fetch(BASE + '/vendor/fonts/fonts.css');
+  check('the self-hosted font stylesheet is served from this site', fcss.status === 200 && /text\/css/.test(fcss.headers.get('content-type') || ''), `${fcss.status} ${fcss.headers.get('content-type')}`);
+  const mp = await fetch(BASE + '/api/map', { headers: { 'accept-encoding': 'gzip' } }); const mj = await mp.json();
+  const mapOk = mj.seats && Array.isArray(mj.cities) && Array.isArray(mj.daily?.recent) && Array.isArray(mj.academy?.rooms) && 'current' in (mj.training || {}) && mj.population?.byStatus && Array.isArray(mj.held)
+    && mj.police.incidents.every(i => i.perps?.length) && mj.court.cases.every(x => x.status === 'open') && mj.elections.every(e => 'voted' in e && 'electorate' in e && 'title' in e)
+    && mj.held.every(a => ['jailed', 'detained'].includes(a.status) && a.id && a.name) && !('citizens' in mj) && !('feed' in mj);
+  check('/api/map carries only what the map draws (charged incidents, open cases, voting elections, held citizens)', mapOk, JSON.stringify(Object.keys(mj)));
+  check('/api/map is much smaller than /api/state', JSON.stringify(mj).length * 3 < JSON.stringify(gzBody).length, `${JSON.stringify(mj).length} vs ${JSON.stringify(gzBody).length}`);
+  const one = (await get('/api/citizens?size=1')).citizens[0];
+  const lc = await get('/api/citizens?lite=1&size=5');
+  check('citizens carry their home address; ?lite=1 lists id, name, city, status, office and home only', 'home' in one && lc.citizens.length === 5 && lc.citizens.every(a => Object.keys(a).sort().join() === 'city,color,home,id,name,office,status'), JSON.stringify({ home: one.home, lite: lc.citizens[0] }));
   // archive reads are rate limited per IP (60/min by default); local callers without a proxy header are not counted
   const viaProxy = ip => fetch(BASE + '/api/ledger?limit=1', { headers: { 'x-forwarded-for': ip } });
   const burst = []; for (let i = 0; i < 61; i++) burst.push((await viaProxy('203.0.113.9')).status);

@@ -4,6 +4,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { loadDotEnv, clamp, uid, slug, cleanText, pick, citizenById, buildInfo } from './src/util.ts';
 import { makeLLM } from './src/llm.ts';
@@ -234,7 +235,7 @@ const thinksWith = a => {
   return llm.enabled ? a.model : 'offline';
 };
 function publicCitizen(a) {
-  return { id: a.id, name: a.name, model: thinksWith(a), tier: tierOf(S, a), color: a.color, bio: a.bio, origin: a.origin, office: a.office, status: a.status, jailUntil: a.jailUntil, detainedDay: a.detainedDay ?? null, wallet: Math.round(a.wallet), traits: a.traits, joined: a.joined, training: a.training.slice(-8), lessons: a.lessons, record: a.record || [], skill: a.skill || {}, brain: publicBrain(a.brain), city: a.city || null, faction: a.faction || 'civilian', debt: Math.round(a.debt || 0), rank: a.rank || null, rankSince: a.rankSince ?? null, quals: a.quals || {}, termEnds: a.termEnds || null, practice: a.practice || {}, joinedDay: a.joinedDay ?? 0, drills: (a.drills || []).slice(-6), reviews: (a.reviews || []).slice(-6), stats: a.stats || {}, diary: (a.diary || []).slice(-6) };
+  return { id: a.id, name: a.name, model: thinksWith(a), tier: tierOf(S, a), color: a.color, bio: a.bio, origin: a.origin, office: a.office, status: a.status, jailUntil: a.jailUntil, detainedDay: a.detainedDay ?? null, wallet: Math.round(a.wallet), traits: a.traits, joined: a.joined, training: a.training.slice(-8), lessons: a.lessons, record: a.record || [], skill: a.skill || {}, brain: publicBrain(a.brain), city: a.city || null, faction: a.faction || 'civilian', debt: Math.round(a.debt || 0), rank: a.rank || null, rankSince: a.rankSince ?? null, quals: a.quals || {}, termEnds: a.termEnds || null, practice: a.practice || {}, joinedDay: a.joinedDay ?? 0, drills: (a.drills || []).slice(-6), reviews: (a.reviews || []).slice(-6), stats: a.stats || {}, diary: (a.diary || []).slice(-6), home: a.home || null };
 }
 function notableCitizens() {
   const running = new Set((S.elections?.list || []).filter(e => !['done', 'failed'].includes(e.stage)).flatMap(e => e.candidates.map(c => c.id)));
@@ -272,6 +273,24 @@ function compactState() {
   for (const inst of INSTITUTIONS) Object.assign(out, inst.publicState?.(S) || {});
   return out;
 }
+// The map's view (/api/map): only what the map draws, built from the same public views as /api/state (so it
+// cannot show more than they do: open police cases name no suspect, hidden crimes are absent).
+function mapState() {
+  const c = compactState();
+  const lite = a => ({ id: a.id, name: a.name, city: a.city || null, status: a.status, office: a.office || null, home: a.home || null });
+  return {
+    day: S.day, seats: c.seats, cities: c.cities, homeLayout: c.homeLayout,
+    daily: { recent: c.daily?.recent || [] },
+    academy: { rooms: c.academy?.rooms || [] },
+    training: { current: c.training?.current || null },
+    police: { incidents: (c.police?.incidents || []).filter(i => Array.isArray(i.perps) && i.perps.length) },
+    court: { cases: (c.court?.cases || []).filter(x => x.status === 'open') },
+    elections: (c.elections || []).filter(e => e.stage === 'voting').map(e => ({ id: e.id, title: e.title, city: e.city || null, voted: e.voted, electorate: e.electorate })),
+    population: { byStatus: populationSummary().byStatus },
+    held: S.citizens.filter(a => a.status === 'jailed' || a.status === 'detained').slice(0, 500).map(lite),
+  };
+}
+const liteCitizen = a => ({ id: a.id, name: a.name, city: a.city || null, status: a.status, office: a.office || null, color: a.color, home: a.home || null });
 function fullState() {
   const feed = {};
   for (const [ch, list] of Object.entries(S.feed)) feed[ch] = list.slice(-120);
@@ -325,9 +344,17 @@ function isAdmin(req) {
   return isLoopback(req);
 }
 function windowFull(list, ms, max) { const now = Date.now(); while (list.length && now - list[0] > ms) list.shift(); return list.length >= max; }
+// Responses of 1 KB or more are gzipped when the client accepts it (/api/state is ~1.5 MB of JSON, polled every
+// 20 s per visitor). zlib.gzip runs on the thread pool, so a large state does not block the republic's clock.
 function send(res, code, body, type = 'application/json; charset=utf-8') {
-  res.writeHead(code, { 'content-type': type, 'cache-control': 'no-store' });
-  res.end(typeof body === 'string' ? body : JSON.stringify(body));
+  const buf = Buffer.from(typeof body === 'string' ? body : JSON.stringify(body));
+  const headers = { 'content-type': type, 'cache-control': 'no-store', vary: 'accept-encoding' };
+  if (buf.length < 1024 || !/\bgzip\b/.test(String(res.req?.headers?.['accept-encoding'] || ''))) { res.writeHead(code, headers); return res.end(buf); }
+  zlib.gzip(buf, { level: 6 }, (err, z) => {
+    if (res.headersSent || res.destroyed) return;
+    if (err) { res.writeHead(code, headers); return res.end(buf); }
+    res.writeHead(code, { ...headers, 'content-encoding': 'gzip' }); res.end(z);
+  });
 }
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -338,7 +365,7 @@ function readBody(req) {
   });
 }
 
-const MIME = { '.md': 'text/markdown; charset=utf-8', '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json' };
+const MIME = { '.md': 'text/markdown; charset=utf-8', '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json', '.woff2': 'font/woff2', '.woff': 'font/woff' };
 function serveStatic(req, res, pathname) {
   let p = pathname === '/' ? '/index.html' : pathname;
   try { p = decodeURIComponent(p); } catch { return send(res, 400, 'bad path', 'text/plain'); }
@@ -398,10 +425,11 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('x-content-type-options', 'nosniff');
   res.setHeader('referrer-policy', 'strict-origin-when-cross-origin');
   res.setHeader('x-frame-options', 'DENY');
-  res.setHeader('content-security-policy', "default-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
+  res.setHeader('content-security-policy', "default-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
   const p = new URL(req.url, 'http://x').pathname;
   try {
     if (req.method === 'GET' && p === '/api/state') return send(res, 200, fullState());
+    if (req.method === 'GET' && p === '/api/map') return send(res, 200, mapState());
     if (req.method === 'GET' && p === '/api/stream') {
       if (clients.size >= 500) return send(res, 503, { error: 'too many listeners' });
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive', 'x-accel-buffering': 'no' });
@@ -430,6 +458,11 @@ const server = http.createServer(async (req, res) => {
       if (city) list = list.filter(a => a.city === city);
       if (status) list = list.filter(a => a.status === status);
       if (office) list = list.filter(a => (office === 'none' ? !a.office : a.office === office));
+      // ?lite=1: id, name, city, status, office, color and home only (for the map), up to 2,000 per page
+      if (u.searchParams.get('lite') === '1') {
+        const lsize = clamp(Number(u.searchParams.get('size')) || 500, 1, 2000);
+        return send(res, 200, { total: list.length, page, size: lsize, citizens: list.slice((page - 1) * lsize, page * lsize).map(liteCitizen) });
+      }
       return send(res, 200, { total: list.length, page, size, citizens: list.slice((page - 1) * size, page * size).map(publicCitizen) });
     }
     const cm = req.method === 'GET' && p.match(/^\/api\/citizens\/([a-z0-9-]{1,40})$/);
