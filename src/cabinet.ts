@@ -246,7 +246,7 @@ function speakerStep(ctx: Ctx) {
   const win = Object.keys(tally).sort((x, y) => tally[y] - tally[x])[0]; if (!win) return;
   c.speaker = win; const a = ctx.agent(win);
   ctx.say('parliament', win, `Elected Speaker of the Council with ${tally[win]} of ${council.length} votes.`, { kind: 'oath' });
-  ctx.decide({ agentId: 'state', role: 'council', type: 'election', engine: 'offline', title: 'Speaker of the Council', inputs: [['Councillors voting', String(council.length)]], options: Object.keys(tally).map(id => ctx.agent(id)?.name), chosen: a.name, reason: `Most votes (${tally[win]}) from the councillors, each voting on the record.`, checks: [['A sitting councillor', true]], outcome: `${a.name} is Speaker` });
+  ctx.decide({ agentId: 'state', role: 'council', type: 'election', engine: 'offline', title: 'Speaker of the Council', inputs: [['Councillors voting', String(council.length)], ['Method', 'plurality of the councillors, each vote on the record']], options: Object.keys(tally).map(id => ctx.agent(id)?.name), chosen: a.name, reason: `Most votes (${tally[win]}) from the councillors, each voting on the record.`, checks: [['A sitting councillor', true]], outcome: `${a.name} is Speaker` });
   ctx.record('speaker', 'council', { agent: win, votes: tally[win], of: council.length });
 }
 
