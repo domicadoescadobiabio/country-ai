@@ -65,6 +65,14 @@ try {
   S.day = 2; await run({ act: 'shop', amount: 10 });
   check('the counters start again on a new day', S.daily.byAct.shop === 3 && me.lifeCount.shop === 1, JSON.stringify(me.lifeCount));
 
+  // late in the day: a citizen with every limit used up has only "rest" left, and is not asked to think at all;
+  // thoughts are released through the day (LIFE_THOUGHTS_PER_DAY, default 6)
+  const { thoughtsAllowedNow } = await import('../src/daily.ts');
+  const spent = { ...me, id: 'spent', wallet: 30, workedDay: S.day, lastSpeak: Date.now(), lifeDay: S.day, lifeCount: { study: 3, volunteer: 1 }, quals: {}, practice: {} };
+  check('a citizen who has done everything today has only rest on the menu', menu(ctx, spent).items.map(([id]) => id).join() === 'rest', menu(ctx, spent).items.map(([id]) => id).join());
+  const at = frac => thoughtsAllowedNow({ S: { foundedAt: Date.now() - frac * 86400000 }, cfg: { dayMs: 86400000 } });
+  check('thoughts are released through the day (1 at dawn, 6 by evening)', at(0.05) === 1 && at(0.5) === 3 && at(0.99) === 6, `${at(0.05)} ${at(0.5)} ${at(0.99)}`);
+
   // ticket 2: apply only for an office the menu offered; careers only accepts the roles' own keys
   const before = Object.keys(S.applications).length;
   await run({ act: 'apply', office: 'constructor' }, { apply: ['police'], run: [] });

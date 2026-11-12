@@ -30,7 +30,10 @@ const D = (S: State) => {
   d.cursor ??= 0; d.thoughts ||= 0; d.byAct ||= {}; d.recent ||= []; d.carry ??= 0; d.lastAt ??= Date.now(); d.volunteers ||= {};
   // v2: byAct counts what citizens really did. The v1 counters also counted refused second shifts as
   // "work" (88% of all thoughts), so they are kept apart as history instead of mixed into the new ones.
-  if (d.v !== 2) { d.byActV1 = d.byAct; d.byAct = {}; d.v = 2; }
+  if (d.v !== 2 && d.v !== 3) { d.byActV1 = d.byAct; d.byAct = {}; d.v = 2; }
+  // v3: v2 also counted thoughts given to citizens with nothing left to do but rest (late in the day every
+  // limit is used up); those are no longer asked, so the counters start again and v2 is kept as history
+  if (d.v === 2) { d.byActV2 = d.byAct; d.byAct = {}; d.v = 3; }
   // diary notes written before notes were screened: screen them once, and the public recent list too
   if (!d.notesScreened) {
     d.notesScreened = true;
@@ -52,6 +55,15 @@ function shuffled<T>(list: T[], seed: string): T[] {
   const r = seeded(seed); const a = [...list];
   for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(r() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
   return a;
+}
+// How many times a citizen may think about their day: LIFE_THOUGHTS_PER_DAY, released through the day (one at
+// dawn, the rest as the hours pass), so 10,000 citizens do not use up their day by mid-morning and then
+// spend the evening on thoughts whose only possible answer was "rest" (71% rest on day 2, 12 Nov 2026).
+const THOUGHTS_PER_DAY = clamp(Number(process.env.LIFE_THOUGHTS_PER_DAY) || 6, 1, 48);
+export function thoughtsAllowedNow(ctx: Ctx) {
+  const dayMs = ctx.cfg?.dayMs || 86400000;
+  const frac = ((((Date.now() - (ctx.S.foundedAt || Date.now())) % dayMs) + dayMs) % dayMs) / dayMs;
+  return Math.max(1, Math.ceil(THOUGHTS_PER_DAY * frac));
 }
 const speakGapMs = (ctx: Ctx) => (ctx.hourMs ? ctx.hourMs() : 3600000) * 2;
 // The whole street hears at most TALK_PER_HOUR lines from daily life: with 10,000 citizens thinking, the
@@ -244,9 +256,15 @@ export const institution = {
     // start new thoughts at PER_MIN, walking through the population in order so everyone gets a turn
     d.carry = Math.min(IN_FLIGHT, d.carry + (Date.now() - d.lastAt) / 60000 * PER_MIN); d.lastAt = Date.now();
     const n = S.citizens.length;
+    const allowed = thoughtsAllowedNow(ctx);
     for (let tries = 0; d.carry >= 1 && pending.size < IN_FLIGHT && tries < 200; tries++) {
       const a = S.citizens[d.cursor % n]; d.cursor = (d.cursor + 1) % n;
       if (!who(S, a) || [...pending.values()].some(p => p.agent === a.id)) continue;
+      // a citizen thinks a few times a day, spread over the day, and only while there is something to do
+      // besides resting: with every daily limit used up, a thought could only ever end in "rest"
+      const c = lifeCount(S, a);
+      if ((c._thoughts || 0) >= allowed || !menu(ctx, a).items.some(([id]) => id !== 'rest')) continue;
+      c._thoughts = (c._thoughts || 0) + 1;
       startDay(ctx, a); d.carry -= 1;
     }
   },
