@@ -1,19 +1,21 @@
 :root {
-  --bg: #080c13;
-  --bg2: #0b111b;
-  --panel: #0e1521;
-  --line: #182233;
-  --line2: #233149;
-  --text: #e8ecf3;
-  --muted: #8592a8;
-  --dim: #56627a;
-  --gold: #e8b84a;
-  --gold-d: #4a3a14;
-  --gold-bg: #1a1508;
+  /* cyberpunk night: deep violet glass, cyan as the main accent (the old 'gold' tokens), pink for action */
+  --bg: #07051a;
+  --bg2: rgba(13, 9, 38, .82);
+  --panel: rgba(20, 14, 52, .72);
+  --line: rgba(167, 139, 250, .16);
+  --line2: rgba(167, 139, 250, .3);
+  --text: #eef0ff;
+  --muted: #a6a3c9;
+  --dim: #6f6b9a;
+  --gold: #22d3ee;
+  --gold-d: rgba(34, 211, 238, .4);
+  --gold-bg: rgba(34, 211, 238, .08);
   --green: #4ade80;
-  --red: #f87171;
+  --red: #fb7185;
   --blue: #60a5fa;
   --violet: #c4b5fd;
+  --pink: #f472b6;
   --mono: 'JetBrains Mono', ui-monospace, Consolas, monospace;
   --sans: 'Inter', system-ui, -apple-system, Segoe UI, sans-serif;
 }
@@ -207,3 +209,55 @@ dialog input, dialog textarea { background: var(--bg); border: 1px solid var(--l
   .chat { height: 75vh; border-bottom: 1px solid var(--line); }
   .feed, .chat-head, .composer { padding-left: 16px; padding-right: 16px; }
 }
+
+/* ---------------------------------------------------------------- cyberpunk skin over the whole republic */
+body { background:
+  radial-gradient(1200px 600px at 12% -10%, rgba(124, 58, 237, .28), transparent 60%),
+  radial-gradient(900px 500px at 100% 0%, rgba(244, 114, 182, .16), transparent 60%),
+  radial-gradient(900px 700px at 50% 120%, rgba(34, 211, 238, .14), transparent 60%),
+  linear-gradient(rgba(167, 139, 250, .05) 1px, transparent 1px) 0 0 / 44px 44px,
+  linear-gradient(90deg, rgba(167, 139, 250, .05) 1px, transparent 1px) 0 0 / 44px 44px,
+  #07051a; }
+body::after { content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 40; background: repeating-linear-gradient(0deg, rgba(255, 255, 255, .02) 0 1px, transparent 1px 3px); }
+.top { background: rgba(9, 6, 28, .78); backdrop-filter: blur(12px); border-bottom: 1px solid var(--line2); box-shadow: 0 1px 0 rgba(34, 211, 238, .25), 0 10px 30px rgba(5, 3, 15, .5); position: relative; }
+.top::after { content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 1px; background: linear-gradient(90deg, transparent, #22d3ee, #f472b6, #a78bfa, transparent); opacity: .8; }
+.wordmark { background: linear-gradient(90deg, #fff 0 40%, #a5f3fc); -webkit-background-clip: text; background-clip: text; color: transparent; filter: drop-shadow(0 0 10px rgba(34, 211, 238, .45)); }
+.wordmark span { background: linear-gradient(90deg, #22d3ee, #f472b6); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.logo { filter: drop-shadow(0 0 8px rgba(34, 211, 238, .6)) hue-rotate(150deg) saturate(1.4); }
+.stat b { color: #fff; text-shadow: 0 0 12px rgba(34, 211, 238, .8); }
+.stat span { color: #a5b4fc; }
+.pill { border-color: rgba(34, 211, 238, .45); background: rgba(34, 211, 238, .08); box-shadow: inset 0 0 10px rgba(34, 211, 238, .12); }
+.pill.green { box-shadow: 0 0 10px rgba(74, 222, 128, .25); }
+.pill.violet { color: #f0abfc; border-color: rgba(232, 121, 249, .5); background: rgba(232, 121, 249, .08); }
+.btn-gold, .btn-mini { background: linear-gradient(90deg, #22d3ee, #f472b6); color: #12062b; box-shadow: 0 0 16px rgba(244, 114, 182, .45), 0 0 30px rgba(34, 211, 238, .25); border-radius: 999px; }
+.btn-gold:hover { filter: brightness(1.1); transform: translateY(-1px); }
+.btn-ghost { border-color: var(--line2); background: rgba(20, 14, 52, .5); }
+.btn-ghost:hover { border-color: #22d3ee; box-shadow: 0 0 12px rgba(34, 211, 238, .3); }
+.map-link { border-radius: 999px; border-color: rgba(244, 114, 182, .5); color: #fbcfe8; box-shadow: inset 0 0 12px rgba(244, 114, 182, .15); }
+.cabar { background: linear-gradient(90deg, #07051a, rgba(34, 211, 238, .12) 50%, #07051a); border-bottom-color: rgba(34, 211, 238, .35); }
+
+.side, .panel { background: rgba(10, 7, 30, .62); backdrop-filter: blur(10px); }
+.side-head { color: #f472b6; text-shadow: 0 0 8px rgba(244, 114, 182, .5); }
+.office, .card, .decision { background: var(--panel); border-color: var(--line2); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .02), 0 6px 20px rgba(5, 3, 15, .35); }
+.office:hover, .card:hover { border-color: rgba(34, 211, 238, .45); }
+.seat { background: rgba(10, 6, 34, .7); }
+.seat:hover { border-color: #22d3ee; box-shadow: 0 0 10px rgba(34, 211, 238, .3); }
+.ch:hover { background: rgba(34, 211, 238, .07); }
+.ch.on { background: linear-gradient(90deg, rgba(34, 211, 238, .16), rgba(244, 114, 182, .08)); box-shadow: inset 2px 0 0 #22d3ee; }
+.chat-head { background: rgba(9, 6, 28, .45); }
+.chat-head h1 { text-shadow: 0 0 14px rgba(34, 211, 238, .55); }
+.msg { border-bottom-color: rgba(167, 139, 250, .1); }
+.av { box-shadow: 0 0 10px color-mix(in srgb, var(--c, #334155) 60%, transparent); }
+.msg.state .av { background: linear-gradient(135deg, #22d3ee, #a78bfa); }
+.badge.office { box-shadow: 0 0 8px rgba(34, 211, 238, .25); }
+.composer input, .inp, dialog input, dialog textarea, dialog select { background: rgba(10, 6, 34, .75); border-color: var(--line2); }
+.composer input:focus, .inp:focus, dialog input:focus, dialog textarea:focus { outline: none; border-color: #22d3ee; box-shadow: 0 0 0 3px rgba(34, 211, 238, .18); }
+.composer button { color: #22d3ee; border-color: rgba(34, 211, 238, .45); background: rgba(34, 211, 238, .08); }
+.tabs button.on { background: rgba(34, 211, 238, .12); border-color: rgba(34, 211, 238, .45); color: #fff; box-shadow: 0 0 12px rgba(34, 211, 238, .2); }
+.bar { background: rgba(167, 139, 250, .15); }
+.bar i { background: linear-gradient(90deg, #22d3ee, #f472b6); box-shadow: 0 0 8px #22d3ee; }
+dialog { background: rgba(14, 10, 40, .95); border-color: rgba(34, 211, 238, .4); box-shadow: 0 0 40px rgba(124, 58, 237, .35); }
+dialog::backdrop { background: rgba(5, 3, 15, .7); backdrop-filter: blur(4px); }
+.toast { background: rgba(14, 10, 40, .95); border-color: rgba(34, 211, 238, .45); box-shadow: 0 0 20px rgba(34, 211, 238, .25); }
+::selection { background: rgba(244, 114, 182, .4); }
+* { scrollbar-color: rgba(167, 139, 250, .35) transparent; }

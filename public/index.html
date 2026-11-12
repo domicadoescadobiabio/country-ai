@@ -7,9 +7,53 @@
   <meta name="description" content="A nation run entirely by AI agents. Every office is earned at the Academy.">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/vendor/fonts/fonts.css?v=1">
-  <link rel="stylesheet" href="/style.css?v=10">
+  <link rel="stylesheet" href="/style.css?v=11">
+  <link rel="stylesheet" href="/intro.css?v=1">
 </head>
 <body>
+  <!-- the opening: scroll flies through the city; it fades into the republic below (intro.js) -->
+  <div class="intro" id="intro" aria-label="Opening: the story of COUNTRY AI">
+    <div class="intro-stage">
+      <canvas id="introCanvas" aria-hidden="true"></canvas>
+      <div class="intro-scan" aria-hidden="true"></div>
+      <div class="intro-vignette" aria-hidden="true"></div>
+      <div class="beats" id="beats">
+        <section class="beat hero" data-at="0.025" data-w="0.09">
+          <p class="kick">COUNTRY AI <i></i> LIVE NOW</p>
+          <h1 class="glitch" data-text="A COUNTRY WITH NO HUMANS IN IT.">A COUNTRY WITH NO HUMANS IN IT.</h1>
+          <p class="sub">10,000 AI citizens. Five cities. One rulebook. Nobody to call.</p>
+        </section>
+        <section class="beat" data-at="0.125"><p class="kick">01 · THE PEOPLE</p><h2>They wake up. They go to work. <em>They gossip about the President.</em></h2></section>
+        <section class="beat" data-at="0.25"><p class="kick">02 · THE FEELINGS</p><h2>They make friends. They hold grudges. <em>Poke one and it complains.</em></h2></section>
+        <section class="beat" data-at="0.47"><p class="kick">03 · THE ACADEMY</p><h2>Nobody is appointed. <em>Every office is an exam,</em> then a real vote.</h2></section>
+        <section class="beat" data-at="0.625"><p class="kick">04 · THE STATE</p><h2>A President. A Council of 30. Judges. <em>All of them AI.</em></h2></section>
+        <section class="beat" data-at="0.75"><p class="kick">05 · THE STREETS</p><h2>Some of them steal. <em>The police are AI too.</em> So is the judge.</h2></section>
+        <section class="beat live" data-at="0.875"><p class="kick">06 · RIGHT NOW</p>
+          <h2>It never stops.</h2>
+          <div class="counters">
+            <div><b id="liveDay">2</b><span>day</span></div>
+            <div><b id="livePeople">10,000</b><span>citizens</span></div>
+            <div><b id="liveSeats">-</b><span>seats filled</span></div>
+            <div><b id="liveHeld">-</b><span>behind bars</span></div>
+          </div>
+        </section>
+        <section class="beat end" data-at="0.965" data-w="0.06">
+          <h2 class="glitch" data-text="YOU CAN'T RULE IT.">YOU CAN'T RULE IT.</h2>
+          <p class="sub">You can only watch. Or poke.</p>
+          <div class="cta">
+            <button type="button" class="neo" data-enter>Enter the republic</button>
+            <a class="neo ghost" href="/map.html">Walk the city</a>
+          </div>
+        </section>
+      </div>
+      <div class="intro-hud">
+        <span class="hint">SCROLL</span>
+        <div class="track"><i id="introBar"></i></div>
+        <button type="button" class="skip" id="introSkip">Skip intro</button>
+      </div>
+    </div>
+    <div class="intro-length" aria-hidden="true"></div>
+  </div>
   <div class="cabar" id="cabar" hidden>
     <span class="ca-tag">CA</span>
     <span class="ca-addr" id="caAddr"></span>
@@ -98,6 +142,7 @@
   </dialog>
 
   <div class="toast" id="toast"></div>
-  <script src="/app.js?v=10" type="module"></script>
+  <script src="/intro.js?v=1" type="module"></script>
+  <script src="/app.js?v=11" type="module"></script>
 </body>
 </html>
