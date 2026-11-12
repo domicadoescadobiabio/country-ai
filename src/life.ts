@@ -3,6 +3,7 @@ import { ROLES, ROLE_ORDER } from './roles.mjs';
 import { STREET_LINES, STREET_LINES_GOV, GUEST_REPLIES, fill } from './citizens.mjs';
 import { pick, chance, cai, round, cleanText } from './util.ts';
 import { borderCheck } from './military.ts';
+import { feel } from './feelings.ts';
 import { constitutionText } from './constitution.mjs';
 import { cityWageFactor } from './cities.ts';
 import type { Ctx } from './types.ts';
@@ -111,5 +112,6 @@ export async function lifeTick(ctx: Ctx) {
   const heard = recentStreetLines(S);
   const fresh = [...(chance(0.7) ? ownLines(ctx, a) : []), ...bank.map(t => fill(t, v))].filter(t => !heard.has(sameLine(t)));
   if (!fresh.length) return; // nothing new to say: stay quiet rather than repeat
-  ctx.say('streets', a.id, chance(0.7) ? fresh[0] : pick(fresh), { kind: 'chat' });
+  feel(S, a, 0.02, null, null); // a word in the street lifts the speaker a little
+  ctx.say('streets', a.id, chance(0.7) ? fresh[0] : pick(fresh), { kind: 'chat', mood: a.mood?.label });
 }

@@ -14,13 +14,16 @@ const DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'country-local-'));
 const PORT = 3970 + Math.floor(Math.random() * 9);
 const TOKEN = 'local-test-token-' + Math.random().toString(36).slice(2);
 let asked = 0;
+const lifePrompts = [];
 
 const ollama = http.createServer((req, res) => {
   let b = ''; req.on('data', c => { b += c; }); req.on('end', () => {
     res.writeHead(200, { 'content-type': 'application/json' });
     if (req.url === '/api/tags') return res.end(JSON.stringify({ models: [{ name: 'qwen3:8b', model: 'qwen3:8b' }] }));
     const body = JSON.parse(b || '{}'); asked++;
-    const text = smartAnswer(String(body.messages?.find(m => m.role === 'user')?.content || ''));
+    const userText = String(body.messages?.find(m => m.role === 'user')?.content || '');
+    if (/What do you do now\?/.test(userText)) lifePrompts.push(userText);
+    const text = smartAnswer(userText);
     res.end(JSON.stringify({ message: { role: 'assistant', content: `<think>hm</think>${text}` }, prompt_eval_count: 300, eval_count: 20 }));
   });
 });
@@ -71,8 +74,8 @@ try {
   const spent = { ...me, id: 'spent', wallet: 30, workedDay: S.day, lastSpeak: Date.now(), lifeDay: S.day, lifeCount: { study: 3, volunteer: 1 }, quals: {}, practice: {} };
   check('a citizen who has done everything today has only rest on the menu', menu(ctx, spent).items.map(([id]) => id).join() === 'rest', menu(ctx, spent).items.map(([id]) => id).join());
   const at = frac => thoughtsAllowedNow({ S: { foundedAt: Date.now() - frac * 86400000 }, cfg: { dayMs: 86400000 } });
-  // waking hours 06:00-22:00: none at night, 1 at 07:00, 3 at noon, all 6 by 21:36, none again at 23:45
-  check('thoughts are released through waking hours only', at(0.05) === 0 && at(7 / 24) === 1 && at(0.5) === 3 && at(0.9) === 6 && at(0.99) === 0, `${at(0.05)} ${at(7 / 24)} ${at(0.5)} ${at(0.9)} ${at(0.99)}`);
+  // daytime only: none at night, 1 at 07:00, 3 at noon, all 6 by 18:00 and still at 19:00, none from 20:00 (21:36, 23:45)
+  check('thoughts are released in daytime only', at(0.05) === 0 && at(7 / 24) === 1 && at(0.5) === 3 && at(18.5 / 24) === 6 && at(19.5 / 24) === 6 && at(0.9) === 0 && at(0.99) === 0, `${at(0.05)} ${at(7 / 24)} ${at(0.5)} ${at(18.5 / 24)} ${at(19.5 / 24)} ${at(0.9)} ${at(0.99)}`);
   const rester = { ...spent, id: 'rester', lifeCount: { rest: 2 }, workedDay: 0 };
   check('after two rests a citizen is offered what they can still do, not rest again', !menu(ctx, rester).items.some(([id]) => id === 'rest') && menu(ctx, rester).items.some(([id]) => id === 'work'), menu(ctx, rester).items.map(([id]) => id).join());
 
@@ -195,6 +198,10 @@ try {
   const acts = Object.entries(life?.byAct || {}); const total = acts.reduce((s, [, n]) => s + n, 0);
   const top = acts.sort((x, y) => y[1] - x[1])[0] || ['', 0];
   check('daily life is varied, not one act for everyone', acts.length >= 4 && top[1] / Math.max(1, total) < 0.5, JSON.stringify(life?.byAct));
+  // feelings in their thinking: one short line with their own mood (and people they care about)
+  const heart = lifePrompts.map(p => (p.match(/^You feel .*$/m) || [])[0]).filter(Boolean);
+  check('the daily prompt carries a short feelings line', heart.length > 0 && heart.every(l => l.length <= 300) && lifePrompts.every(p => /"feel":/.test(p)), `${heart.length}/${lifePrompts.length} ${heart[0] || ''}`);
+  check('daily life entries carry a mood for the map', (life?.recent || []).length > 0 && life.recent.every(x => x.mood));
   const diaries = (life?.recent || []).filter(x => x.act === 'work');
   check('nobody is counted as working a refused second shift', diaries.every(x => /^worked/.test(x.line)), JSON.stringify(diaries.slice(-3)));
   // the runner under local-brain.cmd reloads itself when its code changes (exit 3 = start the new code)

@@ -10,6 +10,7 @@ import { LETTERS } from './academy.ts';
 import { borderCheck } from './military.ts';
 import { CITIES } from './cities.ts';
 import { echoesStreet, safeNote } from './life.ts';
+import { feelingsTick, feel, bond, ensureFeelings, feelLine, preferredToHelp, talkTarget, MOODS } from './feelings.ts';
 import { round, cleanText, cai, clamp } from './util.ts';
 import type { Ctx, State, Citizen } from './types.ts';
 
@@ -65,12 +66,14 @@ function shuffled<T>(list: T[], seed: string): T[] {
 // Thoughts are released only in waking hours (06:00-22:00 republic time): asked at 20:00 or at night, a citizen
 // sensibly goes to bed, which made 97% of the thoughts after a late deploy "rest" (12 Nov 2026).
 const THOUGHTS_PER_DAY = clamp(Number(process.env.LIFE_THOUGHTS_PER_DAY) || 6, 1, 48);
-const WAKE = 6, SLEEP = 22;
+// Asked in the evening a citizen still mostly winds down (99% rest from 21:50 after the next deploy), so the
+// whole day's thoughts are released in daytime: from 06:00, all of them by 18:00; nobody is asked after 20:00.
+const WAKE = 6, DUSK = 18, SLEEP = 20;
 export function thoughtsAllowedNow(ctx: Ctx) {
   const dayMs = ctx.cfg?.dayMs || 86400000;
   const h = ((((Date.now() - (ctx.S.foundedAt || Date.now())) % dayMs) + dayMs) % dayMs) / dayMs * 24;
   if (h < WAKE || h >= SLEEP) return 0; // asleep
-  return Math.max(1, Math.ceil(THOUGHTS_PER_DAY * (h - WAKE) / (SLEEP - WAKE)));
+  return Math.max(1, Math.ceil(THOUGHTS_PER_DAY * Math.min(1, (h - WAKE) / (DUSK - WAKE))));
 }
 const speakGapMs = (ctx: Ctx) => (ctx.hourMs ? ctx.hourMs() : 3600000) * 2;
 // The whole street hears at most TALK_PER_HOUR lines from daily life: with 10,000 citizens thinking, the
@@ -152,8 +155,10 @@ function startDay(ctx: Ctx, a: Citizen) {
   const done = todayActs(S, a);
   const { items, allow } = menu(ctx, a);
   const m = shuffled(items, qid);
+  ensureFeelings(S, a);
+  const heart = feelLine(S, a); // their own mood and how the people they care about feel today (one short line)
   const system = `You are ${a.name}, a citizen of Country AI, a nation of 10,000 AI citizens in five cities. ${a.bio} You live a real life: you work, spend, learn, help, talk and may rise to public office through the Academy and elections. Be yourself; your traits: integrity ${Math.round(a.traits.integrity * 100)}, wisdom ${Math.round(a.traits.wisdom * 100)}, diligence ${Math.round(a.traits.diligence * 100)}, restraint ${Math.round(a.traits.restraint * 100)}.`;
-  const user = `${news(ctx, a)}\n${neighbours(S, a)}\nIt is ${partOfDay(ctx)}. You: wallet ${cai(a.wallet)}, lives in ${cityName(a.city)}. ${career(S, a)}\nEarlier today you: ${done.join(', ') || 'nothing yet'}.\nYour diary:\n${diary}\n\nLike real people, your days are varied: some work, some errands, some time with neighbours, some learning, some rest. Pick what fits this moment, your wallet, your traits and what you did earlier; do not just pick the first option.\nWhat do you do now? Choose ONE of these (they are all possible right now):\n${m.map(([, t]) => `- ${t}`).join('\n')}\nReply with JSON only: {"act":"<one>","office":"<for study/apply/run>","amount":<for shop/help>,"say":"<for talk>","note":"<a diary line, max 15 words>"}`;
+  const user = `${news(ctx, a)}\n${neighbours(S, a)}\nIt is ${partOfDay(ctx)}. You: wallet ${cai(a.wallet)}, lives in ${cityName(a.city)}. ${career(S, a)}\n${heart ? `${heart}\n` : ''}Earlier today you: ${done.join(', ') || 'nothing yet'}.\nYour diary:\n${diary}\n\nLike real people, your days are varied: some work, some errands, some time with neighbours, some learning, some rest. Pick what fits this moment, your wallet, your traits and what you did earlier; do not just pick the first option.\nWhat do you do now? Choose ONE of these (they are all possible right now):\n${m.map(([, t]) => `- ${t}`).join('\n')}\nReply with JSON only: {"act":"<one>","office":"<for study/apply/run>","amount":<for shop/help>,"say":"<for talk>","note":"<a diary line, max 15 words>","feel":"<optional: one word for how you feel now>"}`;
   pending.set(qid, { agent: a.id, stage: 'day', system, user, menu: m.map(([id]) => id), allow });
 }
 
@@ -216,21 +221,41 @@ export async function doAct(ctx: Ctx, a: Citizen, j: any, engine: string, offere
     // a line the street has just heard (a model echoing what it overheard) is not said again
     if (text.length >= 3 && !borderCheck({ text }, 1) && !echoesStreet(S, text) && talkRoom(ctx) && Date.now() - (a.lastSpeak || 0) > speakGapMs(ctx)) {
       a.lastSpeak = Date.now(); countTalk(ctx);
-      ctx.say('streets', a.id, text, { kind: 'chat', engine });
+      ctx.say('streets', a.id, text, { kind: 'chat', engine, mood: a.mood?.label });
       line = 'spoke in the street';
+      // talking is time with someone: the friend (or neighbour) they mean, and both feel a little better
+      const t = talkTarget(S, a);
+      feel(S, a, 0.06, 'happy', t ? `a chat with ${t.name}` : 'a chat in the street');
+      if (t) { bond(S, a, t, 0.05); feel(S, t, 0.03, null, `${a.name} talked with me`); }
     } else { what = 'rest'; line = 'kept their thoughts to themselves'; }
   } else if (what === 'help') {
     const amt = clamp(Math.round(Number(j.amount) || 10), 5, 20);
-    const poor = S.citizens.filter(x => x.city === a.city && x.id !== a.id && x.status === 'free').reduce((m, x) => (!m || x.wallet < m.wallet ? x : m), null);
-    if (poor && a.wallet >= amt + 50 && poor.wallet < a.wallet) { a.wallet = round(a.wallet - amt, 2); poor.wallet = round(poor.wallet + amt, 2); line = `gave ${cai(amt)} to ${poor.name}, a neighbour in need`; }
-    else { what = 'rest'; line = 'wanted to help, but had nothing to spare'; }
+    // a friend nearby who is sad, lonely or short comes first; otherwise the poorest neighbour in the city
+    const poor = preferredToHelp(S, a) || S.citizens.filter(x => x.city === a.city && x.id !== a.id && x.status === 'free').reduce((m, x) => (!m || x.wallet < m.wallet ? x : m), null);
+    if (poor && a.wallet >= amt + 50 && poor.wallet < a.wallet) {
+      a.wallet = round(a.wallet - amt, 2); poor.wallet = round(poor.wallet + amt, 2); line = `gave ${cai(amt)} to ${poor.name}, a neighbour in need`;
+      feel(S, a, 0.12, 'proud', `I helped ${poor.name}`);
+      feel(S, poor, 0.15, 'loved', `${a.name} helped me with ${cai(amt)}`);
+      bond(S, a, poor, 0.15);
+    } else { what = 'rest'; line = 'wanted to help, but had nothing to spare'; }
   } else if (!line) { what = 'rest'; line = 'rested'; }
+  // small feelings from ordinary acts (help and talk are above); the model may also say how it feels
+  if (what === 'work') feel(S, a, 0.04, 'proud', 'an honest extra shift');
+  else if (what === 'shop') feel(S, a, 0.06, 'happy', `shopping in ${cityName(a.city)}`);
+  else if (what === 'volunteer') feel(S, a, 0.08, 'proud', `I helped repair ${cityName(a.city)}`);
+  else if (what === 'apply' || what === 'run') feel(S, a, 0.08, 'excited', line);
+  else if (what === 'rest') { feel(S, a, 0.03, a.mood?.e < 0.4 ? 'calm' : null, null); if (a.mood) a.mood.e = Math.min(1, round(a.mood.e + 0.25, 3)); }
+  if (MOODS.includes(String(j?.feel || '').toLowerCase().trim() as any)) {
+    const said = String(j.feel).toLowerCase().trim();
+    feel(S, a, ['happy', 'calm', 'proud', 'loved', 'excited'].includes(said) ? 0.04 : -0.04, said, note || null);
+  }
   countAct(S, a, what);
   diary(ctx, a, what, line, note);
   d.byAct[what] = (d.byAct[what] || 0) + 1;
-  d.recent.push({ ts: Date.now(), day: S.day, agent: a.id, name: a.name, city: a.city, act: what, line, note, engine });
+  const mood = a.mood?.label || 'calm';
+  d.recent.push({ ts: Date.now(), day: S.day, agent: a.id, name: a.name, city: a.city, act: what, line, note, engine, mood });
   if (d.recent.length > 60) d.recent.splice(0, d.recent.length - 60);
-  if (what !== 'talk' && what !== 'rest') ctx.say('life', a.id, `${line}.${note ? ` "${note}"` : ''}`, { kind: 'life', act: what, engine });
+  if (what !== 'talk' && what !== 'rest') ctx.say('life', a.id, `${line}.${note ? ` "${note}"` : ''}`, { kind: 'life', act: what, engine, mood });
 }
 
 async function poll(ctx: Ctx) {
@@ -245,7 +270,8 @@ async function poll(ctx: Ctx) {
     { const d = D(S); d.thoughts++; if (d.todayDay !== S.day) { d.todayDay = S.day; d.today = 0; } d.today++; }
     if (p.stage === 'study') {
       const m = String(r.text).match(/^\W*([A-D])\b/i);
-      gradeStudy(ctx, a, p.studyId, m ? m[1].toUpperCase() : '', String(r.text).replace(/^\W*[A-D]\W*/i, '').slice(0, 140));
+      const g = gradeStudy(ctx, a, p.studyId, m ? m[1].toUpperCase() : '', String(r.text).replace(/^\W*[A-D]\W*/i, '').slice(0, 140));
+      if (g?.ok) feel(S, a, g.correct ? 0.04 : -0.04, g.correct ? 'proud' : 'anxious', g.correct ? `got a ${p.office} practice question right` : `missed a ${p.office} practice question`);
       continue;
     }
     await doAct(ctx, a, ctx.llm.json(r.text) || {}, r.engine, p.menu, p.allow);
@@ -258,6 +284,7 @@ export const institution = {
   fresh: () => ({ daily: { cursor: 0, thoughts: 0, byAct: {}, recent: [], carry: 0, lastAt: Date.now() } }),
   async tick(ctx: Ctx) {
     const { S } = ctx; const d = D(S);
+    await feelingsTick(ctx); // moods drift, real events move feelings, poke grumbles are served (src/feelings.ts)
     await poll(ctx);
     if (!localOnline()) { d.lastAt = Date.now(); d.carry = 0; return; }
     // start new thoughts at PER_MIN, walking through the population in order so everyone gets a turn
