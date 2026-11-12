@@ -31,10 +31,12 @@ const D = (S: State) => {
   d.cursor ??= 0; d.thoughts ||= 0; d.byAct ||= {}; d.recent ||= []; d.carry ??= 0; d.lastAt ??= Date.now(); d.volunteers ||= {};
   // v2: byAct counts what citizens really did. The v1 counters also counted refused second shifts as
   // "work" (88% of all thoughts), so they are kept apart as history instead of mixed into the new ones.
-  if (d.v !== 2 && d.v !== 3) { d.byActV1 = d.byAct; d.byAct = {}; d.v = 2; }
+  if (!(d.v >= 2)) { d.byActV1 = d.byAct; d.byAct = {}; d.v = 2; }
   // v3: v2 also counted thoughts given to citizens with nothing left to do but rest (late in the day every
   // limit is used up); those are no longer asked, so the counters start again and v2 is kept as history
   if (d.v === 2) { d.byActV2 = d.byAct; d.byAct = {}; d.v = 3; }
+  // v4: v3 ran without waking hours or a rest limit (97% rest after a late deploy); start again with both
+  if (d.v === 3) { d.byActV3 = d.byAct; d.byAct = {}; d.v = 4; }
   // diary notes written before notes were screened: screen them once, and the public recent list too
   if (!d.notesScreened) {
     d.notesScreened = true;
