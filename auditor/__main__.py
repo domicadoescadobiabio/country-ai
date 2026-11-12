@@ -3,6 +3,7 @@
     python -m auditor verify    URL|country.db        recompute the ledger hash chain
     python -m auditor recount   URL [--election N]    recount finished elections from anonymised ballots
     python -m auditor check     URL                   run the constitutional invariants once
+    python -m auditor watch     URL                   evaluate the alarm rules once
     python -m auditor monitor   URL --hours 24 --interval 3600 --out audit/run.jsonl
     python -m auditor report    audit/run.jsonl --url URL --out audit/REPORT.md
 
@@ -15,7 +16,7 @@ import json
 import os
 import sys
 
-from . import invariants, monitor, recount, report
+from . import invariants, monitor, recount, report, watch
 from .ledger import summarise, verify_chain
 from .source import ApiSource, open_source
 
@@ -49,6 +50,15 @@ def cmd_check(a) -> int:
     res = invariants.run_all(ApiSource(a.url).state())
     print(json.dumps(res, indent=2, ensure_ascii=False))
     return 0 if res["ok"] else 2
+
+
+def cmd_watch(a) -> int:
+    src = ApiSource(a.url)
+    by_kind = {k: list(src.ledger_kind(k)) for k in watch.EXPECTED_ONCE}
+    res = watch.evaluate(src.state(), src.health(), by_kind, {})
+    res.pop("opened", None), res.pop("closed", None)
+    print(json.dumps(res, indent=2, ensure_ascii=False))
+    return 0 if not res["alarms"] else 2
 
 
 def cmd_monitor(a) -> int:
@@ -91,6 +101,9 @@ def main(argv: list[str] | None = None) -> int:
     c = sub.add_parser("check", help="run the invariants once")
     c.add_argument("url", nargs="?", default=DEFAULT_URL)
     c.set_defaults(fn=cmd_check)
+    wt = sub.add_parser("watch", help="evaluate the alarm rules once (street repeats, runner, ledger duplicates, ...)")
+    wt.add_argument("url", nargs="?", default=DEFAULT_URL)
+    wt.set_defaults(fn=cmd_watch)
     m = sub.add_parser("monitor", help="observe the republic for a period")
     m.add_argument("url", nargs="?", default=DEFAULT_URL)
     m.add_argument("--hours", type=float, default=24.0)

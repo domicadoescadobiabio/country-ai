@@ -21,6 +21,7 @@ from .canon import GENESIS, entry_hash
 from .invariants import run_all
 from .recount import recount
 from .source import ApiSource
+from . import watch
 
 
 @dataclass
@@ -47,7 +48,8 @@ class ChainCursor:
         return {"ok": self.broken is None, "checked": self.checked, "new": new, "head": self.prev, "broken": self.broken}
 
 
-def observe(src: ApiSource, cursor: ChainCursor, recounted: set[int]) -> dict:
+def observe(src: ApiSource, cursor: ChainCursor, recounted: set[int], memo: dict | None = None) -> dict:
+    memo = {} if memo is None else memo
     t0 = time.time()
     obs: dict = {"ts": int(t0 * 1000)}
     try:
@@ -69,15 +71,35 @@ def observe(src: ApiSource, cursor: ChainCursor, recounted: set[int]) -> dict:
     obs["status"] = {k: sum(1 for a in citizens if a.get("status") == k) for k in ("free", "detained", "jailed", "left")}
     obs["factions"] = {k: sum(1 for a in citizens if (a.get("faction") or "civilian") == k) for k in ("civilian", "underworld")}
     obs["offices"] = {a["id"]: a.get("office") for a in citizens if a.get("office")}
+    # decisions since the last observation from the full log (the state keeps only the last 120)
+    new_decisions = st.get("decisions") or []
+    try:
+        new_decisions = list(src.decisions(after=memo.get("decisionsAfter", 0)))
+        if new_decisions:
+            memo["decisionsAfter"] = new_decisions[-1]["id"]
+    except (LookupError, ConnectionError, KeyError) as exc:
+        obs["decisionsError"] = str(exc)
     obs["engines"] = {}
-    for d in st.get("decisions") or []:
+    for d in new_decisions:
         eng = d.get("engine") or "?"
         obs["engines"][eng] = obs["engines"].get(eng, 0) + 1
     obs["recentDecisions"] = [
         {k: d.get(k) for k in ("id", "day", "agentId", "role", "type", "title", "chosen", "reason", "engine", "outcome")}
-        for d in (st.get("decisions") or [])[-12:]
+        for d in new_decisions[-12:]
     ]
     obs["invariants"] = run_all(st)
+    health = None
+    try:
+        health = src.health()
+        obs["build"] = health.get("build")
+    except Exception as exc:
+        obs["healthError"] = str(exc)
+    by_kind = None
+    try:
+        by_kind = {k: list(src.ledger_kind(k)) for k in watch.EXPECTED_ONCE}
+    except Exception as exc:
+        obs["ledgerKindError"] = str(exc)
+    obs["watch"] = watch.evaluate(st, health, by_kind, memo)
     try:
         census = src.get("/api/census") or {}
         obs["census"] = (census.get("hours") or [])[-1:] or None
@@ -105,14 +127,14 @@ def observe(src: ApiSource, cursor: ChainCursor, recounted: set[int]) -> dict:
 
 def run(base: str, out: str, hours: float, interval: float) -> int:
     src = ApiSource(base)
-    cursor, recounted = ChainCursor(), set()
+    cursor, recounted, memo = ChainCursor(), set(), {}
     end = time.time() + hours * 3600
     stop = {"now": False}
     signal.signal(signal.SIGINT, lambda *_: stop.update(now=True))
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     n = 0
     while not stop["now"]:
-        obs = observe(src, cursor, recounted)
+        obs = observe(src, cursor, recounted, memo)
         with open(out, "a", encoding="utf-8") as f:
             f.write(json.dumps(obs, ensure_ascii=False) + "\n")
         n += 1
@@ -121,6 +143,12 @@ def run(base: str, out: str, hours: float, interval: float) -> int:
               f"chain {'ok' if (obs.get('chain') or {}).get('ok') else 'BROKEN/?'} "
               f"({(obs.get('chain') or {}).get('checked')}) invariants {'ok' if not bad else bad} "
               f"recounts {len(obs.get('recounts') or [])}", flush=True)
+        w = obs.get("watch") or {}
+        by_key = {a["key"]: a for a in w.get("alarms") or []}
+        for k in w.get("opened") or []:  # transitions only: an alarm that stays open is not repeated
+            print(f"  ALARM {by_key[k]['box']}: {by_key[k]['text']}", flush=True)
+        for k in w.get("closed") or []:
+            print(f"  resolved: {k}", flush=True)
         if time.time() >= end:
             break
         time.sleep(max(1.0, min(interval, end - time.time())))

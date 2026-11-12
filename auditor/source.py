@@ -55,6 +55,32 @@ class ApiSource:
                 return
             after = entries[-1]["seq"]
 
+    def ledger_kind(self, kind: str, after: int = 0, page: int = 500) -> Iterator[dict]:
+        """Entries of one kind only (server-side filter); the chain check still needs the full ledger."""
+        while True:
+            body = self.get("/api/ledger", kind=kind, after=after, limit=page)
+            entries = (body or {}).get("entries") or []
+            yield from (e for e in entries if e.get("kind") == kind)  # ignore the filter if a server lacks it
+            if len(entries) < page:
+                return
+            after = entries[-1]["seq"]
+
+    def decisions(self, after: int = 0, type: str | None = None, agent: str | None = None, page: int = 500) -> Iterator[dict]:
+        """The full decision log (`/api/state.decisions` holds only the last 120)."""
+        params = {k: v for k, v in (("type", type), ("agent", agent)) if v}
+        while True:
+            body = self.get("/api/decisions", after=after, limit=page, **params)
+            if body is None:
+                raise LookupError("/api/decisions not available")
+            entries = body.get("entries") or []
+            yield from entries
+            if len(entries) < page:
+                return
+            after = entries[-1]["id"]
+
+    def health(self) -> dict:
+        return self.get("/api/health") or {}
+
     def ledger_head(self) -> dict:
         return (self.get("/api/ledger", after=0, limit=1) or {}).get("head") or {}
 

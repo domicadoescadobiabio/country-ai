@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 from auditor.canon import ballots_digest
-from auditor.recount import irv, parse, recount, stv
+from auditor.recount import _js_round9, irv, parse, recount, stv
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -73,6 +73,21 @@ class RecountTest(unittest.TestCase):
     def test_parse(self):
         self.assertEqual(parse(["BLANK", "x>y"]), ([["x", "y"]], 1))
 
+    def test_empty_ballot_ranks_nobody(self):
+        self.assertEqual(parse(["", "x"]), ([[], ["x"]], 0))
+        # a confirmation counts it as a voter: 1 approval of 2 voters is not a majority
+        r = recount(self.body(sorted(["", "a"]), [], kind="confirm", office="council", cands=("a",)))
+        self.assertTrue(r.ok, r.problems)
+        r = recount(self.body(sorted(["", "yes"]), ["yes"], kind="recall", cands=()))
+        self.assertTrue(r.ok, r.problems)
+
+    def test_stv_tally_is_rounded_like_the_engine(self):
+        self.assertEqual(_js_round9(2.9999999999999996), 3.0)
+        # quota 5; a's surplus 2/7 per ballot moves to b seven times, b reaches exactly 3
+        r = stv([["a", "b"]] * 7 + [["b"]] * 1 + [["c"]] * 3 + [["d"]] * 1, ["a", "b", "c", "d"], 2)
+        self.assertEqual(r["quota"], 5)
+        self.assertEqual(r["rounds"][1]["tally"]["b"], 3.0)
+
 
 @unittest.skipUnless(shutil.which("node"), "node is not installed")
 class AgainstServerTest(unittest.TestCase):
@@ -83,7 +98,9 @@ class AgainstServerTest(unittest.TestCase):
         cases = []
         for _ in range(200):
             cands = [f"c{i}" for i in range(rng.randint(2, 7))]
-            ballots = [rng.sample(cands, rng.randint(1, len(cands))) for _ in range(rng.randint(0, 40))]
+            # some ballots rank nobody (an empty anonymised ballot ''), as the engine allows
+            ballots = [rng.sample(cands, rng.randint(0 if rng.random() < 0.1 else 1, len(cands)))
+                       for _ in range(rng.randint(0, 40))]
             cases.append({"cands": cands, "ballots": ballots, "seats": rng.randint(1, 3)})
         script = (
             "import { irv, stv } from './src/elections.ts';"

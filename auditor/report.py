@@ -55,6 +55,12 @@ def build(obs: list[dict], ledger: list[dict] | None, names: dict[str, str] | No
         w(f"- Unreachable at: {', '.join(_fmt_ts(o['ts']) for o in down[:10])}.")
     w(f"- Engine step errors at the end: {last.get('stepErrors') or 0}"
       + (f" (last: `{(last.get('lastStepError') or {}).get('message')}`)" if last.get("lastStepError") else "") + ".")
+    builds = [o["build"] for o in ok_obs if o.get("build")]
+    if builds:
+        deploys = len({b.get("deployment") for b in builds})
+        starts = len({b.get("startedAt") for b in builds})
+        w(f"- Builds seen: code {', '.join(sorted({str(b.get('code')) for b in builds}))}; "
+          f"{deploys} deployment(s), {starts} server start(s), so {max(0, starts - deploys)} restart(s) without a deploy.")
     paused = [o for o in ok_obs if o.get("paused")]
     if paused:
         w(f"- The nation was paused in {len(paused)} observations.")
@@ -165,6 +171,18 @@ def build(obs: list[dict], ledger: list[dict] | None, names: dict[str, str] | No
         w(f"- day {d.get('day')} · {nm(d.get('agentId'))} ({d.get('role')}) · {d.get('title')} → **{d.get('chosen')}** "
           f"[{d.get('engine')}]: {str(d.get('reason') or '')[:160]}")
     w("")
+
+    # ---- alarms (opened/closed transitions; the last observation shows what is still open)
+    opened: dict[str, dict] = {}
+    for o in ok_obs:
+        for a in (o.get("watch") or {}).get("alarms") or []:
+            opened.setdefault(a["key"], a)
+    still = {a["key"] for a in (last.get("watch") or {}).get("alarms") or []}
+    if opened:
+        w("## Alarms")
+        for k, a in opened.items():
+            w(f"- {'**open**' if k in still else 'resolved'} · {a['box']} · {a['text']}")
+        w("")
 
     # ---- verdict
     problems = []

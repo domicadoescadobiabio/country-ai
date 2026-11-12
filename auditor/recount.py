@@ -11,6 +11,7 @@ exactly what the Audit Office would send to the Constitutional Court.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 from .canon import ballots_digest
@@ -19,14 +20,22 @@ YESNO = ("recall", "referendum", "impeachment")
 
 
 def parse(anonymised: list[str]) -> tuple[list[list[str]], int]:
-    """Anonymised ballots are 'a>b>c' strings or 'BLANK'. Returns (rankings, blank count)."""
+    """Anonymised ballots are 'a>b>c' strings or 'BLANK'. Returns (rankings, blank count).
+
+    An empty string is a cast ballot that ranks nobody: like the engine, it stays in the list (it counts
+    as a voter in a confirmation) but adds to no tally."""
     rankings, blank = [], 0
     for b in anonymised:
         if b == "BLANK":
             blank += 1
-        elif b:
-            rankings.append(b.split(">"))
+        else:
+            rankings.append(b.split(">") if b else [])
     return rankings, blank
+
+
+def _js_round9(x: float) -> float:
+    """Math.round(x * 1e9) / 1e9 as in src/elections.ts (halves round up, not to even)."""
+    return math.floor(x * 1e9 + 0.5) / 1e9
 
 
 def irv(ballots: list[list[str]], candidates: list[str]) -> dict:
@@ -76,6 +85,8 @@ def stv(raw: list[list[str]], candidates: list[str], seats: int) -> dict:
             t = top(b)
             if t is not None:
                 tally[t] += b["w"]
+        # the engine rounds before comparing, so summing order cannot turn 3 into 2.9999999
+        tally = {c: _js_round9(v) for c, v in tally.items()}
         reached = sorted([c for c in hopeful if tally[c] >= quota], key=lambda c: -tally[c])
         r = {"tally": {k: round(v, 3) for k, v in tally.items()}, "quota": quota}
         if reached:
@@ -142,8 +153,8 @@ def recount(body: dict) -> Recount | None:
         out.certified = []
         return out
     if kind in YESNO:
-        yes = sum(1 for r in rankings if r[0] == "yes")
-        no = sum(1 for r in rankings if r[0] == "no")
+        yes = sum(1 for r in rankings if r[:1] == ["yes"])
+        no = sum(1 for r in rankings if r[:1] == ["no"])
         out.recounted = ["yes"] if yes > no else ["no"]
         out.note = f"{yes} yes, {no} no, {blank} blank"
     elif kind == "confirm":

@@ -8,5 +8,5 @@ data-*/
 .claude/settings.local.json
 __pycache__/
 *.pyc
-audit/*.jsonl
-audit/*.log
+# monitor run logs and reports stay local (auditor/ is the code)
+audit/
