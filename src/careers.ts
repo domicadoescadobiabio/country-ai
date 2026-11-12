@@ -40,7 +40,68 @@ export function eligibility(S: State, a: Citizen, roleId: string) {
   if (acc < q.accuracy) missing.push(`practice accuracy ${Math.round(q.accuracy * 100)}% (now ${Math.round(acc * 100)}%)`);
   if (a.status !== 'free') missing.push('not in jail');
   if (recentCrime) missing.push('no jail time in the last 10 days');
+  // a name worth trusting: reputation falls when a citizen's own wrongs come to light (src/underworld.ts)
+  const rep = typeof a.reputation === 'number' ? a.reputation : 0.7;
+  if (rep < 0.4) missing.push(`reputation 40% or more (now ${Math.round(rep * 100)}%)`);
   return { ok: !missing.length, missing, accuracy: round(acc, 2), practiced: p.n, requirement: q };
+}
+
+// ---------------------------------------------------------------- a goal for the week (owner, 13 Nov)
+// Each citizen picks, with their own local model, one goal for the week from this menu and says why. The daily
+// prompt reminds them; the server measures progress from what really happened and closes the goal when it is
+// reached or the week is over, after which they pick a new one.
+const GOAL_DAYS = Math.max(1, Number(process.env.GOAL_DAYS) || 7);
+const GOAL_OFFICES = ['mayor', 'council', 'police', 'military'];
+export const GOAL_MENU = [...GOAL_OFFICES.map(r => `office:${r}`), 'save:100', 'save:200', 'save:400', 'help_city', 'famous', 'friend', 'study'];
+const maxBond = (a: Citizen) => Math.max(0, ...(a.bonds || []).map(b => b.w));
+const practised = (a: Citizen) => Object.values(a.practice || {}).reduce((n: number, p: any) => n + (p?.n || 0), 0);
+function goalLabel(g: any) {
+  if (g.kind === 'office') return `become ${ROLES[g.target]?.title || g.target}`;
+  if (g.kind === 'save') return `save ${cai(g.target)}`;
+  return { help_city: 'help the city 5 times', famous: 'be heard in the street 4 times', friend: 'make a close friend', study: 'answer 10 practice questions' }[g.kind] || g.kind;
+}
+// set from the model's reply; only menu goals, the reason is screened and shown on the citizen's own profile only
+export function setGoal(S: State, a: Citizen, raw: unknown, why: unknown) {
+  const pickd = String(raw || '').toLowerCase().trim();
+  if (!GOAL_MENU.includes(pickd)) return null;
+  const [kind, target] = pickd.split(':');
+  const reason = cleanText(why, 80);
+  a.goal = { kind, target: kind === 'save' ? Number(target) : target || null, why: reason && !borderCheck({ text: reason }, 2) ? reason : '', day: S.day, until: S.day + GOAL_DAYS,
+    base: { wallet: round(a.wallet, 2), practised: practised(a), maxBond: maxBond(a) }, count: 0, progress: 0, status: 'active' };
+  return a.goal;
+}
+export const needsGoal = (a: Citizen) => !a.goal || a.goal.status !== 'active';
+// what the server sees: the progress of the goal (0..1), and 'done' or 'failed' when it closes
+export function goalProgress(S: State, a: Citizen) {
+  const g = a.goal; if (!g || g.status !== 'active') return null;
+  let p = 0;
+  if (g.kind === 'office') {
+    const r = g.target; const req = requirement(r); const e = eligibility(S, a, r);
+    p = a.office === r || a.quals?.[r] ? 1 : (S.applications?.[r] || []).includes(a.id) ? 0.6 : e.ok ? 0.45 : Math.min(0.4, ((a.practice?.[r]?.n || 0) / req.practice) * 0.4);
+  } else if (g.kind === 'save') p = (a.wallet - g.base.wallet) / g.target;
+  else if (g.kind === 'help_city') p = g.count / 5;
+  else if (g.kind === 'famous') p = g.count / 4;
+  else if (g.kind === 'study') p = (practised(a) - g.base.practised) / 10;
+  else if (g.kind === 'friend') { const want = Math.min(1, Math.max(0.6, g.base.maxBond + 0.2)); p = want > g.base.maxBond ? (maxBond(a) - g.base.maxBond) / (want - g.base.maxBond) : 1; }
+  g.progress = round(clamp(p, 0, 1), 2);
+  if (g.progress >= 1) { g.status = 'done'; g.closedDay = S.day; a.goalsDone = (a.goalsDone || 0) + 1; return 'done'; }
+  if (S.day > g.until) { g.status = 'failed'; g.closedDay = S.day; return 'failed'; }
+  return null;
+}
+// count the acts that move a goal (talk in the street, helping or volunteering)
+export function goalCount(a: Citizen, act: string) {
+  const g = a.goal; if (!g || g.status !== 'active') return;
+  if ((g.kind === 'help_city' && (act === 'help' || act === 'volunteer')) || (g.kind === 'famous' && act === 'talk')) g.count++;
+}
+export function goalView(a: Citizen) {
+  const g = a?.goal; if (!g) return null;
+  return { kind: g.kind, target: g.target, label: goalLabel(g), why: g.why || '', progress: g.progress || 0, status: g.status, since: g.day, until: g.until };
+}
+// one line for the daily prompt: the goal and how far along it is, or the menu to choose one
+export function goalLine(S: State, a: Citizen) {
+  const g = a.goal;
+  if (needsGoal(a)) return `You have no goal for this week${g ? ` (last one: ${goalLabel(g)}, ${g.status})` : ''}. Choose one with "goal" (${GOAL_MENU.join('|')}) and say why in "goal_why".`;
+  return `Your goal this week: ${goalLabel(g)} (${Math.round((g.progress || 0) * 100)}% done, ${Math.max(0, g.until - S.day)} days left). Choose what brings you closer.`;
 }
 
 export function candidatesFor(ctx: Ctx, roleId: string) {
@@ -123,17 +184,23 @@ export async function act(ctx: Ctx, a: Citizen, input: any) {
 }
 
 // ---------------------------------------------------------------- study (practice questions)
-export function startStudy(ctx: Ctx, a: Citizen, roleId: string) {
+// opts.night: night school (src/daily.ts) keeps its own per-night count, so it never uses up the day's study
+export function startStudy(ctx: Ctx, a: Citizen, roleId: string, opts: { night?: boolean } = {}) {
   if (!isRole(roleId) || !ROLES[roleId].exam?.length) return { ok: false, error: `office must be one of: ${ROLE_ORDER.join(', ')}` };
-  const today = ctx.S.day;
-  if (a.studyDay !== today) { a.studyDay = today; a.studyCount = 0; }
-  if (a.studyCount >= 6) return { ok: false, error: 'max 6 practice questions per day' };
-  a.studyCount++;
+  if (!opts.night) {
+    const today = ctx.S.day;
+    if (a.studyDay !== today) { a.studyDay = today; a.studyCount = 0; }
+    if (a.studyCount >= 6) return { ok: false, error: 'max 6 practice questions per day' };
+    a.studyCount++;
+  }
   const item = buildItem(pick(ROLES[roleId].exam));
   a.studyOpen = { id: `study:${a.id}:${Date.now()}`, roleId, item, expires: Date.now() + 10 * 60000 };
   return { ok: true, question_id: a.studyOpen.id, office: roleId, question: item.q, options: item.options.map((o, i) => `${LETTERS[i]}) ${o}`), answer_format: 'one letter A-D' };
 }
-export function gradeStudy(ctx: Ctx, a: Citizen, questionId: string, letter: string, reason: string = '') {
+// opts.quiet: graded without a line in #academy (night school would flood it, and the Academy's pass/fail news
+// lives there). A wrong answer always leaves a written lesson, in the server's own words: the handbook lesson,
+// and with opts.night also the question and its right answer, so the next study or exam carries it.
+export function gradeStudy(ctx: Ctx, a: Citizen, questionId: string, letter: string, reason: string = '', opts: { quiet?: boolean; night?: boolean } = {}) {
   const s = a.studyOpen;
   if (!s || s.id !== questionId || Date.now() > s.expires) return { ok: false, error: 'no such open practice question' };
   a.studyOpen = null;
@@ -141,8 +208,12 @@ export function gradeStudy(ctx: Ctx, a: Citizen, questionId: string, letter: str
   const right = idx === s.item.correct;
   const p = ((a.practice ||= {})[s.roleId] ||= { n: 0, ok: 0 });
   p.n++; if (right) p.ok++;
-  if (!right) a.lessons[s.roleId] = [...new Set([...(a.lessons[s.roleId] || []), s.item.lesson])].slice(-12);
-  ctx.say('academy', a.id, `Studying for ${ROLES[s.roleId].title}: ${s.item.q}\n${idx >= 0 ? `${LETTERS[idx]}) ${s.item.options[idx]}` : '(no answer)'} ${right ? '[correct]' : '[wrong]'}${reason ? ` "${cleanText(reason, 140)}"` : ''}`, { kind: 'answer', ok: right, roleId: s.roleId, study: true });
+  a.lessons ||= {};
+  if (!right) {
+    const learnt = opts.night ? `${cleanText(s.item.q, 90)} Right answer: ${cleanText(s.item.options[s.item.correct], 90)}` : s.item.lesson;
+    a.lessons[s.roleId] = [...new Set([...(a.lessons[s.roleId] || []), learnt].filter(Boolean))].slice(-12);
+  }
+  if (!opts.quiet) ctx.say('academy', a.id, `Studying for ${ROLES[s.roleId].title}: ${s.item.q}\n${idx >= 0 ? `${LETTERS[idx]}) ${s.item.options[idx]}` : '(no answer)'} ${right ? '[correct]' : '[wrong]'}${reason ? ` "${cleanText(reason, 140)}"` : ''}`, { kind: 'answer', ok: right, roleId: s.roleId, study: true });
   return { ok: true, correct: right, right_answer: s.item.options[s.item.correct], lesson: right ? null : s.item.lesson, practice: p, eligibility: eligibility(ctx.S, a, s.roleId) };
 }
 

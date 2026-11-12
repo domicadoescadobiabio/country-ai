@@ -5,8 +5,9 @@
 // This runs only on the free local brain (never the paid APIs); without it, street life is the old templates.
 import { ROLES, ROLE_ORDER } from './roles.mjs';
 import { think, localOnline, localStatus } from './brains.ts';
-import { act, eligibility, startStudy, gradeStudy, isRole } from './careers.ts';
-import { LETTERS } from './academy.ts';
+import { act, eligibility, startStudy, gradeStudy, isRole, setGoal, needsGoal, goalProgress, goalCount, goalLine, goalView } from './careers.ts';
+import { MISCHIEF, mischiefMenu, doMischief, noteGossip, noteResisted, mischiefStats } from './underworld.ts';
+import { LETTERS, inExam } from './academy.ts';
 import { borderCheck } from './military.ts';
 import { CITIES } from './cities.ts';
 import { echoesStreet, safeNote } from './life.ts';
@@ -25,7 +26,7 @@ export const DAILY_LIMITS: Record<string, number> = { shop: 2, help: 2, study: 3
 const cityName = id => CITIES.find(c => c.id === id)?.name || id;
 
 type Allow = { apply: string[]; run: string[] };
-const pending = new Map<string, { agent: string; stage: 'day' | 'study'; system: string; user: string; menu?: string[]; allow?: Allow; studyId?: string; office?: string; options?: string[] }>();
+const pending = new Map<string, { agent: string; stage: 'day' | 'study' | 'night'; system: string; user: string; menu?: string[]; allow?: Allow; tempted?: string[]; studyId?: string; office?: string; options?: string[]; night?: number }>();
 const D = (S: State) => {
   S.daily ||= {};
   const d = S.daily;
@@ -93,6 +94,14 @@ const underLimit = (S: State, a: Citizen, act: string) => !(act in DAILY_LIMITS)
 const countAct = (S: State, a: Citizen, act: string) => { if (act in DAILY_LIMITS) { const c = lifeCount(S, a); c[act] = (c[act] || 0) + 1; } };
 // a diary note is written by the model: it is screened like street talk before anyone else can read it
 export { safeNote }; // lives in life.ts, which daily.ts already imports (street talk screens notes too)
+// The republic's time of day, for the public state: monitoring can tell a quiet night (citizens asleep, no
+// thoughts released) from a stuck daily life. phase uses the public words night|morning|day|evening.
+let DAY_MS = 86400000; // the republic's day length, taken from the server's config on every tick
+export function republicClock(S: State, dayMs = DAY_MS, now = Date.now()) {
+  const h = ((((now - (S.foundedAt || now)) % dayMs) + dayMs) % dayMs) / dayMs * 24;
+  const allowed = thoughtsAllowedNow({ S, cfg: { dayMs } } as any);
+  return { hour: round(h, 1), phase: h < 6 ? 'night' : h < 12 ? 'morning' : h < 18 ? 'day' : 'evening', awake: allowed > 0, thoughtsAllowed: allowed, thoughtsPerDay: THOUGHTS_PER_DAY };
+}
 function partOfDay(ctx: Ctx) {
   const { S } = ctx; const dayMs = ctx.cfg?.dayMs || 86400000;
   const h = Math.floor((((Date.now() - (S.foundedAt || Date.now())) % dayMs) + dayMs) % dayMs / dayMs * 24);
@@ -151,15 +160,34 @@ function neighbours(S: State, a: Citizen) {
 function startDay(ctx: Ctx, a: Citizen) {
   const { S } = ctx; const d = D(S);
   const qid = `life:${a.id}:${S.day}:${d.thoughts + pending.size}`;
+  pending.set(qid, { agent: a.id, stage: 'day', ...dayPrompt(ctx, a, qid) });
+}
+// the daily prompt and what it offered (exported for tests)
+export function dayPrompt(ctx: Ctx, a: Citizen, qid = `life:${a.id}`) {
+  const { S } = ctx;
   const diary = (a.diary || []).slice(-4).map(x => `- day ${x.day}${x.when ? ` ${x.when}` : ''}: ${x.line || x.act}${x.note && x.note !== x.line ? ` ("${x.note}")` : ''}`).join('\n') || '- (your first entry)';
   const done = todayActs(S, a);
   const { items, allow } = menu(ctx, a);
-  const m = shuffled(items, qid);
+  const tempted = mischiefMenu(ctx, a); // a small wrong or two, only for the tempted (src/underworld.ts)
+  const m = shuffled([...items, ...tempted], qid);
   ensureFeelings(S, a);
   const heart = feelLine(S, a); // their own mood and how the people they care about feel today (one short line)
+  goalProgress(S, a); // closes a goal whose week is over before the prompt shows it
+  const aim = goalLine(S, a);
+  const learnt = (a.lifeLessons || []).slice(-1)[0];
   const system = `You are ${a.name}, a citizen of Country AI, a nation of 10,000 AI citizens in five cities. ${a.bio} You live a real life: you work, spend, learn, help, talk and may rise to public office through the Academy and elections. Be yourself; your traits: integrity ${Math.round(a.traits.integrity * 100)}, wisdom ${Math.round(a.traits.wisdom * 100)}, diligence ${Math.round(a.traits.diligence * 100)}, restraint ${Math.round(a.traits.restraint * 100)}.`;
-  const user = `${news(ctx, a)}\n${neighbours(S, a)}\nIt is ${partOfDay(ctx)}. You: wallet ${cai(a.wallet)}, lives in ${cityName(a.city)}. ${career(S, a)}\n${heart ? `${heart}\n` : ''}Earlier today you: ${done.join(', ') || 'nothing yet'}.\nYour diary:\n${diary}\n\nLike real people, your days are varied: some work, some errands, some time with neighbours, some learning, some rest. Pick what fits this moment, your wallet, your traits and what you did earlier; do not just pick the first option.\nWhat do you do now? Choose ONE of these (they are all possible right now):\n${m.map(([, t]) => `- ${t}`).join('\n')}\nReply with JSON only: {"act":"<one>","office":"<for study/apply/run>","amount":<for shop/help>,"say":"<for talk>","note":"<a diary line, max 15 words>","feel":"<optional: one word for how you feel now>"}`;
-  pending.set(qid, { agent: a.id, stage: 'day', system, user, menu: m.map(([id]) => id), allow });
+  const user = `${news(ctx, a)}\n${neighbours(S, a)}\nIt is ${partOfDay(ctx)}. You: wallet ${cai(a.wallet)}, lives in ${cityName(a.city)}. ${career(S, a)}\n${heart ? `${heart}\n` : ''}${aim}\n${learnt ? `What you learnt: ${learnt}\n` : ''}Earlier today you: ${done.join(', ') || 'nothing yet'}.\nYour diary:\n${diary}\n\nLike real people, your days are varied: some work, some errands, some time with neighbours, some learning, some rest. Pick what fits this moment, your wallet, your traits and what you did earlier; do not just pick the first option.\nWhat do you do now? Choose ONE of these (they are all possible right now):\n${m.map(([, t]) => `- ${t}`).join('\n')}\nReply with JSON only: {"act":"<one>","office":"<for study/apply/run>","amount":<for shop/help>,"say":"<for talk>","note":"<a diary line, max 15 words>","feel":"<optional: one word for how you feel now>"${needsGoal(a) ? ',"goal":"<one goal from the list>","goal_why":"<why, max 15 words>"' : ''}}`;
+  return { system, user, menu: m.map(([id]) => id), allow, tempted: tempted.map(([id]) => id) };
+}
+
+// The practice-question prompt, by day and at night school. It carries the last few written lessons for that
+// office (server text: handbook lessons, missed questions with their right answers), so a mistake is learnt.
+function studyPrompt(a: Citizen, office: string, r: any, night = false) {
+  const lessons = (a.lessons?.[office] || []).slice(-3).map(l => `- ${cleanText(l, 200)}`).join('\n');
+  return {
+    system: `You are ${a.name}, a citizen of Country AI, studying the handbook for the office of ${ROLES[office].title}${night ? ' at night school, while the city sleeps' : ''}. Charter: ${ROLES[office].charter}${lessons ? `\nLessons you wrote down before:\n${lessons}` : ''}`,
+    user: `Practice question: ${r.question}\n${r.options.join('\n')}\n\nReply with only the letter of your answer, then " - " and one short reason.`,
+  };
 }
 
 function diary(ctx: Ctx, a: Citizen, act: string, line: string, note: string) {
@@ -169,10 +197,11 @@ function diary(ctx: Ctx, a: Citizen, act: string, line: string, note: string) {
 // offered: the acts on the menu this citizen was shown; allow: the offices offered for apply and run.
 // The model's reply is checked against both again here, and the daily limits are checked again at the
 // moment of acting, so a reply can never do more than the menu allowed.
-export async function doAct(ctx: Ctx, a: Citizen, j: any, engine: string, offered: string[] = ACTS, allow: Allow = { apply: [], run: [] }) {
+// tempted: the wrongs this citizen was offered (choosing anything else is resisting, a good choice on the record)
+export async function doAct(ctx: Ctx, a: Citizen, j: any, engine: string, offered: string[] = ACTS, allow: Allow = { apply: [], run: [] }, tempted: string[] = []) {
   const { S } = ctx; const d = D(S);
   const asked = String(j?.act || '').toLowerCase().trim();
-  let what = ACTS.includes(asked) ? asked : 'rest';
+  let what = ACTS.includes(asked) || MISCHIEF.includes(asked) ? asked : 'rest';
   let office = cleanText(j?.office, 40).toLowerCase();
   if (what === 'run' && !office && allow.run.length === 1) office = allow.run[0];
   const note = safeNote(j?.note);
@@ -182,6 +211,11 @@ export async function doAct(ctx: Ctx, a: Citizen, j: any, engine: string, offere
   if (what !== 'rest' && (!offered.includes(what) || !underLimit(S, a, what))) { line = `wanted to ${what}, but could not right now, so rested`; what = 'rest'; }
   else if ((what === 'apply' && !allow.apply.includes(office)) || (what === 'run' && !allow.run.includes(office))) {
     line = `wanted to ${what}, but not for an office open to them now, so rested`; what = 'rest';
+  } else if (MISCHIEF.includes(what) && what !== 'gossip') {
+    // a small wrong their own model chose; the details stay off the public diary and feeds (hidden ones stay hidden)
+    const r = await doMischief(ctx, a, what, j, engine);
+    if (!r.ok) { what = 'rest'; line = 'thought about doing something wrong, but did not'; }
+    else { line = 'had a day they would rather not talk about'; feel(S, a, 0.04, 'excited', 'a risky day'); }
   } else if (what === 'work') {
     const r = await act(ctx, a, { action: 'work' });
     if (r.ok) line = `worked an extra shift (+${cai(r.earned)})`;
@@ -196,9 +230,7 @@ export async function doAct(ctx: Ctx, a: Citizen, j: any, engine: string, offere
     if (!r.ok) { what = 'rest'; line = `wanted to study for ${ROLES[office].title}: ${r.error}`; }
     else {
       const qid = `life-study:${r.question_id}`;
-      pending.set(qid, { agent: a.id, stage: 'study', studyId: r.question_id, office,
-        system: `You are ${a.name}, a citizen of Country AI, studying the handbook for the office of ${ROLES[office].title}. Charter: ${ROLES[office].charter}`,
-        user: `Practice question: ${r.question}\n${r.options.join('\n')}\n\nReply with only the letter of your answer, then " - " and one short reason.`, options: r.options });
+      pending.set(qid, { agent: a.id, stage: 'study', studyId: r.question_id, office, ...studyPrompt(a, office, r), options: r.options });
       line = `studies for ${ROLES[office].title}`;
     }
   } else if (what === 'apply') {
@@ -216,13 +248,15 @@ export async function doAct(ctx: Ctx, a: Citizen, j: any, engine: string, offere
       if (d.volunteers[a.city] >= VOLUNTEERS_PER_HEALTH) { d.volunteers[a.city] -= VOLUNTEERS_PER_HEALTH; city.health = Math.min(100, city.health + 1); }
       line = `volunteered to repair ${cityName(a.city)}`;
     } else { what = 'rest'; line = 'wanted to volunteer, but found nothing to do'; }
-  } else if (what === 'talk') {
-    const text = cleanText(j.say, 200);
-    // a line the street has just heard (a model echoing what it overheard) is not said again
-    if (text.length >= 3 && !borderCheck({ text }, 1) && !echoesStreet(S, text) && talkRoom(ctx) && Date.now() - (a.lastSpeak || 0) > speakGapMs(ctx)) {
+  } else if (what === 'talk' || what === 'gossip') {
+    const text = cleanText(j.say, what === 'gossip' ? 140 : 200);
+    // a line the street has just heard (a model echoing what it overheard) is not said again; gossip passes the
+    // stricter border level (no links, no instructions, no money grabs) and is only ever speech, never a crime
+    if (text.length >= 3 && !borderCheck({ text }, what === 'gossip' ? 2 : 1) && !echoesStreet(S, text) && talkRoom(ctx) && Date.now() - (a.lastSpeak || 0) > speakGapMs(ctx)) {
       a.lastSpeak = Date.now(); countTalk(ctx);
-      ctx.say('streets', a.id, text, { kind: 'chat', engine, mood: a.mood?.label });
-      line = 'spoke in the street';
+      ctx.say('streets', a.id, text, { kind: 'chat', engine, mood: a.mood?.label, ...(what === 'gossip' ? { rumour: true } : {}) });
+      if (what === 'gossip') noteGossip(S, a);
+      line = what === 'gossip' ? 'spread a rumour in the street' : 'spoke in the street';
       // talking is time with someone: the friend (or neighbour) they mean, and both feel a little better
       const t = talkTarget(S, a);
       feel(S, a, 0.06, 'happy', t ? `a chat with ${t.name}` : 'a chat in the street');
@@ -251,13 +285,106 @@ export async function doAct(ctx: Ctx, a: Citizen, j: any, engine: string, offere
     // who care about this citizen, inside their own prompts, so model text must not travel that way
     feel(S, a, ['happy', 'calm', 'proud', 'loved', 'excited'].includes(said) ? 0.04 : -0.04, said, `feeling ${said} today`);
   }
+  // offered a wrong and chose something decent: that counts, for the record and for their name
+  if (tempted.length && !MISCHIEF.includes(what)) { noteResisted(S, a); feel(S, a, 0.03, 'proud', 'I did the right thing'); }
+  // the week's goal: picked by their own model when they have none, measured by the server after every act
+  if (needsGoal(a) && j?.goal) setGoal(S, a, j.goal, j.goal_why);
+  goalCount(a, what);
+  const closed = goalProgress(S, a);
+  if (closed === 'done') { feel(S, a, 0.25, 'proud', `I reached my goal: ${goalView(a).label}`); diary(ctx, a, 'goal', `reached the week's goal: ${goalView(a).label}`, ''); }
+  if (closed === 'failed') feel(S, a, -0.15, 'sad', `I missed my goal: ${goalView(a).label}`);
   countAct(S, a, what);
-  diary(ctx, a, what, line, note);
+  // a wrong stays a secret in public: no model note about it in the diary or the recent list (both are public)
+  // (the kind of wrong is counted in byAct, a total, but never shown next to a citizen's name)
+  const secret = MISCHIEF.includes(what) && what !== 'gossip';
+  const shown = secret ? '' : note; const shownAct = secret ? 'private' : what;
+  diary(ctx, a, shownAct, line, shown);
   d.byAct[what] = (d.byAct[what] || 0) + 1;
   const mood = a.mood?.label || 'calm';
-  d.recent.push({ ts: Date.now(), day: S.day, agent: a.id, name: a.name, city: a.city, act: what, line, note, engine, mood });
+  d.recent.push({ ts: Date.now(), day: S.day, agent: a.id, name: a.name, city: a.city, act: shownAct, line, note: shown, engine, mood });
   if (d.recent.length > 60) d.recent.splice(0, d.recent.length - 60);
-  if (what !== 'talk' && what !== 'rest') ctx.say('life', a.id, `${line}.${note ? ` "${note}"` : ''}`, { kind: 'life', act: what, engine, mood });
+  if (what !== 'talk' && what !== 'rest' && !MISCHIEF.includes(what)) ctx.say('life', a.id, `${line}.${note ? ` "${note}"` : ''}`, { kind: 'life', act: what, engine, mood });
+}
+
+// ---------------------------------------------------------------- night school (owner, 13 Nov)
+// From 20:00 to 06:00 republic time citizens sleep and the local GPU would sit idle: they take turns at
+// practice questions instead, on the free local brain only (paid: false; nothing runs while it is offline).
+// Its own counters: it never uses the day's thoughts, the day's study limit, or day byAct. The ones closest
+// to an office go first (applicants, candidates, officials who failed a drill or have low skill, citizens who
+// already study), everyone else in turn. A wrong answer leaves a lesson in the server's words.
+const NIGHT_PER_MIN = clamp(Number(process.env.LIFE_NIGHT_PER_MIN) || 35, 1, 600);
+const NIGHT_STUDY = clamp(Number(process.env.LIFE_NIGHT_STUDY) || 2, 1, 20);
+const NIGHT_IN_FLIGHT = 12;
+const ENTRY_OFFICES = ['council', 'mayor', 'police', 'military'];
+const N = (S: State) => {
+  const d = D(S); const n = (d.night ||= {});
+  n.studied ??= 0; n.correct ??= 0; n.key ??= null; n.tonight ??= 0; n.tonightRight ??= 0; n.people ??= 0;
+  n.carry = Number.isFinite(n.carry) ? n.carry : 0; n.lastAt ??= Date.now(); n.cursor ??= 0; n.reported ??= null;
+  return n;
+};
+// which night it is: 20:00 on day N to 06:00 on day N+1 is night N; null in daytime
+export function nightOf(S: State, dayMs = DAY_MS, now = Date.now()) {
+  const t = now - (S.foundedAt || now); const day = Math.floor(t / dayMs) + 1;
+  const h = (((t % dayMs) + dayMs) % dayMs) / dayMs * 24;
+  return h >= 20 ? day : h < 6 ? day - 1 : null;
+}
+// the office a citizen studies for: one they applied for, the one they hold, the one they practise most, else
+// an entry office picked from their id
+function studyTarget(S: State, a: Citizen) {
+  const ok = (r: string) => isRole(r) && ROLES[r].exam?.length;
+  const applied = Object.entries(S.applications || {}).find(([r, ids]) => ok(r) && (ids as string[]).includes(a.id));
+  if (applied) return applied[0];
+  if (a.office && ok(a.office)) return a.office;
+  const practised = Object.entries(a.practice || {}).filter(([r]) => ok(r)).sort((x: any, y: any) => y[1].n - x[1].n)[0];
+  if (practised) return practised[0];
+  let h = 0; for (const c of a.id) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  return ENTRY_OFFICES.filter(ok)[h % ENTRY_OFFICES.length] || STUDY_OFFICES[0];
+}
+const nightWho = (S: State, a: Citizen) => a && a.status === 'free' && !a.brain && (a.faction || 'civilian') !== 'underworld' && !inExam(S, a.id);
+// 0 = closest to an office, 1 = already studying, 2 = everyone else
+function nightRank(S: State, a: Citizen) {
+  if (Object.values(S.applications || {}).some(ids => (ids as string[]).includes(a.id))) return 0;
+  if ((S.elections?.list || []).some(e => !['done', 'failed'].includes(e.stage) && (e.candidates || []).some(c => c.id === a.id))) return 0;
+  if (a.office && ((a.drills || []).slice(-1)[0]?.passed === false || (a.skill?.[a.office] ?? 1) < 0.5)) return 0;
+  return Object.values(a.practice || {}).some((p: any) => p?.n > 0) ? 1 : 2;
+}
+let nightPlan = { key: null as number | null, ids: [] as string[], i: 0 };
+function planNight(S: State, key: number) {
+  const n = N(S); const list = S.citizens; const start = n.cursor % Math.max(1, list.length);
+  const ordered: [number, number, string][] = [];
+  for (let k = 0; k < list.length; k++) { const a = list[(start + k) % list.length]; if (nightWho(S, a) && (a.office || who(S, a))) ordered.push([nightRank(S, a), k, a.id]); }
+  ordered.sort((x, y) => x[0] - y[0] || x[1] - y[1]);
+  nightPlan = { key, ids: ordered.map(x => x[2]), i: 0 };
+  n.cursor = (n.cursor + 997) % Math.max(1, list.length); // tomorrow night the round-robin part starts elsewhere
+}
+function nightSchool(ctx: Ctx) {
+  const { S } = ctx; const n = N(S); const key = nightOf(S);
+  if (key == null || !localOnline()) { n.carry = 0; n.lastAt = Date.now(); return; }
+  if (n.key !== key) { n.key = key; n.tonight = 0; n.tonightRight = 0; n.people = 0; }
+  if (nightPlan.key !== key) planNight(S, key);
+  n.carry = Math.min(NIGHT_IN_FLIGHT, n.carry + (Date.now() - n.lastAt) / 60000 * NIGHT_PER_MIN); n.lastAt = Date.now();
+  let inFlight = [...pending.values()].filter(p => p.stage === 'night').length;
+  for (let tries = 0; n.carry >= 1 && inFlight < NIGHT_IN_FLIGHT && tries < 200 && nightPlan.i < nightPlan.ids.length * NIGHT_STUDY; tries++) {
+    const id = nightPlan.ids[nightPlan.i % nightPlan.ids.length]; nightPlan.i++;
+    const a = ctx.agent(id);
+    if (!nightWho(S, a) || [...pending.values()].some(p => p.agent === id)) continue;
+    if (a.night?.key !== key) a.night = { key, n: 0, diary: false };
+    if (a.night.n >= NIGHT_STUDY) continue;
+    const office = studyTarget(S, a);
+    const r = startStudy(ctx, a, office, { night: true });
+    if (!r.ok) continue;
+    a.night.n++; if (a.night.n === 1) n.people++;
+    pending.set(`night:${r.question_id}`, { agent: a.id, stage: 'night', studyId: r.question_id, office, night: key, ...studyPrompt(a, office, r, true), options: r.options });
+    n.carry -= 1; inFlight++;
+  }
+}
+// one line in #life the morning after, never one per question
+function nightReport(ctx: Ctx) {
+  const { S } = ctx; const n = N(S);
+  if (nightOf(S) != null || n.key == null || n.reported === n.key || !n.tonight) return;
+  n.reported = n.key;
+  const rate = Math.round((n.tonightRight || 0) / n.tonight * 100);
+  ctx.say('life', 'state', `Night school: ${n.people} citizens answered ${n.tonight} practice questions while the cities slept, ${rate}% right.`, { kind: 'night', act: 'study' });
 }
 
 async function poll(ctx: Ctx) {
@@ -269,6 +396,16 @@ async function poll(ctx: Ctx) {
     if (r.pending) continue;
     pending.delete(qid);
     if (!r.text) continue; // the local brain went away: this thought is dropped, nothing paid
+    if (p.stage === 'night') {
+      const m = String(r.text).match(/^\W*([A-D])\b/i);
+      const g = gradeStudy(ctx, a, p.studyId, m ? m[1].toUpperCase() : '', '', { quiet: true, night: true });
+      if (!g?.ok) continue;
+      const n = N(S); n.studied++; if (g.correct) n.correct++;
+      if (n.key === p.night) { n.tonight++; if (g.correct) n.tonightRight = (n.tonightRight || 0) + 1; }
+      feel(S, a, g.correct ? 0.03 : -0.03, g.correct ? 'proud' : 'anxious', g.correct ? `studied for ${ROLES[p.office].title} at night` : `still learning ${ROLES[p.office].title} rules`);
+      if (a.night?.key === p.night && !a.night.diary) { a.night.diary = true; diary(ctx, a, 'night_study', `studied for ${ROLES[p.office].title} at night school`, ''); }
+      continue;
+    }
     { const d = D(S); d.thoughts++; if (d.todayDay !== S.day) { d.todayDay = S.day; d.today = 0; } d.today++; }
     if (p.stage === 'study') {
       const m = String(r.text).match(/^\W*([A-D])\b/i);
@@ -276,7 +413,7 @@ async function poll(ctx: Ctx) {
       if (g?.ok) feel(S, a, g.correct ? 0.04 : -0.04, g.correct ? 'proud' : 'anxious', g.correct ? `got a ${p.office} practice question right` : `missed a ${p.office} practice question`);
       continue;
     }
-    await doAct(ctx, a, ctx.llm.json(r.text) || {}, r.engine, p.menu, p.allow);
+    await doAct(ctx, a, ctx.llm.json(r.text) || {}, r.engine, p.menu, p.allow, p.tempted || []);
   }
 }
 
@@ -286,9 +423,12 @@ export const institution = {
   fresh: () => ({ daily: { cursor: 0, thoughts: 0, byAct: {}, recent: [], carry: 0, lastAt: Date.now() } }),
   async tick(ctx: Ctx) {
     const { S } = ctx; const d = D(S);
+    DAY_MS = ctx.cfg?.dayMs || DAY_MS;
     await feelingsTick(ctx); // moods drift, real events move feelings, poke grumbles are served (src/feelings.ts)
     await poll(ctx);
-    if (!localOnline()) { d.lastAt = Date.now(); d.carry = 0; return; }
+    nightReport(ctx);
+    nightSchool(ctx); // only at night and only with the local brain online; does nothing otherwise
+    if (!localOnline() || nightOf(S) != null) { d.lastAt = Date.now(); d.carry = 0; return; } // asleep: no day thoughts
     // start new thoughts at PER_MIN, walking through the population in order so everyone gets a turn
     d.carry = Math.min(IN_FLIGHT, d.carry + (Date.now() - d.lastAt) / 60000 * PER_MIN); d.lastAt = Date.now();
     const n = S.citizens.length;
@@ -305,5 +445,7 @@ export const institution = {
     }
   },
   stats: (S: State) => ({ lifeThoughts: S.daily?.todayDay === S.day ? S.daily.today || 0 : 0 }),
-  publicState: (S: State) => ({ daily: { thoughts: S.daily?.thoughts || 0, byAct: S.daily?.byAct || {}, recent: (S.daily?.recent || []).slice(-20), inFlight: pending.size, perMin: PER_MIN, local: localStatus().online } }),
+  publicState: (S: State) => ({ daily: { thoughts: S.daily?.thoughts || 0, byAct: S.daily?.byAct || {}, recent: (S.daily?.recent || []).slice(-20), inFlight: pending.size, perMin: PER_MIN, local: localStatus().online, clock: republicClock(S),
+    mischief: mischiefStats(S),
+    night: (n => ({ studied: n?.studied || 0, correct: n?.correct || 0, tonight: n && n.key === nightOf(S) ? n.tonight || 0 : 0, perMin: NIGHT_PER_MIN, perCitizen: NIGHT_STUDY }))(S.daily?.night) } }),
 };

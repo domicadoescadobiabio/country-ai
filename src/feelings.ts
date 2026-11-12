@@ -11,6 +11,7 @@
 //   a.pokes = { day, n }
 import { think, localOnline } from './brains.ts';
 import { borderCheck } from './military.ts';
+import { mischiefConsequence } from './underworld.ts';
 import { cleanText, clamp, round } from './util.ts';
 import type { Ctx, State, Citizen } from './types.ts';
 
@@ -333,8 +334,11 @@ function incidents(ctx: Ctx, now: number) {
     const victim = typeof inc.victim === 'string' ? citizenOf(S, inc.victim) : null;
     const perps = (inc.perps || []).map(p => citizenOf(S, p)).filter(Boolean);
     if (was === undefined && victim && inc.type === 'theft') feel(S, victim, -0.3, victim.mood?.e < 0.4 ? 'anxious' : 'annoyed', `someone took ${Math.round(inc.amount || 0)} CAI from my wallet`, now);
-    if (inc.status === 'trial') for (const p of perps) { feel(S, p, -0.35, 'anxious', 'I was arrested', now); newsForFriends(S, p, -0.2, 'sad', 'was arrested', now); }
-    if (inc.status === 'convicted') for (const p of perps) { feel(S, p, -0.4, 'sad', 'I was sent to jail', now); newsForFriends(S, p, -0.25, 'sad', 'was sent to jail', now); }
+    if (was === undefined && victim && inc.type === 'fraud') feel(S, victim, -0.25, 'annoyed', `I was cheated out of ${Math.round(inc.amount || 0)} CAI`, now);
+    // a citizen's own mischief that comes to light: reputation, a lesson, and a changed streak (src/underworld.ts)
+    if (inc.mischief && was === 'hidden' && inc.status === 'open') for (const p of perps) mischiefConsequence(S, p, inc, 'uncovered');
+    if (inc.status === 'trial') for (const p of perps) { feel(S, p, -0.35, 'anxious', 'I was arrested', now); newsForFriends(S, p, -0.2, 'sad', 'was arrested', now); mischiefConsequence(S, p, inc, 'trial'); }
+    if (inc.status === 'convicted') for (const p of perps) { feel(S, p, -0.4, 'sad', 'I was sent to jail', now); newsForFriends(S, p, -0.25, 'sad', 'was sent to jail', now); mischiefConsequence(S, p, inc, 'convicted'); }
     if (['acquitted', 'pardoned'].includes(inc.status)) for (const p of perps) { feel(S, p, 0.4, 'happy', inc.status === 'pardoned' ? 'I was pardoned' : 'I was found not guilty', now); newsForFriends(S, p, 0.2, 'happy', 'is free again', now); }
     if (victim && ['trial', 'convicted'].includes(inc.status)) for (const p of perps) bond(S, victim, p, -0.5, 'rival');
   }

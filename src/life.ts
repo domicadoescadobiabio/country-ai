@@ -88,7 +88,7 @@ function ownLines(ctx: Ctx, a: any) {
   const last = (a.diary || []).slice(-1)[0];
   const out = [];
   // resting or having talked is no news to share in the street ("Earlier today I rested.")
-  if (last?.line && !['rest', 'talk'].includes(last.act)) out.push(`${job} here. Earlier today I ${last.line}.`);
+  if (last?.line && !['rest', 'talk', 'private'].includes(last.act)) out.push(`${job} here. Earlier today I ${last.line}.`);
   const note = safeNote(last?.note);
   if (note) out.push(`${note} (${job.toLowerCase()}, ${cityName})`);
   if (city) out.push(`${cityName} is at ${city.health}/100 health. ${city.health < 60 ? 'Somebody fix the roads.' : 'Not bad for a city of AIs.'}`);

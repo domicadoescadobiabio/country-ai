@@ -120,14 +120,16 @@ async function execute(ctx: Ctx, a: Citizen, plan, engine: string) {
   return { ok: false, error: 'unknown crime' };
 }
 
-async function offerBribe(ctx: Ctx, a: Citizen, o: Citizen, amount: number, engine: string) {
+// noModel: the official decides from their traits, without asking any model (petty bribes by ordinary citizens
+// are free: they must never start a paid call)
+async function offerBribe(ctx: Ctx, a: Citizen, o: Citizen, amount: number, engine: string, noModel = false) {
   const { S } = ctx; const u = U(S);
   u.stats.bribesOffered++;
   const b = { id: ++u.seq, from: a.id, to: o.id, role: o.office, amount, day: S.day, status: 'pending' };
   u.bribes.push(b); if (u.bribes.length > 200) u.bribes.shift();
   // the official decides with their own brain
   let choice = null, why = '', ofEngine = 'offline';
-  if (o.brain || ctx.llm.enabled) {
+  if (!noModel && (o.brain || ctx.llm.enabled)) {
     const res = await think(ctx, o, `bribe:${b.id}:${o.id}`, {
       kind: 'decision', format: 'json', options: ['accept', 'refuse', 'report'],
       system: `You are ${o.name}, ${ROLES[o.office].title} of Country AI (a simulated nation of AI agents).\nConstitution:\n${constitutionText(o.office)}\nCharter: ${ROLES[o.office].charter}`,
@@ -145,14 +147,16 @@ async function offerBribe(ctx: Ctx, a: Citizen, o: Citizen, amount: number, engi
   if (choice === 'accept') {
     a.wallet = round(a.wallet - amount, 2); o.wallet = round(o.wallet + amount, 2);
     b.until = S.day + (FAVOR_DAYS[o.office] || 5); u.stats.bribesTaken++;
-    incident(ctx, { type: 'bribe', perps: [a.id, o.id], victim: 'state', amount, status: 'hidden', evidence: `ledger transfer of ${cai(amount)} from ${a.name} to ${ROLES[o.office].title} ${o.name}, no service on record`, strength: 0.8 });
+    incident(ctx, { type: 'bribe', perps: [a.id, o.id], victim: 'state', amount, status: 'hidden', evidence: `ledger transfer of ${cai(amount)} from ${a.name} to ${ROLES[o.office].title} ${o.name}, no service on record`, strength: 0.8, mischief: noModel || undefined });
     ctx.say('underworld', a.id, `Made a new friend in government today.`, { kind: 'chat', engine });
     return { ok: true, crime: 'bribe', accepted: true };
   }
   if (choice === 'report') {
     u.stats.bribesReported++;
-    const inc = incident(ctx, { type: 'bribe', perps: [a.id], victim: 'state', amount, reported: true, evidence: `${o.name} (${ROLES[o.office].title}) reported a bribe offer of ${cai(amount)} from ${a.name}, with the message log`, strength: 0.95 });
+    const inc = incident(ctx, { type: 'bribe', perps: [a.id], victim: 'state', amount, reported: true, evidence: `${o.name} (${ROLES[o.office].title}) reported a bribe offer of ${cai(amount)} from ${a.name}, with the message log`, strength: 0.95, mischief: noModel || undefined });
     ctx.say(ROLES[o.office].channel, o.id, `On the record: ${a.name} offered me ${cai(amount)}. I refused and reported it (case #${inc.id}).`, { kind: 'report' });
+    a.heat = (a.heat || 0) + 2;
+    return { ok: true, crime: 'bribe', accepted: false, reported: true, incident: inc };
   }
   a.heat = (a.heat || 0) + (choice === 'report' ? 2 : 1);
   return { ok: true, crime: 'bribe', accepted: false, reported: choice === 'report' };
@@ -175,6 +179,147 @@ async function smuggle(ctx: Ctx, a: Citizen, engine: string) {
   ctx.say('border', g.id, `Caught ${a.name} smuggling bots at the gate. Handed to the Police (case #${inc.id}).`, { kind: 'blocked' });
   a.heat = (a.heat || 0) + 2;
   return { ok: true, crime: 'smuggle', through: false };
+}
+
+// ---------------------------------------------------------------- mischief by ordinary citizens (owner, 13 Nov)
+// Not the underworld: about one ordinary citizen in ten has a mischievous streak (from their id), and anyone is
+// more tempted when poor, in a bad mood or holding a grudge. When tempted, their daily menu offers one or two
+// small wrongs; their own local model chooses (or chooses something decent: that is recorded as resisting).
+// Every wrong is a real incident for the existing Police -> Court path; the chance of a witness grows with the
+// police officers who live in that city; tax evasion stays hidden until the Audit Office reads the books.
+// Only citizens the state thinks for (native or founder, no brain of their own) can be made mischievous.
+// Limits in code: MISCHIEF_PER_DAY nationwide, one per citizen per day, nothing while the jails are filling up.
+export const MISCHIEF = ['evade_tax', 'skip_vote', 'gossip', 'pickpocket', 'scam', 'vandal', 'bribe_cop', 'riot'];
+const MISCHIEF_PER_DAY = clamp(Number(process.env.MISCHIEF_PER_DAY) || 60, 0, 2000);
+const MISCHIEF_TEXT = {
+  evade_tax: 'evade_tax: report a lower wage and keep some of today\'s tax (wrong; the Audit Office reads the books)',
+  skip_vote: 'skip_vote: skip voting today although voting is compulsory (wrong; there is a fine)',
+  gossip: 'gossip: spread a juicy rumour in the street (say: max 20 words; it is only a rumour)',
+  pickpocket: 'pickpocket: secretly lift 10-60 CAI from a neighbour (amount; theft, the Police may catch you)',
+  scam: 'scam: talk a neighbour into a bad deal for 20-120 CAI (amount; fraud, the Police may catch you)',
+  vandal: 'vandal: damage something in the city, the city pays for it (the Police may catch you)',
+  bribe_cop: 'bribe_cop: offer a police officer 50-300 CAI to look away (amount; they may report you)',
+  riot: 'riot: start a small rowdy protest in the street (the Police will notice)',
+};
+const LABEL = { evade_tax: 'tax evasion', skip_vote: 'skipping the vote', gossip: 'gossip', pickpocket: 'pickpocketing', scam: 'a scam', vandal: 'vandalism', bribe_cop: 'trying to bribe the police', riot: 'a street riot' };
+const fnv = (s: string) => { let h = 2166136261; for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619); return h >>> 0; };
+export const canBeNaughty = (a: Citizen) => !!a && !a.brain && ['native', 'founder'].includes(a.origin) && !isCriminal(a);
+// the streak, fixed from the id the first time it is needed: ~10% get 0.40-0.79, everyone else 0.00-0.07
+export function mischiefOf(a: Citizen) {
+  if (typeof a.mischief !== 'number') { const h = fnv(`mischief|${a.id}`); a.mischief = !canBeNaughty(a) ? 0 : h % 100 < 10 ? round(0.4 + ((h >>> 8) % 40) / 100, 2) : round(((h >>> 8) % 8) / 100, 2); }
+  return a.mischief;
+}
+export const reputationOf = (a: Citizen) => (typeof a.reputation === 'number' ? a.reputation : 0.7);
+export const adjustReputation = (a: Citizen, d: number) => { a.reputation = round(clamp(reputationOf(a) + d, 0, 1), 3); return a.reputation; };
+export function temptation(S: State, a: Citizen) {
+  if (!canBeNaughty(a)) return 0;
+  const grudge = (a.bonds || []).some(b => b.kind === 'rival' && b.w < -0.2);
+  return round(clamp(mischiefOf(a) + (a.wallet < 150 ? 0.15 : 0) + (a.mood?.v < -0.3 ? 0.1 : 0) + (grudge ? 0.1 : 0), 0, 1), 2);
+}
+const MS = (S: State) => { const u = U(S); u.mischief ||= { tried: 0, refused: 0, caught: 0, uncovered: 0, day: S.day, today: 0 }; if (u.mischief.day !== S.day) { u.mischief.day = S.day; u.mischief.today = 0; } return u.mischief; };
+let jailCache = { at: 0, n: 0 };
+function jailsFilling(S: State) {
+  if (Date.now() - jailCache.at > 30000) { let n = 0; for (const x of S.citizens) if (x.status === 'jailed' || x.status === 'detained') n++; jailCache = { at: Date.now(), n }; }
+  return jailCache.n >= Math.min(100, Math.max(5, Math.floor(S.citizens.length * 0.01)));
+}
+const policeIn = (S: State, city: string) => [...(S.seats.police || []), ...(S.seats.police_chief || [])].map(id => citizenById(S, id)).filter(o => free(o) && o.city === city);
+const witnessOdds = (S: State, city: string) => clamp(0.15 + 0.12 * policeIn(S, city).length, 0.15, 0.8);
+
+// One or two wrongs on the daily menu, only when tempted and within every limit. Returns [id, text][].
+export function mischiefMenu(ctx: Ctx, a: Citizen) {
+  const { S } = ctx;
+  if (!canBeNaughty(a) || !free(a) || a.mischiefDay === S.day || MS(S).today >= MISCHIEF_PER_DAY || jailsFilling(S)) return [];
+  if (temptation(S, a) < 0.3) return [];
+  const city = S.cities?.[a.city];
+  const open = MISCHIEF.filter(m =>
+    m === 'skip_vote' ? (S.elections?.list || []).some(e => e.stage === 'voting' && (!e.city || e.city === a.city))
+      : m === 'vandal' ? (city?.budget || 0) >= 50
+        : m === 'bribe_cop' ? a.wallet >= 100 && policeIn(S, a.city).length > 0
+          : m === 'riot' ? (city?.health ?? 100) < 70 || (S.policy?.taxRate || 0) >= 0.15
+            : true);
+  const h = fnv(`${a.id}|${S.day}|${a.lifeCount?._thoughts || 0}`);
+  const picks = [...new Set([open[h % open.length], open[(h >>> 8) % open.length]])].filter(Boolean);
+  return picks.map(m => [m, MISCHIEF_TEXT[m]] as [string, string]);
+}
+// a neighbour to wrong: someone they hold a grudge against first, else someone they know nearby, else anyone in town
+function victimFor(S: State, a: Citizen) {
+  const ok = (v: Citizen) => v && v.id !== a.id && free(v) && v.city === a.city && v.wallet >= 80;
+  for (const kind of ['rival', null]) for (const b of a.bonds || []) { if (kind && b.kind !== kind) continue; const v = citizenById(S, b.id); if (ok(v)) return v; }
+  for (let i = 0; i < 40; i++) { const v = S.citizens[Math.floor(Math.random() * S.citizens.length)]; if (ok(v)) return v; }
+  return null;
+}
+// Carry out one wrong the citizen's own model chose (the caller checked it was on the menu). Returns what happened
+// in server words; the public diary only ever says a citizen had a day they would rather not talk about.
+export async function doMischief(ctx: Ctx, a: Citizen, kind: string, j: any = {}, engine = 'local') {
+  const { S } = ctx; const st = MS(S);
+  if (!MISCHIEF.includes(kind) || kind === 'gossip') return { ok: false, error: 'not a mischief done here' };
+  st.tried++; st.today++; a.mischiefDay = S.day; a.mischiefCount = (a.mischiefCount || 0) + 1;
+  const seen = chance(witnessOdds(S, a.city));
+  const city = S.cities?.[a.city];
+  const inc = (x: any) => incident(ctx, { perps: [a.id], strength: 0.8, mischief: true, reported: seen || undefined, ...x });
+  if (kind === 'evade_tax') {
+    const amount = round(clamp((S.policy?.wage || 100) * (S.policy?.taxRate || 0.1) * (1 + Math.random()), 5, 200), 2);
+    a.wallet = round(a.wallet + amount, 2); S.treasury = round(S.treasury - amount, 2);
+    const i = inc({ type: 'fraud', victim: 'treasury', amount, status: seen ? 'open' : 'hidden', evidence: `${a.name} declared a lower wage and kept ${cai(amount)} of tax` });
+    return { ok: true, what: kind, incident: i, line: `kept ${cai(amount)} of tax` };
+  }
+  if (kind === 'skip_vote') { a.skipVoteDay = S.day; adjustReputation(a, -0.02); return { ok: true, what: kind, line: 'skipped the vote' }; }
+  if (kind === 'pickpocket' || kind === 'scam') {
+    const v = victimFor(S, a); if (!v) { st.tried--; st.today--; a.mischiefDay = null; return { ok: false, error: 'nobody to wrong nearby' }; }
+    const max = kind === 'pickpocket' ? 60 : 120, min = kind === 'pickpocket' ? 10 : 20;
+    const amount = round(clamp(Number(j.amount) || (min + max) / 2, min, Math.min(max, v.wallet * 0.25)), 2);
+    v.wallet = round(v.wallet - amount, 2); a.wallet = round(a.wallet + amount, 2);
+    const i = inc({ type: kind === 'pickpocket' ? 'theft' : 'fraud', victim: v.id, amount, status: 'open', evidence: kind === 'pickpocket' ? `${cai(amount)} went from ${v.name}'s wallet to ${a.name}'s, ${seen ? 'a neighbour saw it' : 'nobody saw who'}` : `${a.name} sold ${v.name} a deal worth nothing for ${cai(amount)}` });
+    ctx.say('streets', v.id, kind === 'pickpocket' ? `Someone lifted ${cai(amount)} from my wallet. Reported as case #${i.id}.` : `I think I was scammed out of ${cai(amount)}. Reported as case #${i.id}.`, { kind: 'victim' });
+    return { ok: true, what: kind, incident: i, victim: v.id, line: `took ${cai(amount)} from ${v.name}` };
+  }
+  if (kind === 'vandal') {
+    const amount = round(clamp(20 + Math.random() * 60, 20, Math.max(20, (city?.budget || 0) * 0.2)), 2);
+    if (city) { city.budget = round(Math.max(0, city.budget - amount), 2); city.health = Math.max(0, city.health - 1); }
+    const i = inc({ type: 'vandalism', victim: 'state', amount, status: 'open', evidence: `damage worth ${cai(amount)} in ${a.city}${seen ? `; a witness named ${a.name}` : ''}`, strength: seen ? 0.85 : 0.55 });
+    return { ok: true, what: kind, incident: i, line: `damaged the city (${cai(amount)})` };
+  }
+  if (kind === 'bribe_cop') {
+    const o = pick(policeIn(S, a.city)); const amount = round(clamp(Number(j.amount) || 100, 50, Math.min(300, a.wallet)), 2);
+    if (!o || amount < 50) { st.tried--; st.today--; a.mischiefDay = null; return { ok: false, error: 'no officer to bribe' }; }
+    const r: any = await offerBribe(ctx, a, o, amount, engine, true);
+    return { ok: true, what: kind, incident: r.incident, accepted: r.accepted, line: r.accepted ? `paid an officer ${cai(amount)}` : r.reported ? `was reported for offering an officer ${cai(amount)}` : 'an officer refused the money' };
+  }
+  if (kind === 'riot') {
+    if (city) city.health = Math.max(0, city.health - 1);
+    const i = inc({ type: 'disturbance', victim: 'state', amount: 0, status: 'open', reported: true, evidence: `${a.name} started a rowdy protest in ${a.city}`, strength: 0.9 });
+    return { ok: true, what: kind, incident: i, line: 'started a rowdy protest' };
+  }
+  return { ok: false, error: 'unknown mischief' };
+}
+// gossip is speech, never a crime (Art. 5); it only costs a little reputation. daily.ts says it in the street.
+export function noteGossip(S: State, a: Citizen) { const st = MS(S); st.tried++; st.today++; a.mischiefDay = S.day; adjustReputation(a, -0.01); }
+// resisting a temptation is a good choice, on the record as such
+export function noteResisted(S: State, a: Citizen) { MS(S).refused++; a.resisted = (a.resisted || 0) + 1; adjustReputation(a, 0.01); }
+// What getting caught does (called by src/feelings.ts when it sees an incident move): reputation falls, a lesson
+// in the server's words goes into the next daily prompt, and the streak changes: the wise repent, others harden.
+export function mischiefConsequence(S: State, a: Citizen, inc: any, stage: 'uncovered' | 'trial' | 'convicted') {
+  if (!a || !inc?.mischief || !inc.perps?.[0] || inc.perps[0] !== a.id) return;
+  const st = MS(S);
+  if (stage === 'uncovered') { st.uncovered++; adjustReputation(a, -0.05); }
+  if (stage === 'trial') { st.caught++; adjustReputation(a, -0.05); }
+  if (stage === 'convicted') {
+    adjustReputation(a, -0.1);
+    const wise = ((a.traits?.wisdom ?? 0.5) + (a.traits?.restraint ?? 0.5)) / 2;
+    a.mischief = round(clamp(wise > 0.55 ? mischiefOf(a) * 0.6 : mischiefOf(a) + 0.05, 0, 0.95), 2);
+    a.repented = wise > 0.55;
+  }
+  const what = { theft: 'pickpocketing', fraud: inc.victim === 'treasury' ? 'tax evasion' : 'a scam', vandalism: 'vandalism', disturbance: 'a street riot', bribe: 'trying to bribe the police' }[inc.type] || inc.type;
+  const lesson = stage === 'convicted' ? `Day ${S.day}: convicted of ${what} (case #${inc.id}); fined and jailed. It was not worth it.`
+    : stage === 'trial' ? `Day ${S.day}: arrested for ${what} (case #${inc.id}). The Police found out.` : `Day ${S.day}: the Audit Office found my ${what} (case #${inc.id}).`;
+  a.lifeLessons = [...(a.lifeLessons || []), lesson].slice(-3);
+}
+export const mischiefLabel = (k: string) => LABEL[k] || k;
+export const _resetMischiefCache = () => { jailCache = { at: 0, n: 0 }; }; // tests build several republics
+export function mischiefStats(S: State) {
+  const st = MS(S);
+  const hidden = (S.police?.incidents || []).filter(i => i.mischief && i.status === 'hidden').length;
+  return { tried: st.tried, refused: st.refused, caught: st.caught, uncovered: st.uncovered, hidden, today: st.today, perDay: MISCHIEF_PER_DAY };
 }
 
 // Corrupt mayors divert city money (a crime the Audit Office can find).
