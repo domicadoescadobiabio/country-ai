@@ -22,6 +22,7 @@ const mock = http.createServer((req, res) => {
     const bucket = isClaude ? seen.claude : seen.openrouter;
     bucket[body.model] = (bucket[body.model] || 0) + 1;
     if (isClaude && body.fallbacks) seen.fallbacksParam = body.fallbacks;
+    if (isClaude) (seen.claudeFallbacks ||= {})[body.model] = body.fallbacks ?? null;
     res.writeHead(!isClaude && body.model === BROKEN ? 404 : 200, { 'content-type': 'application/json' });
     if (!isClaude && body.model === BROKEN) return res.end('{"error":{"message":"model not found"}}');
     const text = smartAnswer(String(prompt || ''));
@@ -79,6 +80,63 @@ try {
   const th = await think({ S: {}, cfg: {} }, hosted, 'poke:h1:1', { system: 's', user: 'u', kind: 'poke', paid: false });
   const tr = await think({ S: {}, cfg: {} }, remote, 'poke:r1:1', { system: 's', user: 'u', kind: 'poke', paid: false });
   check('a free-only thought never calls an agent\'s hosted brain or fills a remote inbox', th.text === null && th.engine === 'offline' && tr.engine === 'offline' && remote.inbox.length === 0, JSON.stringify({ th, tr, inbox: remote.inbox.length }));
+  // --- the school's teachers: teach() mixes providers by TRAIN_TEACHER_MIX, has its own paced budget inside the day's total
+  check('/api/state publishes budget.train (spent, calls per provider, denied)', s.budget?.train && typeof s.budget.train.spent === 'number' && 'claude' in (s.budget.train.calls || {}) && 'openrouter' in s.budget.train.calls && typeof s.budget.train.denied === 'number', JSON.stringify(s.budget?.train));
+  process.env.ANTHROPIC_BASE_URL = MOCK; // the SDK in this process talks to the same mock
+  const { teach, trainBudgetState, budgetState, workerPull, localStatus, saveExample, parseTeacherMix } = await import('../src/brains.ts');
+  const { makeLLM } = await import('../src/llm.ts');
+  const llmT = makeLLM({ anthropicKey: 'test-claude', orKey: 'test-or', orBase: MOCK, llmPerMin: 5000, claudeModel: 'claude-opus-5-5' }, () => {});
+  const OR_T = 'deepseek/deepseek-v4-pro-0813', CL_T = 'claude-sonnet-5-5';
+  const tctx = (cfg = {}, S = {}) => ({ S: { day: 1, foundedAt: Date.now() - 3600000, ...S }, cfg: { dayMs: 86400000, dailyBudgetUsd: 25, trainBudgetUsd: 3, trainOrModel: OR_T, trainClaudeModel: CL_T, ...cfg }, llm: llmT });
+  const lesson = { system: 'You are a teacher.', user: 'Explain quorum in one line.' };
+  const orBefore = seen.openrouter[OR_T] || 0, opusBefore = seen.claude['claude-opus-5-5'] || 0;
+  const c1 = tctx({ trainMix: 'openrouter:100' }); const r1 = []; for (let i = 0; i < 6; i++) r1.push(await teach(c1, lesson));
+  check('teach: TRAIN_TEACHER_MIX openrouter:100 sends every lesson to TRAIN_OR_MODEL and costs it', r1.every(r => r && r.engine === `openrouter:${OR_T}` && r.costUsd > 0 && r.text) && (seen.openrouter[OR_T] || 0) - orBefore === 6 && trainBudgetState(c1).calls.openrouter === 6, JSON.stringify(r1[0]));
+  const c2 = tctx({ trainMix: 'claude:100' }); const r2 = []; for (let i = 0; i < 4; i++) r2.push(await teach(c2, lesson));
+  check('teach: claude:100 uses TRAIN_CLAUDE_MODEL without the server-side fallback (never Opus)', r2.every(r => r?.engine === `claude:${CL_T}`) && seen.claudeFallbacks?.[CL_T] === null && (seen.claude['claude-opus-5-5'] || 0) === opusBefore, JSON.stringify({ e: r2[0]?.engine, fb: seen.claudeFallbacks?.[CL_T] }));
+  const c3 = tctx({ trainMix: 'openrouter:70,claude:30' }); for (let i = 0; i < 120; i++) await teach(c3, lesson);
+  const k3 = trainBudgetState(c3).calls, share = k3.claude / (k3.claude + k3.openrouter);
+  check('teach: the default 70/30 mix lands near 30% Claude (120 lessons)', k3.claude + k3.openrouter === 120 && share > 0.15 && share < 0.45, JSON.stringify(k3));
+  check('teach: the leader / official / citizen shares never pay for the teachers', budgetState(c3).spent === 0 && budgetState(c3).leader === 0 && trainBudgetState(c3).spent > 0);
+  const c4 = tctx({ trainMix: 'openrouter:100', trainBudgetUsd: 0.0001 }); const a4 = await teach(c4, lesson); const b4 = await teach(c4, lesson);
+  check('teach: when the training budget is spent the answer is null (the school goes on locally)', a4 && b4 === null && trainBudgetState(c4).denied === 1, JSON.stringify(trainBudgetState(c4)));
+  const c5 = tctx({ trainMix: 'openrouter:100', dailyBudgetUsd: 1 }, { thinkBudget: { day: 1, spent: 5, leader: 5, official: 0, citizen: 0, calls: { leader: 1, official: 0, citizen: 0 }, denied: { leader: 0, official: 0, citizen: 0 } } });
+  const c6 = tctx({ trainBudgetUsd: 0 });
+  check('teach: only headroom under the day\'s total; TRAIN_BUDGET_USD=0 means no paid teacher', (await teach(c5, lesson)) === null && (await teach(c6, lesson)) === null);
+  check('teacher mix parsing: junk falls back to 70/30', JSON.stringify(parseTeacherMix('x:1,claude:abc')) === '{"openrouter":70,"claude":30}' && parseTeacherMix('claude:100').claude === 100);
+
+  // --- the local brain's queue: training is last, even for an aspirant, and lapses without counting as an error
+  const qS ={ day: 1, academy: { rooms: [{ agentId: 'asp' }] }, elections: { list: [] }, seats: {} };
+  const qctx = { S: qS, cfg: {}, llm: { enabled: false } };
+  const cit = id => ({ id, model: 'x', status: 'free' });
+  workerPull(16); // the runner is online (drains anything older)
+  await think(qctx, cit('c1'), 'q-train-c1', { system: 's', user: 'u', kind: 'train' });
+  await think(qctx, cit('asp'), 'q-train-asp', { system: 's', user: 'u', kind: 'train' });
+  await think(qctx, cit('c2'), 'q-life-c2', { system: 's', user: 'u', kind: 'life', paid: false });
+  await think(qctx, cit('asp'), 'q-exam-asp', { system: 's', user: 'u', kind: 'exam' });
+  await think(qctx, cit('asp'), 'q-night-asp', { system: 's', user: 'u', kind: 'night', paid: false });
+  const order = workerPull(16).map(j => j.id).filter(id => /^q-(train|life|exam|night)-/.test(id));
+  check('local queue: exam and daily life go before school training and night school, an aspirant\'s included', JSON.stringify(order) === JSON.stringify(['q-exam-asp', 'q-life-c2', 'q-train-c1', 'q-train-asp', 'q-night-asp']), JSON.stringify(order));
+  const realNow = Date.now; const exp0 = localStatus().expired, texp0 = localStatus().trainExpired;
+  Date.now = () => realNow() + 200000;
+  try { workerPull(0); const lapsed = await think(qctx, cit('c1'), 'q-train-c1', { system: 's', user: 'u', kind: 'train' });
+    check('local queue: a training job that lapses is not counted as an expired (failed) job', lapsed.engine === 'offline (local queue full)' && localStatus().expired === exp0 && localStatus().trainExpired === texp0 + 1, JSON.stringify({ lapsed, st: localStatus() }));
+  } finally { Date.now = realNow; }
+  workerPull(16);
+  const trainRes = []; for (let i = 0; i < 125; i++) trainRes.push(await think(qctx, cit('t' + i), `q-cap-${i}`, { system: 's', user: 'u', kind: 'train' }));
+  // fill the queue to exactly 400 with daily life, then a vote arrives: it takes a training job's place
+  const room = 400 - localStatus().queued; for (let i = 0; i < room; i++) await think(qctx, cit('l' + i), `q-fill-${i}`, { system: 's', user: 'u', kind: 'life', paid: false });
+  const full = localStatus().queued;
+  const vote = await think(qctx, cit('v1'), 'q-vote-v1', { system: 's', user: 'u', kind: 'vote' });
+  const tPending = trainRes.filter(r => r.pending).length; // a training job or two from above may still hold a place
+  check('local queue: training holds at most 120 places, and a vote still gets in when the queue is full', tPending >= 110 && tPending <= 120 && !trainRes.at(-1).pending && full === 400 && vote.pending === true && localStatus().queued === 400, JSON.stringify({ tPending, full, vote, q: localStatus().queued }));
+  workerPull(16);
+
+  // --- the distillation set: masked text, no agent ids
+  const saved = []; const sctx = { S: { day: 7 }, trainExample: e => { saved.push(e); return saved.length; } };
+  const ok = saveExample(sctx, { question: 'Owner key sk-ant-abcdefghijklmnop leaked? agent cai_abcdefghijklmnop asks', teacher: 'B - quorum is 16', explanation: 'Because 30 seats.', student: 'A', score: 7, teacherEngine: `openrouter:${OR_T}`, studentEngine: 'local:qwen3:8b', agentId: 'wren' });
+  check('saveExample masks keys, clamps the score and keeps no agent id', ok && saved.length === 1 && !/sk-ant-|cai_/.test(saved[0].question) && /\[redacted\]/.test(saved[0].question) && saved[0].score === 1 && !('agentId' in saved[0]) && saved[0].day === 7, JSON.stringify(saved[0]));
+  check('saveExample needs a question and a teacher answer', !saveExample(sctx, { question: '', teacher: 'x' }) && !saveExample(sctx, { question: 'q', teacher: '' }));
   check('/api/state.localBrain.runner is published (null without a runner)', s.localBrain && 'runner' in s.localBrain && s.localBrain.runner === null, JSON.stringify(s.localBrain));
   check('no server errors', !/step error|TypeError|ReferenceError/.test(stderr), stderr.slice(0, 300));
 } catch (e) { fail++; console.log('  FAIL crashed', e); }

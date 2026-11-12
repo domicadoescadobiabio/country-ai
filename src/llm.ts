@@ -48,10 +48,11 @@ export function makeLLM(cfg: Record<string, any>, log: (kind: string, text: stri
   // for safety-classifier declines (beta). Haiku has no server-side fallback, so it is never sent there.
   // The system prompt (constitution + charter) is the same for every call of an office: it is cached, so
   // repeated calls pay a tenth of the input price for it.
-  async function askClaude({ system, user, model, effort = 'low' }) {
+  // fallback: false = never the server-side fallback (the training teachers: a Sonnet call stays a Sonnet call)
+  async function askClaude({ system, user, model, effort = 'low', fallback = true, maxTokens = 4000 }) {
     try {
-      const params = { model, max_tokens: 4000, output_config: { effort }, system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }], messages: [{ role: 'user', content: user }] };
-      const r = /haiku/.test(model)
+      const params = { model, max_tokens: maxTokens, output_config: { effort }, system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }], messages: [{ role: 'user', content: user }] };
+      const r = /haiku/.test(model) || !fallback
         ? await claude.messages.create(params)
         : await claude.beta.messages.create({ ...params, betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' });
       usage.inputTokens += (r.usage?.input_tokens || 0) + (r.usage?.cache_creation_input_tokens || 0) + (r.usage?.cache_read_input_tokens || 0);
@@ -110,7 +111,9 @@ export function makeLLM(cfg: Record<string, any>, log: (kind: string, text: stri
   // route 'openrouter' (officials and citizens, Art. 25) sends even anthropic/ models through OpenRouter;
   // claudeModel (the leadership and the judges) goes to Claude directly. Every result carries its cost in $.
   let lastCost = 0;
-  async function askDetailed({ model = '', system, user, maxTokens = 160, claudeModel = null, effort = 'low', route = null }) {
+  // fallback: false keeps the call on the model asked for (no Claude server-side fallback); maxText caps the
+  // returned text (900 for agents' answers; a teacher's worked explanation may be longer)
+  async function askDetailed({ model = '', system, user, maxTokens = 160, claudeModel = null, effort = 'low', route = null, fallback = true, maxText = 900 }) {
     if (!provider || !budgetOk()) return { text: null, via: 'offline', cost: 0 };
     usage.calls++;
     let cost = 0;
@@ -118,11 +121,11 @@ export function makeLLM(cfg: Record<string, any>, log: (kind: string, text: stri
     const wantsClaude = hasClaude && (claudeModel || !hasOR || (route !== 'openrouter' && (/^anthropic\//.test(model) || /^claude-/.test(model) || !model)));
     if (wantsClaude) {
       lastCost = 0;
-      const text = cleanText(await askClaude({ system, user, model: claudeId, effort }), 900);
+      const text = cleanText(await askClaude({ system, user, model: claudeId, effort, fallback, maxTokens: fallback ? 4000 : Math.max(1500, Math.min(4000, maxTokens * 2)) }), maxText); // room for adaptive thinking
       return { text: text || null, via: `claude:${claudeId}`, cost: lastCost };
     }
     lastCost = 0;
-    let text = cleanText(await askOpenRouter({ model: model || 'meta-llama/llama-4-maverick', system, user, maxTokens, effort }), 900);
+    let text = cleanText(await askOpenRouter({ model: model || 'meta-llama/llama-4-maverick', system, user, maxTokens, effort }), maxText);
     cost += lastCost;
     if (text) return { text, via: `openrouter:${model}`, cost };
     if (hasClaude && route !== 'openrouter') { // OpenRouter failed: the agent still thinks, with Claude
@@ -148,5 +151,5 @@ export function makeLLM(cfg: Record<string, any>, log: (kind: string, text: stri
     try { return JSON.parse(m[0]); } catch { return null; }
   }
   const label = provider === 'mixed' ? `mixed: claude (${cfg.claudeModel}) + openrouter` : provider === 'anthropic' ? `claude (${cfg.claudeModel})` : provider === 'openrouter' ? 'openrouter (per-agent models)' : 'offline';
-  return { enabled: !!provider, provider, label, ask, askDetailed, routeOf, json, usage };
+  return { enabled: !!provider, provider, label, ask, askDetailed, routeOf, json, usage, hasClaude, hasOR };
 }

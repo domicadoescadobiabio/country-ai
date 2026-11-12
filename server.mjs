@@ -13,7 +13,7 @@ import { ROLES, ROLE_ORDER } from './src/roles.mjs';
 import { FOUNDERS, makeCitizen, randomTraits } from './src/citizens.mjs';
 import { growPopulation } from './src/population.mjs';
 import { CITIES, assignCity } from './src/cities.ts';
-import { tierOf, budgetState, workerPull, workerAnswer, localStatus, localOnline, ladderTick } from './src/brains.ts';
+import { tierOf, budgetState, trainBudgetState, workerPull, workerAnswer, localStatus, localOnline, ladderTick } from './src/brains.ts';
 import { freshAcademy, academyTick, totalSeats } from './src/academy.ts';
 import { lifeTick, payday } from './src/life.ts';
 import { INSTITUTIONS } from './src/institutions.ts';
@@ -24,7 +24,8 @@ import { openStore } from './src/db.ts';
 import { publicElection, voidEmptyMandates } from './src/elections.ts';
 import { founderDrillImpeachment } from './src/court.ts';
 import { applyAmendments } from './src/constitution.mjs';
-import { requirement, TERMS } from './src/careers.ts';
+import { requirement, TERMS, goalView } from './src/careers.ts';
+import { reputationOf } from './src/underworld.ts';
 import { poke, moodView, bondsView } from './src/feelings.ts';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -40,6 +41,12 @@ const CFG = {
   courtModel: (process.env.CLAUDE_COURT_MODEL || 'claude-opus-5-5').trim(), // judges: a stronger model than the officials
   leaderModel: (process.env.CLAUDE_LEADER_MODEL || process.env.CLAUDE_MODEL || 'claude-opus-5-5').trim(), // President, VP, Ministers, Speaker, chiefs
   dailyBudgetUsd: Math.max(0, Number(process.env.LLM_DAILY_BUDGET_USD ?? 25)), // Art. 25: what thought may cost per day (0 = no limit)
+  // the school's paid teachers (src/brains.ts teach): their own daily budget (0 = none), the provider mix and models
+  trainBudgetUsd: Math.max(0, Number(process.env.TRAIN_BUDGET_USD ?? 3)),
+  trainMix: (process.env.TRAIN_TEACHER_MIX || 'openrouter:70,claude:30').trim(),
+  trainOrModel: (process.env.TRAIN_OR_MODEL || 'deepseek/deepseek-v4-pro-0813').trim(),
+  trainClaudeModel: (process.env.TRAIN_CLAUDE_MODEL || 'claude-sonnet-5-5').trim(),
+  trainExamplesMax: clamp(Number(process.env.TRAIN_EXAMPLES_MAX) || 50000, 100, 1000000),
   population: clamp(Number(process.env.POPULATION) || 10000, 24, 50000), // citizens; founders + generated natives
   orKey: (process.env.OPENROUTER_API_KEY || '').trim(),
   orBase: (process.env.OPENROUTER_BASE_URL || '').trim(), // tests only; default https://openrouter.ai/api/v1
@@ -128,6 +135,8 @@ const ctx = {
   cfg: CFG, llm, say, log: logActivity, emit,
   agent: id => citizenById(S, id),
   archiveBallots: (id, digest, list) => store.archiveBallots(id, digest, list),
+  // the school's distillation set: called through saveExample() in src/brains.ts, which masks the text first
+  trainExample: e => store.trainAdd(e, CFG.trainExamplesMax),
   // time helpers: everything that happens "N times a day" is a rate per hour of republic time
   hourMs: () => CFG.dayMs / 24,
   hoursSince: ms => (Date.now() - ms) / (CFG.dayMs / 24),
@@ -236,7 +245,10 @@ const thinksWith = a => {
   return llm.enabled ? a.model : 'offline';
 };
 function publicCitizen(a) {
-  return { id: a.id, name: a.name, model: thinksWith(a), tier: tierOf(S, a), color: a.color, bio: a.bio, origin: a.origin, office: a.office, status: a.status, jailUntil: a.jailUntil, detainedDay: a.detainedDay ?? null, wallet: Math.round(a.wallet), traits: a.traits, joined: a.joined, training: a.training.slice(-8), lessons: a.lessons, record: a.record || [], skill: a.skill || {}, brain: publicBrain(a.brain), city: a.city || null, faction: a.faction || 'civilian', debt: Math.round(a.debt || 0), rank: a.rank || null, rankSince: a.rankSince ?? null, quals: a.quals || {}, termEnds: a.termEnds || null, practice: a.practice || {}, joinedDay: a.joinedDay ?? 0, drills: (a.drills || []).slice(-6), reviews: (a.reviews || []).slice(-6), stats: a.stats || {}, diary: (a.diary || []).slice(-6), home: a.home || null };
+  return { id: a.id, name: a.name, model: thinksWith(a), tier: tierOf(S, a), color: a.color, bio: a.bio, origin: a.origin, office: a.office, status: a.status, jailUntil: a.jailUntil, detainedDay: a.detainedDay ?? null, wallet: Math.round(a.wallet), traits: a.traits, joined: a.joined, training: a.training.slice(-8), lessons: a.lessons, record: a.record || [], skill: a.skill || {}, brain: publicBrain(a.brain), city: a.city || null, faction: a.faction || 'civilian', debt: Math.round(a.debt || 0), rank: a.rank || null, rankSince: a.rankSince ?? null, quals: a.quals || {}, termEnds: a.termEnds || null, practice: a.practice || {}, joinedDay: a.joinedDay ?? 0, drills: (a.drills || []).slice(-6), reviews: (a.reviews || []).slice(-6), stats: a.stats || {}, diary: (a.diary || []).slice(-6), home: a.home || null,
+    // the week's goal, reputation and how often they resisted a temptation; never the private side
+    // (a.mischief, a.lifeLessons, a.skipVoteDay stay out: this list names every public field)
+    goal: goalView(a), reputation: reputationOf(a), resisted: a.resisted || 0, goalsDone: a.goalsDone || 0 };
 }
 function notableCitizens() {
   const running = new Set((S.elections?.list || []).filter(e => !['done', 'failed'].includes(e.stage)).flatMap(e => e.candidates.map(c => c.id)));
@@ -267,10 +279,12 @@ function academyView() {
   };
 }
 function compactState() {
-  const B = budgetState(ctx);
+  const B = budgetState(ctx); const T = trainBudgetState(ctx);
   const out = { stats: stats(), seats: S.seats, academy: academyView(), treasury: S.treasury, policy: S.policy, econ: S.econ, day: S.day, tick: S.tick, paused: S.paused, llmUsage: llm.usage,
     localBrain: localStatus(),
-    budget: { day: B.day, daily: B.daily, spent: Math.round(B.spent * 10000) / 10000, leader: Math.round(B.leader * 10000) / 10000, official: Math.round(B.official * 10000) / 10000, citizen: Math.round(B.citizen * 10000) / 10000, calls: B.calls, denied: B.denied } };
+    budget: { day: B.day, daily: B.daily, spent: Math.round(B.spent * 10000) / 10000, leader: Math.round(B.leader * 10000) / 10000, official: Math.round(B.official * 10000) / 10000, citizen: Math.round(B.citizen * 10000) / 10000, calls: B.calls, denied: B.denied,
+      // the school's paid teachers: their own budget, inside the day's total
+      train: { daily: T.daily, spent: Math.round(T.spent * 10000) / 10000, calls: T.calls, denied: T.denied, examples: store.trainCount() } } };
   for (const inst of INSTITUTIONS) Object.assign(out, inst.publicState?.(S) || {});
   return out;
 }
@@ -278,7 +292,7 @@ function compactState() {
 // cannot show more than they do: open police cases name no suspect, hidden crimes are absent).
 function mapState() {
   const c = compactState();
-  const lite = a => ({ id: a.id, name: a.name, city: a.city || null, status: a.status, office: a.office || null, home: a.home || null, mood: moodLite(a) });
+  const lite = a => ({ id: a.id, name: a.name, city: a.city || null, status: a.status, office: a.office || null, home: a.home || null, mood: moodLite(a), goal: goalLite(a) });
   return {
     day: S.day, seats: c.seats, cities: c.cities, homeLayout: c.homeLayout,
     daily: { recent: c.daily?.recent || [] },
@@ -293,7 +307,8 @@ function mapState() {
 }
 // the mood a list shows: label and emoji only (the full mood, why and bonds are on /api/citizens/:id)
 const moodLite = a => { const m = moodView(a); return m ? { label: m.label, emoji: m.emoji } : null; };
-const liteCitizen = a => ({ id: a.id, name: a.name, city: a.city || null, status: a.status, office: a.office || null, color: a.color, home: a.home || null, mood: moodLite(a) });
+const goalLite = a => { const g = goalView(a); return g ? { label: g.label, progress: g.progress } : null; };
+const liteCitizen = a => ({ id: a.id, name: a.name, city: a.city || null, status: a.status, office: a.office || null, color: a.color, home: a.home || null, mood: moodLite(a), goal: goalLite(a) });
 function fullState() {
   const feed = {};
   for (const [ch, list] of Object.entries(S.feed)) feed[ch] = list.slice(-120);
@@ -569,6 +584,16 @@ const server = http.createServer(async (req, res) => {
     }
     if (await registry.handle(req, res, p)) return;
 
+    // the school's distillation set as JSONL, for fine-tuning the local model (?after=<id>&limit=1..5000, oldest first;
+    // the next page starts after the last id). Admin only: it is training data, not a public record.
+    if (req.method === 'GET' && p === '/api/admin/train/export') {
+      if (!isAdmin(req)) return send(res, 401, { error: 'admin only' });
+      const u = new URL(req.url, 'http://x');
+      const rows = store.trainPage(Math.max(0, Math.floor(Number(u.searchParams.get('after'))) || 0), Number(u.searchParams.get('limit')) || 1000);
+      res.setHeader('x-train-total', String(store.trainCount()));
+      if (rows.length) res.setHeader('x-train-last-id', String(rows.at(-1).id));
+      return send(res, 200, rows.map(r => JSON.stringify(r)).join('\n') + (rows.length ? '\n' : ''), 'application/x-ndjson; charset=utf-8');
+    }
     if (req.method === 'POST' && p.startsWith('/api/admin/')) {
       if (!isAdmin(req)) return send(res, 401, { error: 'admin only' });
       const body = await readBody(req);

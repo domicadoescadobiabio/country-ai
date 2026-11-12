@@ -145,10 +145,16 @@ function budgetAllows(ctx, tier) {
   const dayMs = ctx.cfg?.dayMs || 86400000;
   const gone = (((Date.now() - (ctx.S.foundedAt || Date.now())) % dayMs) + dayMs) % dayMs / dayMs;
   const pace = Math.min(1, gone + 1 / 24);
-  if (B.spent >= D * pace) return false;
+  // the day's ceiling covers everything paid, the training teachers included (they only spend headroom, see teach())
+  if (B.spent + (ctx.S.trainBudget?.day === ctx.S.day ? ctx.S.trainBudget.spent || 0 : 0) >= D * pace) return false;
   if (tier !== 'leader' && B[tier] >= D * TIER_CAP[tier] * pace) return false;
   return true;
 }
+const paceNow = ctx => {
+  const dayMs = ctx.cfg?.dayMs || 86400000;
+  const gone = (((Date.now() - (ctx.S.foundedAt || Date.now())) % dayMs) + dayMs) % dayMs / dayMs;
+  return Math.min(1, gone + 1 / 24);
+};
 function charge(ctx, tier, cost) {
   const B = budgetState(ctx);
   B.spent += cost; B[tier] += cost; B.calls[tier]++;
@@ -166,10 +172,15 @@ export function isAspirant(S, a) {
 // ---------------------------------------------------------------- the local brain (a worker on the founders' machine)
 // The worker pulls questions over HTTPS (/api/worker/pull), answers them with an open model it runs itself
 // and posts the answers back. The server never calls out to it, and it costs the treasury nothing.
-const LOCAL = { jobs: new Map(), lastPull: 0, model: null, answered: 0, expired: 0, runner: null };
+const LOCAL = { jobs: new Map(), lastPull: 0, model: null, answered: 0, expired: 0, trainExpired: 0, runner: null };
 const LOCAL_WAIT_MS = 180000, LOCAL_LEASE_MS = 90000, LOCAL_QUEUE_MAX = 400;
+// Queue priorities (lower goes first): aspirants 0, votes 1, other questions 2, daily life 3, school training 4.
+// Training jobs never hold more than LOCAL_TRAIN_MAX places, and a higher job that finds the queue full takes the
+// place of the oldest unleased training job: the school only ever uses the brain's spare time.
+export const TRAIN_PRIORITY = 4;
+const LOCAL_TRAIN_MAX = 120;
 export const localOnline = () => Date.now() - LOCAL.lastPull < 20000;
-export function localStatus() { return { online: localOnline(), model: LOCAL.model, queued: [...LOCAL.jobs.values()].filter(j => j.answer == null).length, answered: LOCAL.answered, expired: LOCAL.expired, runner: LOCAL.runner }; }
+export function localStatus() { return { online: localOnline(), model: LOCAL.model, queued: [...LOCAL.jobs.values()].filter(j => j.answer == null).length, answered: LOCAL.answered, expired: LOCAL.expired, trainExpired: LOCAL.trainExpired, runner: LOCAL.runner }; }
 // What the runner says it is (scripts/local-brain.mjs sends it with every pull). Shown on /api/state, so only
 // known fields survive, each a clamped number or a boolean; anything else (strings, nested objects) is dropped.
 // A pull without it (a runner older than version 2) clears it, so the state always describes the live runner.
@@ -202,13 +213,25 @@ export function workerAnswer(id, text, model = null) {
 function askLocal(qid, a, { system, user, kind, format, options }, priority) {
   let j = LOCAL.jobs.get(qid);
   if (!j) {
-    if (LOCAL.jobs.size >= LOCAL_QUEUE_MAX) return null; // queue full: use another path
+    const train = priority >= TRAIN_PRIORITY;
+    const trainJobs = () => [...LOCAL.jobs.values()].filter(x => x.priority >= TRAIN_PRIORITY);
+    if (train && trainJobs().length >= LOCAL_TRAIN_MAX) return null; // the school waits for room
+    if (LOCAL.jobs.size >= LOCAL_QUEUE_MAX) {
+      // queue full: a higher job takes the place of the oldest training job not yet handed to the worker
+      const victim = train ? null : trainJobs().filter(x => !x.leasedAt && x.answer == null).sort((x, y) => x.createdAt - y.createdAt)[0];
+      if (!victim) return null; // use another path
+      LOCAL.jobs.delete(victim.id);
+    }
     j = { id: qid, agent: a.id, system, user, format, options, kind, priority, createdAt: Date.now(), leasedAt: 0, answer: null };
     LOCAL.jobs.set(qid, j);
     return { pending: true };
   }
   if (j.answer != null) { LOCAL.jobs.delete(qid); return { text: j.answer, engine: `local:${j.model || 'model'}` }; }
-  if (Date.now() - j.createdAt > LOCAL_WAIT_MS) { LOCAL.jobs.delete(qid); LOCAL.expired++; return null; } // worker too slow: another path
+  if (Date.now() - j.createdAt > LOCAL_WAIT_MS) { // worker too slow: another path (training simply lapses, not an error)
+    LOCAL.jobs.delete(qid);
+    if (j.priority >= TRAIN_PRIORITY) LOCAL.trainExpired++; else LOCAL.expired++;
+    return null;
+  }
   return { pending: true };
 }
 
@@ -234,12 +257,79 @@ function recall(S, user, options) {
   return idx < 0 ? null : `${'ABCD'[idx]} - remembered from an earlier answer by a real model`;
 }
 
+// ---------------------------------------------------------------- the school's teachers (src/school.ts)
+// Every citizen keeps training on the free local brain; a few questions a day also get a paid teacher, whose
+// answer and explanation the school grades the students against. Teachers are the nation's own keys only (never
+// an agent owner's hosted key), mixed by TRAIN_TEACHER_MIX ("openrouter:70,claude:30"), on TRAIN_OR_MODEL or
+// TRAIN_CLAUDE_MODEL (Sonnet, low effort, no server-side fallback to Opus). They have their own budget,
+// TRAIN_BUDGET_USD per republic day, paced through the day like the rest; they spend only headroom under the
+// day's total (LLM_DAILY_BUDGET_USD), and the leader / official / citizen shares never pay for them.
+export function trainBudgetState(ctx) {
+  const { S } = ctx;
+  const T = (S.trainBudget ||= {});
+  if (T.day !== S.day) Object.assign(T, { day: S.day, spent: 0, calls: { claude: 0, openrouter: 0 }, denied: 0 });
+  T.daily = ctx.cfg?.trainBudgetUsd ?? 3;
+  return T;
+}
+export function parseTeacherMix(s) {
+  const out = { openrouter: 0, claude: 0 };
+  for (const part of String(s || '').split(',')) {
+    const m = part.trim().match(/^(openrouter|claude)\s*:\s*(\d{1,4})$/i);
+    if (m) out[m[1].toLowerCase()] = Math.min(1000, Number(m[2]));
+  }
+  return out.openrouter + out.claude > 0 ? out : { openrouter: 70, claude: 30 };
+}
+function trainAllows(ctx) {
+  const T = trainBudgetState(ctx);
+  if (!(T.daily > 0)) return false; // TRAIN_BUDGET_USD=0: no paid teachers, the school runs on the local brain
+  const pace = paceNow(ctx);
+  if (T.spent >= T.daily * pace) return false;
+  const D = ctx.cfg?.dailyBudgetUsd ?? 25;
+  if (D > 0 && budgetState(ctx).spent + T.spent >= D * pace) return false; // only the headroom left under the day's total
+  return true;
+}
+export async function teach(ctx, { system, user, maxTokens = 700, purpose = 'train' } = {} as any) {
+  const llm = ctx.llm;
+  if (!llm?.enabled || !system || !user) return null;
+  const T = trainBudgetState(ctx);
+  if (!trainAllows(ctx)) { T.denied++; return null; }
+  const mix = parseTeacherMix(ctx.cfg?.trainMix);
+  const w = { openrouter: llm.hasOR ? mix.openrouter : 0, claude: llm.hasClaude ? mix.claude : 0 };
+  if (w.openrouter + w.claude <= 0) { T.denied++; return null; } // the mix asks for a provider whose key is missing
+  const who = Math.random() * (w.openrouter + w.claude) < w.claude ? 'claude' : 'openrouter';
+  const tokens = Math.max(64, Math.min(4000, Math.round(Number(maxTokens) || 700)));
+  const r = who === 'claude'
+    ? await llm.askDetailed({ system, user, claudeModel: ctx.cfg?.trainClaudeModel || 'claude-sonnet-5-5', effort: 'low', fallback: false, maxTokens: tokens, maxText: 4000 })
+    : await llm.askDetailed({ system, user, model: ctx.cfg?.trainOrModel || 'deepseek/deepseek-v4-pro-0813', route: 'openrouter', effort: 'low', maxTokens: tokens, maxText: 4000 });
+  const cost = r.cost || 0;
+  T.spent += cost; T.calls[who]++;
+  if (!r.text) return null;
+  return { text: r.text, engine: r.via, costUsd: cost, purpose: cleanText(purpose, 30) || 'train' };
+}
+
+// The distillation set: (question, teacher's answer and explanation, local student's answer, grade), kept so the
+// local model can be fine-tuned on its teachers later. Plain text only: secrets and agent keys are masked, and
+// nothing about who the student was is kept. ctx.trainExample (server.mjs) appends it to train_examples.
+const SECRETISH = /\b(sk-[A-Za-z0-9_-]{8,}|sk-ant-[A-Za-z0-9_-]{8,}|cai_[A-Za-z0-9_-]{8,}|Bearer\s+[A-Za-z0-9._-]{8,}|[0-9a-f]{40,}|[1-9A-HJ-NP-Za-km-z]{60,})\b/g;
+const scrub = (s, max) => cleanText(String(s ?? '').replace(SECRETISH, '[redacted]'), max);
+export function saveExample(ctx, { question, teacher, explanation = '', student = '', score = null, teacherEngine = '', studentEngine = '', purpose = 'train' } = {} as any) {
+  const q = scrub(question, 4000), t = scrub(teacher, 4000);
+  if (!q || !t || typeof ctx.trainExample !== 'function') return false;
+  const sc = typeof score === 'number' && Number.isFinite(score) ? Math.max(0, Math.min(1, score)) : null;
+  ctx.trainExample({ day: ctx.S?.day ?? 0, purpose: scrub(purpose, 30) || 'train', question: q, teacher: t, explanation: scrub(explanation, 4000), student: scrub(student, 2000), score: sc,
+    teacherEngine: scrub(teacherEngine, 80), studentEngine: scrub(studentEngine, 80) });
+  return true;
+}
+
 // ---------------------------------------------------------------- one way to think, for everyone
 // Returns { text, engine } or { pending: true } (remote agent has not answered yet).
 // qid must be stable across ticks for the same question.
 export const REMOTE_WAIT_MS = 150000; // a self-run agent has 2.5 minutes to answer
 // paid: false = this thought may only use the free local brain (daily life); no API, no memory, no cost
 export async function think(ctx, a, qid, { system, user, kind = 'question', format = 'text', options = null, claudeModel = null, wait = true, paid = true }) {
+  // school (kind 'train') and night school (kind 'night'): the student answers with the free local brain only;
+  // the paid teachers are teach()
+  if (kind === 'train' || kind === 'night') paid = false;
   const b = a.brain;
   // an agent with its own brain is never asked a free-only thought: a hosted brain would bill its owner's API key,
   // and a remote one would get its inbox (ballots, exams) filled with idle questions such as a visitor's poke
@@ -275,7 +365,8 @@ export async function think(ctx, a, qid, { system, user, kind = 'question', form
   // The brain ladder (Art. 25): citizens and aspirants think with the local brain; an official who reaches a
   // seat moves up to their own model on OpenRouter; the leadership thinks with Claude Opus.
   // 1. the local brain, free: every citizen and aspirant while it is online and its queue has room
-  const local = () => askLocal(qid, a, { system, user, kind, format, options }, aspirant ? 0 : kind === 'vote' ? 1 : kind === 'life' ? 3 : 2);
+  // school and night-school study (kind 'train' / 'night') is always last, an aspirant's included: exams and votes go first
+  const local = () => askLocal(qid, a, { system, user, kind, format, options }, kind === 'train' || kind === 'night' ? TRAIN_PRIORITY : aspirant ? 0 : kind === 'vote' ? 1 : kind === 'life' ? 3 : 2);
   if (!paid) {
     if (!wait || !localOnline()) return { text: null, engine: 'offline' };
     const r = local();

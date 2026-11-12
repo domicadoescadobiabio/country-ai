@@ -68,6 +68,10 @@ try {
     check('ledger pages filter by kind and keep each entry\'s own seq and hash', pk.length === 2 && pk.every(e => e.kind === 'pardon') && pk[1].seq === 3 && pk[1].prev === st.page(1, 1)[0].hash, JSON.stringify(pk.map(e => [e.seq, e.kind])));
     check('a kind page chains on seq (after) and a negative limit is not "everything"', st.page(1, 100, 'pardon').length === 1 && st.page(0, -1).length === 1 && st.page(0, 100, 'nothing_here').length === 0);
     check('the ledger chain still verifies', st.verify().ok);
+    // the school's distillation set: append-only rows, the oldest dropped past the cap
+    for (let i = 1; i <= 5; i++) st.trainAdd({ day: 1, purpose: 'train', question: `q${i}`, teacher: `t${i}`, explanation: 'e', student: 's', score: i / 5, teacherEngine: 'openrouter:x', studentEngine: 'local:y' }, 3);
+    const tp = st.trainPage(0, 100);
+    check('train_examples keeps the newest rows up to its cap, oldest first in the export', st.trainCount() === 3 && tp.map(r => r.question).join() === 'q3,q4,q5' && tp[2].score === 1 && tp[0].teacherEngine === 'openrouter:x', JSON.stringify(tp.map(r => [r.id, r.question])));
     st.close(); try { fs.rmSync(LD, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch { /* windows handle */ }
   }
 
@@ -153,7 +157,7 @@ try {
   check('/api/map is much smaller than /api/state', JSON.stringify(mj).length * 3 < JSON.stringify(gzBody).length, `${JSON.stringify(mj).length} vs ${JSON.stringify(gzBody).length}`);
   const one = (await get('/api/citizens?size=1')).citizens[0];
   const lc = await get('/api/citizens?lite=1&size=5');
-  check('citizens carry their home address; ?lite=1 lists id, name, city, status, office, home and mood only', 'home' in one && lc.citizens.length === 5 && lc.citizens.every(a => Object.keys(a).sort().join() === 'city,color,home,id,mood,name,office,status' && (a.mood === null || Object.keys(a.mood).sort().join() === 'emoji,label')), JSON.stringify({ home: one.home, lite: lc.citizens[0] }));
+  check('citizens carry their home address; ?lite=1 lists id, name, city, status, office, home and mood only', 'home' in one && lc.citizens.length === 5 && lc.citizens.every(a => Object.keys(a).sort().join() === 'city,color,goal,home,id,mood,name,office,status' && (a.mood === null || Object.keys(a.mood).sort().join() === 'emoji,label')), JSON.stringify({ home: one.home, lite: lc.citizens[0] }));
 
   // --- poke (POST /api/poke/:id): no login, no text from the human, rate limited, this site only
   const pool = (await get('/api/citizens?lite=1&size=40&status=free')).citizens.map(a => a.id);
@@ -176,8 +180,23 @@ try {
   check('poke: an IP gets 10 pokes a minute, the 11th is 429', burstP.slice(0, 10).every(s => s === 200) && burstP[10] === 429, JSON.stringify(burstP));
   const det = (await get(`/api/citizens/${pool[0]}`)).citizen;
   check('/api/citizens/:id carries mood, bonds and today\'s pokes', det.mood && det.mood.label && det.mood.emoji && typeof det.mood.why === 'string' && Array.isArray(det.bonds) && det.pokes >= 1, JSON.stringify({ mood: det.mood, bonds: det.bonds?.length, pokes: det.pokes }));
+  // goal, reputation, temptations resisted; the private side (mischief, lessons, skipped votes) never shows
+  const detS = await get('/api/citizens?size=200');
+  const pubOk = detS.citizens.every(a => 'goal' in a && typeof a.reputation === 'number' && typeof a.resisted === 'number' && typeof a.goalsDone === 'number' && !('mischief' in a) && !('lifeLessons' in a) && !('skipVoteDay' in a));
+  const withGoal = detS.citizens.find(a => a.goal);
+  check('citizens show goal, reputation, resisted and goals done, never mischief, life lessons or skipped votes', pubOk && (!withGoal || ['label', 'progress', 'status', 'until'].every(k => k in withGoal.goal)), JSON.stringify({ g: withGoal?.goal, rep: detS.citizens[0]?.reputation }));
+  const lg = await get('/api/citizens?lite=1&size=500');
+  check('?lite=1 shows the goal as label and progress only', lg.citizens.every(a => a.goal === null || Object.keys(a.goal).sort().join() === 'label,progress'), JSON.stringify(lg.citizens.find(a => a.goal)?.goal || null));
   const mm = await get('/api/map');
   check('/api/map shows held citizens\' mood as label and emoji only', mm.held.every(a => a.mood === null || Object.keys(a.mood).sort().join() === 'emoji,label'), JSON.stringify(mm.held[0] || null));
+  // the school's distillation set is exported to the admin only, as JSONL
+  const ex0 = await fetch(BASE + '/api/admin/train/export', { headers: { 'x-forwarded-for': '198.51.100.40' } });
+  const ex1 = await fetch(BASE + '/api/admin/train/export?limit=10', { headers: { 'x-admin-token': TOKEN } });
+  const exBody = await ex1.text();
+  check('GET /api/admin/train/export needs the admin token and answers JSONL', ex0.status === 401 && ex1.status === 200 && /application\/x-ndjson/.test(ex1.headers.get('content-type') || '') && ex1.headers.get('x-train-total') !== null
+    && exBody.split('\n').filter(Boolean).every(l => { try { const o = JSON.parse(l); return 'question' in o && 'teacher' in o; } catch { return false; } }), `${ex0.status} ${ex1.status} ${ex1.headers.get('content-type')}`);
+  const stT = (await get('/api/state')).budget?.train;
+  check('/api/state budget.train shows the teachers\' budget, calls, denials and the examples kept', stT && typeof stT.daily === 'number' && typeof stT.examples === 'number' && stT.calls && 'claude' in stT.calls, JSON.stringify(stT));
   // archive reads are rate limited per IP (60/min by default); local callers without a proxy header are not counted
   const viaProxy = ip => fetch(BASE + '/api/ledger?limit=1', { headers: { 'x-forwarded-for': ip } });
   const burst = []; for (let i = 0; i < 61; i++) burst.push((await viaProxy('203.0.113.9')).status);

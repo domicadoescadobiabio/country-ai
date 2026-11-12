@@ -66,6 +66,10 @@ export function openStore(dataDir: string) {
     citCount: db.prepare('SELECT COUNT(*) AS n FROM citizens'),
     ballotsPut: db.prepare('INSERT OR REPLACE INTO election_ballots (election, digest, json) VALUES (?, ?, ?)'),
     ballotsGet: db.prepare('SELECT json FROM election_ballots WHERE election = ?'),
+    trainAdd: db.prepare('INSERT INTO train_examples (ts, day, purpose, question, teacher, explanation, student, score, teacher_engine, student_engine) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'),
+    trainRotate: db.prepare('DELETE FROM train_examples WHERE id <= ?'),
+    trainCount: db.prepare('SELECT COUNT(*) AS n FROM train_examples'),
+    trainPage: db.prepare('SELECT * FROM train_examples WHERE id > ? ORDER BY id LIMIT ?'),
   };
   // ledgerHas: one prepared statement per number of fields matched. Field names travel as JSON-path
   // parameters, never inside the SQL text; uses the (kind, seq) index, then checks the data of that kind.
@@ -147,6 +151,19 @@ export function openStore(dataDir: string) {
     },
     archiveDecision(d) { q.dec.run(d.id, d.day, d.agentId || null, d.role || null, d.type || null, JSON.stringify(d)); },
     decisionCount: () => q.decCount.get().n,
+    // the school's distillation set (append-only, oldest rows dropped past `max`)
+    trainAdd(e, max = 50000) {
+      const r = q.trainAdd.run(Date.now(), e.day ?? 0, String(e.purpose || 'train'), String(e.question), String(e.teacher), String(e.explanation || ''), String(e.student || ''),
+        typeof e.score === 'number' && Number.isFinite(e.score) ? e.score : null, String(e.teacherEngine || ''), String(e.studentEngine || ''));
+      const id = Number(r.lastInsertRowid);
+      if (id > max) q.trainRotate.run(id - max);
+      return id;
+    },
+    trainCount: () => q.trainCount.get().n,
+    trainPage(after = 0, limit = 1000) {
+      return q.trainPage.all(after, Math.min(5000, Math.max(1, Math.floor(Number(limit)) || 1000))).map(r => ({
+        id: r.id, ts: r.ts, day: r.day, purpose: r.purpose, question: r.question, teacher: r.teacher, explanation: r.explanation, student: r.student, score: r.score, teacherEngine: r.teacher_engine, studentEngine: r.student_engine }));
+    },
     // read-only: the full decision log, the same records /api/state and #decisions already show live
     decisionsPage({ after = 0, limit = 100, type = null, agent = null } = {}) {
       const n = pageSize(limit);
@@ -164,6 +181,7 @@ export function openStore(dataDir: string) {
 function jsonStore(file: string) {
   let ledger = [];
   const ballots = {};
+  const train = [];
   let head = { seq: 0, hash: GENESIS };
   const store = {
     kind: 'json',
@@ -193,6 +211,10 @@ function jsonStore(file: string) {
     ballotsOf(election) { return ballots[election] || null; },
     decisionCount: () => 0,
     decisionsPage: null, // no archive without sqlite: the server falls back to the decisions kept in memory
+    // without sqlite the distillation set lives in memory only (lost on restart), capped the same way
+    trainAdd(e, max = 50000) { const id = (train.at(-1)?.id || 0) + 1; train.push({ id, ts: Date.now(), ...e }); if (train.length > max) train.splice(0, train.length - max); return id; },
+    trainCount: () => train.length,
+    trainPage(after = 0, limit = 1000) { return train.filter(r => r.id > after).slice(0, Math.min(5000, Math.max(1, Math.floor(Number(limit)) || 1000))); },
     close() {},
   };
   return store;

@@ -60,6 +60,25 @@ CREATE TABLE IF NOT EXISTS decisions (
 CREATE INDEX IF NOT EXISTS decisions_agent ON decisions (agent, id);
 CREATE INDEX IF NOT EXISTS decisions_type  ON decisions (type, id);
 
+-- The school's distillation set: a question, the paid teacher's answer and explanation, the local student's
+-- answer and its grade. Rows are never edited; the oldest are dropped past TRAIN_EXAMPLES_MAX (rotation).
+-- No agent ids, owners or keys: text is masked before it is written (src/brains.ts saveExample).
+CREATE TABLE IF NOT EXISTS train_examples (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts              INTEGER NOT NULL,
+  day             INTEGER NOT NULL,
+  purpose         TEXT    NOT NULL,
+  question        TEXT    NOT NULL,
+  teacher         TEXT    NOT NULL,
+  explanation     TEXT    NOT NULL DEFAULT '',
+  student         TEXT    NOT NULL DEFAULT '',
+  score           REAL,
+  teacher_engine  TEXT    NOT NULL DEFAULT '',
+  student_engine  TEXT    NOT NULL DEFAULT ''
+);
+CREATE TRIGGER IF NOT EXISTS train_examples_no_update BEFORE UPDATE ON train_examples
+BEGIN SELECT RAISE(ABORT, 'train_examples is append-only'); END;
+
 -- Read-only views for auditors working on a copy of the database.
 CREATE VIEW IF NOT EXISTS ledger_by_kind AS
   SELECT kind, COUNT(*) AS entries, MIN(day) AS first_day, MAX(day) AS last_day
