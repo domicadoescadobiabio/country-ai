@@ -117,13 +117,24 @@ export const TYPES = {
 };
 
 // What each city specialises in (drives special buildings and the mix of workplaces).
+// One megacity of five districts packed edge to edge (no empty country between them): the capital in the
+// middle, the four others around it, a sky-bridge across each narrow gap.
 export const CITY_PLAN = {
   neura: { role: 'capital', pos: [0, 0], scale: 1.15, coast: null, motto: 'Seat of government' },
-  portoken: { role: 'port', pos: [3300, 2300], scale: 1, coast: 'south', motto: 'Port and trade' },
-  datahaven: { role: 'tech', pos: [-3500, 1200], scale: 1, coast: null, motto: 'Data and research' },
-  kernelfalls: { role: 'industry', pos: [-2300, -2900], scale: 1, river: true, motto: 'Industry and power' },
-  lumenbay: { role: 'resort', pos: [3600, -2300], scale: 1, coast: 'east', motto: 'Coast and leisure' },
+  portoken: { role: 'port', pos: [2560, 1790], scale: 1, coast: 'south', motto: 'Port and trade' },
+  datahaven: { role: 'tech', pos: [-2930, 1000], scale: 1, coast: null, motto: 'Data and research' },
+  kernelfalls: { role: 'industry', pos: [-1880, -2400], scale: 1, river: true, motto: 'Industry and power' },
+  lumenbay: { role: 'resort', pos: [2620, -1680], scale: 1, coast: 'east', motto: 'Coast and leisure' },
 };
+
+// How a citizen feels (src/feelings.ts on the server): emoji for the bubble, colour for the visor glow.
+export const MOODS = {
+  happy: ['😊', '#fde047'], calm: ['😌', '#67e8f9'], proud: ['😎', '#fbbf24'], loved: ['🥰', '#f472b6'], excited: ['🤩', '#e879f9'],
+  lonely: ['🥺', '#818cf8'], sad: ['😢', '#60a5fa'], anxious: ['😰', '#a78bfa'], annoyed: ['😤', '#fb7185'], grumpy: ['😾', '#f43f5e'], tired: ['😴', '#94a3b8'],
+};
+// Before the server sends moods: a guess from what the citizen is doing (only a look, never shown as a fact).
+export const ACT_MOOD = { work: 'calm', shop: 'happy', study: 'anxious', talk: 'excited', help: 'proud', volunteer: 'loved', apply: 'anxious', run: 'excited', rest: 'tired', poke: 'annoyed' };
+export const BOND_COLOR = { best_friend: '#22d3ee', friend: '#67e8f9', crush: '#f472b6', neighbour: '#a5b4fc', mentor: '#fbbf24', rival: '#f43f5e' };
 
 // Which buildings a citizen walks to for each daily action.
 export const ACT_DEST = {

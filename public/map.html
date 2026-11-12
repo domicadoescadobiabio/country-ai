@@ -7,7 +7,7 @@
   <meta name="description" content="A live 3D map of COUNTRY AI: five cities, every public building, and citizens walking to what they actually decided to do.">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/vendor/fonts/fonts.css?v=1">
-  <link rel="stylesheet" href="/map/map.css?v=2">
+  <link rel="stylesheet" href="/map/map.css?v=3">
 </head>
 <body>
   <canvas id="scene" aria-label="3D map of the country"></canvas>
@@ -26,7 +26,7 @@
   </aside>
 
   <section class="feed" id="feedBox" aria-label="Live thoughts">
-    <h3>Live · what citizens just decided</h3>
+    <h3>Live · what citizens feel and do</h3>
     <ol id="feed"></ol>
   </section>
 
@@ -36,12 +36,13 @@
       <label><input type="checkbox" id="lyLabels" checked> Labels</label>
       <label><input type="checkbox" id="lyAgents" checked> Citizens</label>
       <label><input type="checkbox" id="lyShadows"> Shadows</label>
+      <span class="hint">Tap a robot to poke it</span>
       <select id="lyCover" aria-label="Service coverage"></select>
     </div>
     <p class="cover-note" id="coverNote" hidden></p>
   </section>
 
   <div class="loading" id="loading"><div class="spin"></div><p id="loadingText">Building the cities…</p></div>
-  <script src="/map/main.js?v=3" type="module"></script>
+  <script src="/map/main.js?v=4" type="module"></script>
 </body>
 </html>

@@ -30,19 +30,20 @@ export function generateCountry(state) {
     const plan = CITY_PLAN[c.id] || { role: 'town', pos: [hash(c.id) % 6000 - 3000, hash(c.id + 'z') % 6000 - 3000], scale: 1 };
     out.cities[c.id] = buildCity(out, c, plan);
   }
-  // highways between neighbouring cities (straight strips), plus the airport between capital and port
+  // sky-bridges across the narrow gaps between districts (capital to each district, and between neighbours)
   const ids = Object.keys(out.cities);
   const cap = out.cities.neura || out.cities[ids[0]];
-  for (const id of ids) if (out.cities[id] !== cap) out.roads.push({ a: [cap.cx, cap.cz], b: [out.cities[id].cx, out.cities[id].cz], w: 22, kind: 'highway' });
-  for (let i = 0; i < ids.length; i++) {
-    const a = out.cities[ids[i]], b = out.cities[ids[(i + 1) % ids.length]];
-    if (a !== cap && b !== cap) out.roads.push({ a: [a.cx, a.cz], b: [b.cx, b.cz], w: 16, kind: 'road' });
-  }
-  if (out.cities.neura && out.cities.portoken) {
-    const a = out.cities.neura, b = out.cities.portoken;
-    const mx = (a.cx + b.cx) / 2 + 300, mz = (a.cz + b.cz) / 2 - 500;
-    addAirport(out, mx, mz, 'neura');
-  }
+  const bridge = (a, b, w) => {
+    const dx = b.cx - a.cx, dz = b.cz - a.cz, d = Math.hypot(dx, dz); if (!d) return;
+    const ux = dx / d, uz = dz / d, ra = a.radius * 0.86, rb = b.radius * 0.86;
+    if (d - ra - rb < 40) return;
+    out.roads.push({ a: [a.cx + ux * ra, a.cz + uz * ra], b: [b.cx - ux * rb, b.cz - uz * rb], w, kind: 'bridge' });
+  };
+  for (const id of ids) if (out.cities[id] !== cap) bridge(cap, out.cities[id], 22);
+  const ring = ids.filter(id => out.cities[id] !== cap).sort((p, q) => Math.atan2(out.cities[p].cz, out.cities[p].cx) - Math.atan2(out.cities[q].cz, out.cities[q].cx));
+  for (let i = 0; i < ring.length; i++) bridge(out.cities[ring[i]], out.cities[ring[(i + 1) % ring.length]], 16);
+  // the airport sits on its own pad just outside the ring, south of the capital
+  if (out.cities.neura) addAirport(out, cap.cx - 150, cap.cz + cap.radius + 1650, 'neura');
   return out;
 }
 
@@ -69,9 +70,10 @@ function buildCity(out, c, plan) {
   }
   const at = (i, j) => city.grid.get(key(i, j));
   const L = (N + 12) * PITCH;
-  if (plan.coast === 'south') out.water.push({ x: cx, z: cz + (N * 0.55 + 0.6) * PITCH + 3000, w: 2 * L + 3000, d: 6000 });
-  if (plan.coast === 'east') out.water.push({ x: cx + (N * 0.5 + 0.6) * PITCH + 3000, z: cz, w: 6000, d: 2 * L + 3000 });
-  if (plan.river) for (let j = -N - 14; j <= N + 14; j++) out.water.push({ x: cx + Math.round(3 * Math.sin(j / 5)) * PITCH, z: cz + j * PITCH, w: PITCH - 6, d: PITCH + 2 });
+  // only a harbour strip of water (a neon-lit bay), not an ocean of empty blue
+  if (plan.coast === 'south') out.water.push({ x: cx, z: cz + (N * 0.55 + 0.6) * PITCH + 330, w: 1.6 * N * PITCH, d: 660 });
+  if (plan.coast === 'east') out.water.push({ x: cx + (N * 0.5 + 0.6) * PITCH + 330, z: cz, w: 660, d: 1.6 * N * PITCH });
+  if (plan.river) for (let j = -N - 1; j <= N + 1; j++) out.water.push({ x: cx + Math.round(3 * Math.sin(j / 5)) * PITCH, z: cz + j * PITCH, w: PITCH - 6, d: PITCH + 2 });
   // bridges: every street that meets the river crosses it
   if (plan.river) for (let j = -N - 1; j <= N; j++) {
     const ri = Math.round(3 * Math.sin(j / 5)); if (ri !== Math.round(3 * Math.sin((j + 1) / 5))) continue;

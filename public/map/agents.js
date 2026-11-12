@@ -1,28 +1,40 @@
-// Citizens walking on the street grid. A sample of the population is drawn (like city builders do);
-// office holders commute or patrol, and every real thought from /api/state (daily.recent) spawns
-// that exact citizen walking to the place that matches their action.
+// Citizens as little neon robots walking the street grid. A sample of the population is drawn (like city
+// builders do); office holders commute or patrol, and every real thought from the republic spawns that exact
+// citizen walking to the place that matches their action. Each robot wears its mood: the visor and the antenna
+// light glow in the mood's colour, and a poke makes it jump.
 import * as THREE from '../vendor/three/three.module.js';
-import { ACT_DEST, ACT_COLOR } from './catalog.js';
+import { ACT_DEST, ACT_COLOR, MOODS, ACT_MOOD } from './catalog.js';
 import { PITCH, BLOCK, hash, rng } from './gen.js';
 
 const SPEED = 46; // metres per second on screen (time-lapse)
-const tmp = new THREE.Object3D(); const col = new THREE.Color();
+const tmp = new THREE.Object3D(); const col = new THREE.Color(); const m4 = new THREE.Matrix4();
 const HOUSING = ['houses', 'rowhouses', 'apartments', 'public_housing', 'kampung', 'villas'];
 const SEAT_PLACE = {
   president: ['palace'], vice_president: ['vp_office'], minister: ['ministry'], council: ['parliament'], judge: ['const_court'],
   commissioner: ['election_comm'], police_chief: ['police_hq'], military_chief: ['military_hq'], mayor: ['city_hall'],
   police: ['police_station', 'police_post'], military: ['army_base', 'military_academy', 'border_post', 'naval_base', 'air_base'],
 };
-const SEAT_COLOR = { police: '#2563eb', police_chief: '#1d4ed8', military: '#4d7c0f', military_chief: '#365314', president: '#facc15', vice_president: '#fde047', minister: '#e9d5ff', council: '#fbbf24', judge: '#a16207', commissioner: '#38bdf8', mayor: '#fb7185' };
+const SEAT_COLOR = { police: '#3b82f6', police_chief: '#2563eb', military: '#65a30d', military_chief: '#4d7c0f', president: '#facc15', vice_president: '#fde047', minister: '#e9d5ff', council: '#fbbf24', judge: '#d97706', commissioner: '#38bdf8', mayor: '#fb7185' };
+// pastel shells: every robot gets its own, so a crowd does not look cloned
+const SHELLS = ['#f1f5f9', '#fce7f3', '#e0f2fe', '#ede9fe', '#dcfce7', '#fef9c3', '#ffe4e6', '#e0e7ff'];
+export const moodOf = a => (a.mood && MOODS[a.mood] ? a.mood : ACT_MOOD[a.act] || 'calm');
 
 export class Agents {
   constructor(scene, data, max = 3200) {
     this.data = data; this.max = max; this.list = []; this.byId = new Map(); this.r = rng('agents');
-    const geo = new THREE.CapsuleGeometry(1.8, 3.2, 3, 8).translate(0, 3.4, 0);
-    this.mesh = new THREE.InstancedMesh(geo, new THREE.MeshBasicMaterial({ color: '#ffffff' }), max);
-    this.mesh.count = 0; this.mesh.frustumCulled = false; scene.add(this.mesh);
+    // one robot = body + head + visor + antenna light, four instanced meshes sharing one matrix per robot
+    const part = (geo, mat) => { const m = new THREE.InstancedMesh(geo, mat, max); m.count = 0; m.frustumCulled = false; return m; };
+    this.body = part(new THREE.CapsuleGeometry(1.45, 1.3, 4, 10).translate(0, 2.25, 0), new THREE.MeshLambertMaterial({ color: '#ffffff', emissive: '#241a52' }));
+    // the head is flat-shaded like a sticker (cute, and readable in the dark); the body takes the light
+    this.head = part(new THREE.SphereGeometry(2.35, 16, 12).scale(1.08, 0.94, 1).translate(0, 6.2, 0), new THREE.MeshBasicMaterial({ color: '#ffffff' }));
+    this.visor = part(new THREE.CapsuleGeometry(0.62, 2.2, 3, 8).rotateZ(Math.PI / 2).scale(1, 1, 0.55).translate(0, 6.35, 2.05), new THREE.MeshBasicMaterial({ color: '#ffffff', toneMapped: false }));
+    this.tip = part(new THREE.SphereGeometry(0.62, 10, 8).translate(0, 9.6, 0), new THREE.MeshBasicMaterial({ color: '#ffffff', toneMapped: false }));
+    this.group = new THREE.Group(); this.group.add(this.body, this.head, this.visor, this.tip); scene.add(this.group);
+    this.pickables = [this.body, this.head, this.visor];
     this.weights = { work: 3, shop: 2, study: 2, talk: 2, help: 1, volunteer: 1 };
   }
+  get visible() { return this.group.visible; }
+  set visible(v) { this.group.visible = v; }
   cityOf(id) { return this.data.cities[id] || Object.values(this.data.cities)[0]; }
   buildingsOf(cityId, types) { const c = this.cityOf(cityId); const out = []; for (const t of types) for (const b of c.byType[t] || []) out.push(b); return out; }
   anyCity(types) { const out = []; for (const c of Object.values(this.data.cities)) for (const t of types) for (const b of c.byType[t] || []) out.push(b); return out; }
@@ -56,17 +68,19 @@ export class Agents {
     const step = (BLOCK - 10); // spread the houses of one server block over the map block
     return { b, x: b.x + ((h.col % L.blockW) + 0.5 - L.blockW / 2) * step / L.blockW, z: b.z + ((h.row % L.blockH) + 0.5 - L.blockH / 2) * step / L.blockH, address: typeof h.address === 'string' ? h.address : null };
   }
+  setCount() { for (const m of [this.body, this.head, this.visor, this.tip]) m.count = this.list.length; }
   add(a) {
     if (this.list.length >= this.max) return null;
     if (a.name && !a.scene) { const r = this.realHome(a.id, a.city); if (r) { a.home = r.b; a.door = { x: r.x, z: r.z }; a.address = r.address; a.x = r.x; a.z = r.z; } }
-    a.slot = this.list.length; this.list.push(a); this.byId.set(a.id, a); this.mesh.count = this.list.length; return a;
+    a.shell = SHELLS[hash(a.id) % SHELLS.length]; a.phase = (hash(a.id) % 628) / 100;
+    a.slot = this.list.length; this.list.push(a); this.byId.set(a.id, a); this.setCount(); return a;
   }
-  // swap-remove keeps the instanced mesh dense (slot = index in list)
+  // swap-remove keeps the instanced meshes dense (slot = index in list)
   remove(a) {
     if (!a || this.list[a.slot] !== a) return;
     const last = this.list.pop();
     if (last !== a) { this.list[a.slot] = last; last.slot = a.slot; }
-    this.byId.delete(a.id); this.mesh.count = this.list.length;
+    this.byId.delete(a.id); this.setCount();
   }
   // Scripted actors driven by real state (exams, trials, prison, polling queues). They stand still ('pin'),
   // run a training track ('loop'), or walk a route first and then stand ('walk' with a.after).
@@ -90,8 +104,15 @@ export class Agents {
       const cityId = mayors.get(id) || cityOfCitizen(id) || 'neura';
       const home = this.homeFor(id, cityId, seat);
       if (!home) continue;
-      this.add({ id, name: nameOf(id), seat, city: cityId, home, x: home.x, z: home.z, state: 'home', wait: this.r() * 6, act: seat, color: SEAT_COLOR[seat] || '#ffffff', scale: 1.25 });
+      this.add({ id, name: nameOf(id), seat, city: cityId, home, x: home.x, z: home.z, state: 'home', wait: this.r() * 6, act: seat, color: SEAT_COLOR[seat] || '#ffffff', scale: 1.3 });
     }
+  }
+  // a named citizen who should be on the map (a friend of the one you clicked): appears at home and goes about
+  ensure(id, name, cityId) {
+    let a = this.byId.get(id); if (a) return a;
+    const home = this.homeFor(id, cityId); if (!home) return null;
+    a = this.add({ id, name, city: cityId, home, x: home.x, z: home.z, state: 'home', wait: 2 + this.r() * 6, act: 'rest', color: ACT_COLOR.rest, scale: 1.15 });
+    return a;
   }
   // a real thought from the simulation
   live(e, nameOf) {
@@ -99,16 +120,19 @@ export class Agents {
     if (!a) {
       const home = this.homeFor(e.agent, e.city);
       if (!home) return null;
-      a = this.add({ id: e.agent, name: e.name || nameOf(e.agent), city: e.city, home, x: home.x, z: home.z, state: 'home', wait: 0, scale: 1 });
+      a = this.add({ id: e.agent, name: e.name || nameOf(e.agent), city: e.city, home, x: home.x, z: home.z, state: 'home', wait: 0, scale: 1.15 });
       if (!a) { // full: reuse a background walker (never a scene actor or an office holder)
         for (let k = 0; k < 20 && (!a || a.scene || a.seat || a.name); k++) a = this.list[Math.floor(this.r() * this.list.length)];
         if (!a || a.scene || a.seat) return null;
       }
     }
     a.liveUntil = performance.now() + 45000; a.thought = e; a.name = e.name || a.name;
-    this.go(a, e.act === 'rest' ? null : e.act, true);
+    if (e.mood && MOODS[e.mood]) a.mood = e.mood;
+    if (e.act !== 'poke') this.go(a, e.act === 'rest' ? null : e.act, true);
     return a;
   }
+  // the human poked this robot: it jumps, spins once and glows angry for a while
+  poke(a, now) { a.pokeT = now; a.mood = a.mood === 'grumpy' || (a.pokes || 0) >= 2 ? 'grumpy' : 'annoyed'; a.pokes = (a.pokes || 0) + 1; a.liveUntil = Math.max(a.liveUntil || 0, now + 20000); }
 
   destFor(a, act) {
     if (a.seat && !act) { const places = a.seat === 'military' ? (this.buildingsOf(a.city, SEAT_PLACE.military).length ? this.buildingsOf(a.city, SEAT_PLACE.military) : this.buildingsOf('neura', SEAT_PLACE.military)) : (['council', 'minister', 'president', 'vice_president', 'judge', 'commissioner', 'police_chief', 'military_chief'].includes(a.seat) ? this.buildingsOf('neura', SEAT_PLACE[a.seat]) : this.buildingsOf(a.city, SEAT_PLACE[a.seat])); return places[Math.floor(this.r() * places.length)]; }
@@ -128,7 +152,7 @@ export class Agents {
     a.seg = 0; a.state = 'walk'; a.dest = dest;
   }
   update(dt, now) {
-    const list = this.list;
+    const list = this.list; const t = now / 1000;
     for (const a of list) {
       if (a.state === 'pin') { /* stands where the scene put it */ }
       else if (a.state === 'loop') {
@@ -140,12 +164,12 @@ export class Agents {
         else { s -= w; a.x = x - w / 2; a.z = z + d / 2 - s; a.heading = Math.PI; }
       } else if (a.state === 'home' || a.state === 'stay') {
         a.wait -= dt;
-        if (a.wait <= 0) {
+        if (a.wait <= 0 && !(a.pokeT && now - a.pokeT < 2500)) {
           if (a.state === 'stay') { const hm = a.door || a.home; a.target = hm; a.path = route(this.cityOf(a.city), a.x, a.z, hm.x, hm.z, (hash(a.id) % 7) - 3); a.seg = 0; a.state = 'walk'; a.dest = null; }
           else if (a.seat) this.go(a, null);
           else this.go(a, pickWeighted(this.r, this.weights));
         }
-      } else if (a.state === 'walk') {
+      } else if (a.state === 'walk' && !(a.pokeT && now - a.pokeT < 1600)) {
         let step = SPEED * dt;
         while (step > 0 && a.seg < a.path.length - 1) {
           const [x2, z2] = a.path[a.seg + 1]; const dx = x2 - a.x, dz = z2 - a.z; const d = Math.hypot(dx, dz);
@@ -159,13 +183,29 @@ export class Agents {
           if (atHome && !a.seat) { a.color = ACT_COLOR.rest; a.act = 'rest'; }
         }
       }
-      const visible = a.state === 'walk' || a.state === 'pin' || a.state === 'loop' || (a.liveUntil > now);
-      const s = visible ? a.scale * (a.liveUntil > now ? 1.9 : 1) : 0;
-      tmp.position.set(a.x, 0, a.z); tmp.rotation.set(0, a.heading || 0, 0); tmp.scale.set(s, s, s); tmp.updateMatrix();
-      this.mesh.setMatrixAt(a.slot, tmp.matrix);
-      this.mesh.setColorAt(a.slot, col.set(a.liveUntil > now ? '#ffffff' : a.color).lerp(col.clone().set(a.color), a.liveUntil > now ? 0.55 : 1));
+      const live = a.liveUntil > now; const poked = a.pokeT && now - a.pokeT < 1600;
+      const visible = a.state === 'walk' || a.state === 'pin' || a.state === 'loop' || live || a.selected;
+      const s = visible ? a.scale * (live || a.selected ? 1.35 : 1) : 0;
+      // walking bob, idle sway, and the poke: a hop with a squash and a full spin
+      let y = 0, sy = 1, spin = 0;
+      if (a.state === 'walk') y = Math.abs(Math.sin(t * 9 + a.phase)) * 0.9;
+      if (poked) { const k = (now - a.pokeT) / 1600; y = Math.sin(Math.min(1, k * 1.6) * Math.PI) * 9; spin = k < 0.6 ? k / 0.6 * Math.PI * 2 : 0; sy = k < 0.08 ? 0.75 : 1 + 0.15 * Math.sin(k * 20) * (1 - k); }
+      tmp.position.set(a.x, y * s, a.z); tmp.rotation.set(0, (a.heading || 0) + spin + (a.state !== 'walk' ? Math.sin(t * 1.3 + a.phase) * 0.25 : 0), 0); tmp.scale.set(s, s * sy, s); tmp.updateMatrix();
+      for (const m of [this.body, this.head, this.visor, this.tip]) m.setMatrixAt(a.slot, tmp.matrix);
+      const mood = MOODS[moodOf(a)];
+      this.body.setColorAt(a.slot, col.set(a.color || ACT_COLOR.rest));
+      // the shell stays under 1.0 (no bloom on the face); only the visor and the antenna light glow
+      this.head.setColorAt(a.slot, col.set(a.shell).multiplyScalar(a.selected ? 0.97 : 0.88));
+      this.visor.setColorAt(a.slot, col.set(mood[1]).multiplyScalar(poked ? 2.2 : a.selected || live ? 1.8 : 1.45));
+      this.tip.setColorAt(a.slot, col.set(mood[1]).multiplyScalar((live || a.selected ? 1.6 : 1.2) + Math.sin(t * 4 + a.phase) * (poked ? 0.9 : 0.3)));
     }
-    this.mesh.instanceMatrix.needsUpdate = true; if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
+    for (const m of [this.body, this.head, this.visor, this.tip]) { m.instanceMatrix.needsUpdate = true; if (m.instanceColor) m.instanceColor.needsUpdate = true; }
+  }
+  pickAt(ray) {
+    if (!this.group.visible) return null;
+    let best = null;
+    for (const m of this.pickables) { const h = ray.intersectObject(m, false)[0]; if (h && h.instanceId != null && (!best || h.distance < best.distance)) best = h; }
+    return best ? this.list[best.instanceId] : null;
   }
   at(instanceId) { return this.list[instanceId]; }
 }
