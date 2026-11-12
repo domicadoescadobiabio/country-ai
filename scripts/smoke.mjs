@@ -141,6 +141,10 @@ try {
   check('CSP allows fonts and styles from this site only', /style-src 'self';/.test(csp) && /font-src 'self';/.test(csp) && !/googleapis|gstatic/.test(csp), csp);
   const fcss = await fetch(BASE + '/vendor/fonts/fonts.css');
   check('the self-hosted font stylesheet is served from this site', fcss.status === 200 && /text\/css/.test(fcss.headers.get('content-type') || ''), `${fcss.status} ${fcss.headers.get('content-type')}`);
+  // every font the stylesheet names is on this site and served as font/woff2 (CSP font-src 'self')
+  const fontUrls = [...(await fcss.text()).matchAll(/url\('\.\/([^']+\.woff2)'\)/g)].map(m => m[1]);
+  const fontRes = await Promise.all(fontUrls.map(f => fetch(BASE + '/vendor/fonts/' + f).then(r => [f, r.status, r.headers.get('content-type')])));
+  check('every font named in fonts.css is served from this site as font/woff2', fontUrls.length >= 7 && fontRes.every(([, s, t]) => s === 200 && t === 'font/woff2'), JSON.stringify(fontRes.filter(([, s, t]) => s !== 200 || t !== 'font/woff2')));
   const mp = await fetch(BASE + '/api/map', { headers: { 'accept-encoding': 'gzip' } }); const mj = await mp.json();
   const mapOk = mj.seats && Array.isArray(mj.cities) && Array.isArray(mj.daily?.recent) && Array.isArray(mj.academy?.rooms) && 'current' in (mj.training || {}) && mj.population?.byStatus && Array.isArray(mj.held)
     && mj.police.incidents.every(i => i.perps?.length) && mj.court.cases.every(x => x.status === 'open') && mj.elections.every(e => 'voted' in e && 'electorate' in e && 'title' in e)
