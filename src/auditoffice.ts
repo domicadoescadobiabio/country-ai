@@ -16,7 +16,8 @@ const A = S => { S.audit ||= {}; S.audit.reports ||= []; S.audit.recounts ||= 0;
 export function recount(e: Election) {
   const anon = e.result?.anonymisedBallots || [];
   const digest = crypto.createHash('sha256').update(canon([...anon].sort())).digest('hex');
-  const ballots = anon.filter(b => b !== 'BLANK').map(b => b.split('>'));
+  // an empty ranking is stored as '' (not BLANK): it is a ballot that ranks nobody, exactly as the count saw it
+  const ballots = anon.filter(b => b !== 'BLANK').map(b => (b ? b.split('>') : []));
   const ids = e.candidates.map(c => c.id);
   let winners;
   if (['recall', 'referendum', 'impeachment'].includes(e.kind)) {

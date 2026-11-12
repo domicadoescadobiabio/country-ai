@@ -44,7 +44,7 @@ function suitability(a: Citizen, role: any) {
 // Who may sit the exam for an office: heads are examined from inside their force;
 // everything else from citizens without an office. Already-qualified agents are skipped.
 export function examEligible(S: State, a: Citizen, roleId: string) {
-  const role = ROLES[roleId];
+  const role = ROLES[roleId]; if (!role || !Object.hasOwn(ROLES, roleId)) return false; // unknown office id
   if (a.status !== 'free' || (S.academy.cooldown[a.id]?.[roleId] || 0) > Date.now()) return false;
   if ((role.appointed || role.elected) && a.quals?.[roleId]) return false;
   if (role.chiefOf) return a.office === role.chiefOf;
@@ -53,7 +53,7 @@ export function examEligible(S: State, a: Citizen, roleId: string) {
 }
 // Qualified and available for appointment.
 export function qualifiedPool(S: State, roleId: string) {
-  const role = ROLES[roleId];
+  const role = ROLES[roleId]; if (!role || !Object.hasOwn(ROLES, roleId)) return [];
   return S.citizens.filter(a => a.quals?.[roleId] && a.status === 'free' && (role.chiefOf ? a.office === role.chiefOf : role.elected ? a.office !== roleId : !a.office));
 }
 const POOL_TARGET = 3;
@@ -63,7 +63,7 @@ const POOL_TARGET = 3;
 const runningElsewhere = (S, roleId = null) => new Set((S.elections?.list || []).filter(e => !['done', 'failed'].includes(e.stage) && e.office !== roleId).flatMap(e => e.candidates.map(c => c.id)));
 const thinCities = (S, roleId) => { const busy = runningElsewhere(S, roleId); return Object.keys(S.cities || {}).filter(c => qualifiedPool(S, roleId).filter(a => a.city === c && !busy.has(a.id)).length < 2); };
 function needsExam(S: State, roleId: string) {
-  const role = ROLES[roleId];
+  const role = ROLES[roleId]; if (!role || !Object.hasOwn(ROLES, roleId)) return false;
   if (role.cityBased) return thinCities(S, roleId).length > 0;
   // enough qualified people FREE to run against each other: someone already standing in another race cannot
   // stand here too (one candidacy at a time), so they do not count
@@ -75,7 +75,7 @@ function needsExam(S: State, roleId: string) {
 }
 
 function chooseCandidate(ctx: Ctx, roleId: string) {
-  const { S } = ctx; const role = ROLES[roleId];
+  const { S } = ctx; const role = ROLES[roleId]; if (!role || !Object.hasOwn(ROLES, roleId)) return null;
   const thin = role.cityBased ? thinCities(S, roleId) : null;
   const busy = thin || role.elected ? runningElsewhere(S, roleId) : null;
   const pool = S.citizens.filter(a => !a.brain && !inExam(S, a.id) && examEligible(S, a, roleId) && (!busy || !busy.has(a.id)) && (!role.elected || (!a.office && a.wallet >= 100)) && (!thin || thin.includes(a.city)));

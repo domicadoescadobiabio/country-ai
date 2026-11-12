@@ -32,8 +32,24 @@ async function ruleQuestionChecks(check) {
   check('rule questions: an office gets distinct questions', ex.length === 3 && new Set(ex.map(x => x.lesson)).size === 3);
 }
 
+// A drill is graded one tick after its last answer; the official may have lost the seat in between (ticket #85:
+// "Cannot read properties of undefined (reading 'elected')" from recall() on a null office).
+async function lostSeatDrillChecks(check) {
+  const { institution: training } = await import('../src/training.ts');
+  const { examEligible, qualifiedPool } = await import('../src/academy.ts');
+  const a = { id: 'x', name: 'X', office: null, status: 'free', drillFails: 1, traits: {}, lessons: {}, skill: { council: 0.3 }, quals: {} };
+  const answers = [{ ok: false, lesson: 'l1', tests: 'wisdom' }, { ok: false, lesson: 'l2', tests: 'wisdom' }, { ok: true, lesson: 'l3', tests: 'wisdom' }];
+  const S = { day: 5, citizens: [a], academy: { rooms: [], cooldown: {} }, training: { drills: 0, passed: 0, recalls: 0, reviews: 0, current: { sid: 'd', agentId: 'x', roleId: 'council', step: 3, items: [{}, {}, {}], answers } } };
+  const ctx = { S, agent: id => (id === 'x' ? a : null), say() {}, decide() {}, record() {}, log() {} };
+  let err = null;
+  try { await training.tick(ctx); } catch (e) { err = e; }
+  check('drill graded after the official lost the seat: no crash, no recall, drill closed', !err && S.training.current === null && S.training.recalls === 0 && a.drillFails === 1, String(err));
+  check('Academy treats an unknown office id as not examinable', examEligible(S, a, 'nope') === false && examEligible(S, a, '__proto__') === false && qualifiedPool(S, 'nope').length === 0);
+}
+
 export async function run({ get, until, check }) {
   await ruleQuestionChecks(check);
+  await lostSeatDrillChecks(check);
   const s = await get('/api/state');
   const tr = s.training?.rules;
   check('rule questions in drills are counted in public state', tr && Number.isInteger(tr.asked) && tr.right <= tr.asked, JSON.stringify(tr));

@@ -125,6 +125,24 @@ export async function run({ BASE, get, until, check, TOKEN }) {
   check('recount catches a forged winner', !recount({ ...e, result: { ...e.result, winners: ['b'] } }).ok);
   check('recount catches swapped ballots (digest)', !recount({ ...e, result: { ...e.result, anonymisedBallots: ['b>a', 'b', 'b>a'] } }).digestOk);
 
+  // the count and the recount agree whatever the ballot order, and on ballots that rank nobody
+  const { stv } = await import('../src/elections.ts');
+  const cands = ['a', 'b', 'c', 'd', 'e', 'f'];
+  const shuffle = xs => xs.map(x => [Math.random(), x]).sort((p, q) => p[0] - q[0]).map(p => p[1]);
+  let orderDiff = 0;
+  for (let t = 0; t < 300; t++) {
+    const ballots = Array.from({ length: 7 + Math.floor(Math.random() * 40) }, () => shuffle(cands).slice(0, 1 + Math.floor(Math.random() * 5)));
+    const seats = 2 + (t % 3);
+    const base = JSON.stringify(stv(ballots, cands, seats).elected.slice().sort());
+    for (let k = 0; k < 4; k++) if (JSON.stringify(stv(shuffle(ballots), cands, seats).elected.slice().sort()) !== base) orderDiff++;
+  }
+  check('STV result does not depend on the order of the ballots (300 random elections)', orderDiff === 0, String(orderDiff));
+  const rankings = [['a', 'b'], ['a', 'c'], ['a', 'b'], ['b'], ['c'], [], []]; // two ballots that rank nobody
+  const anonE = rankings.map(r => r.join('>')).sort();
+  const se = { kind: 'regular', seats: 2, office: 'council', candidates: cands.slice(0, 3).map(id => ({ id })), result: { anonymisedBallots: anonE, winners: stv(rankings, ['a', 'b', 'c'], 2).elected } };
+  se.result.digest = createHash('sha256').update(canon([...anonE].sort())).digest('hex');
+  check('recount matches the count when some ballots rank nobody', recount(se).ok, JSON.stringify(recount(se)));
+
   await pardonChecks(check);
 
   // ---------------- live republic

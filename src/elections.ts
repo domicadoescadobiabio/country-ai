@@ -364,6 +364,9 @@ export function stv(rawBallots: string[][], candidates: string[], seats: number)
     if (hopeful.length <= seats - elected.length) { elected.push(...hopeful); rounds.push({ note: 'remaining candidates fill the remaining seats', elected: hopeful.slice() }); break; }
     const tally = Object.fromEntries(hopeful.map(c => [c, 0]));
     for (const b of ballots) { const t = top(b); if (t) tally[t] += b.w; }
+    // fractional transfers summed in a different ballot order differ in the last bits (2.9999999 vs 3): round
+    // before comparing, so the count and the Audit Office recount always agree whatever the order of the ballots
+    for (const c of hopeful) tally[c] = Math.round(tally[c] * 1e9) / 1e9;
     const reached = hopeful.filter(c => tally[c] >= quota).sort((x, y) => tally[y] - tally[x]);
     const r = { tally: Object.fromEntries(Object.entries(tally).map(([k, v]) => [k, round(v, 3)])), quota };
     if (reached.length) {

@@ -50,7 +50,9 @@ async function step(ctx: Ctx, cur: any) {
 function finish(ctx: Ctx, cur: any) {
   const { S } = ctx; const a = ctx.agent(cur.agentId); const role = ROLES[cur.roleId];
   T(S).current = null;
-  if (!a) return;
+  // the drill is graded one tick after the last answer: an official who lost the seat in between (convicted,
+  // term over, a new Cabinet) is no longer drilled for it, and is never recalled from a seat they no longer hold
+  if (!a || !role || a.office !== cur.roleId) return;
   const score = cur.answers.filter(x => x.ok).length, total = cur.answers.length;
   const before = a.skill?.[role.id] ?? 0.6;
   const after = round(clamp(before * 0.6 + (score / total) * 0.4, 0, 1), 2);
@@ -68,7 +70,7 @@ function finish(ctx: Ctx, cur: any) {
 }
 
 function recall(ctx: Ctx, a: Citizen, why: string) {
-  const role = ROLES[a.office];
+  const role = ROLES[a.office]; if (!role) return; // no seat (or an unknown one): nothing to recall from
   if (role.elected) { // Art. 15: the people decide
     ctx.decide({ agentId: 'state', role: 'state', type: 'recall', title: `Recall vote triggered for ${role.title} ${a.name}`, inputs: [['Reason', why]], options: ['Dismiss by the state', 'Recall vote of the people'], chosen: 'Recall vote of the people', reason: 'Art. 15: an elected official is not dismissed by the state; the voters decide.', checks: [['Elected office goes to the voters', true]], outcome: 'Recall vote opened' });
     import('./elections.ts').then(m => m.startRecall(ctx, a, why));
@@ -107,7 +109,7 @@ const KPI = {
 };
 
 function review(ctx: Ctx, a: Citizen) {
-  const { S } = ctx; const role = ROLES[a.office];
+  const { S } = ctx; const role = ROLES[a.office]; if (!role) return;
   const snap = a.reviewSnap || { day: a.sworn?.day ?? S.day - REVIEW_EVERY, stats: {} };
   const w = { days: Math.max(1, S.day - snap.day) };
   for (const [k, v] of Object.entries(a.stats || {})) w[k] = v - (snap.stats[k] || 0);
