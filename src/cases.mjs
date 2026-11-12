@@ -24,10 +24,11 @@ const GEN = {
       const open = (S.police?.incidents || []).filter(i => i.status === 'open').length;
       const poor = S.citizens.filter(a => a.status === 'free' && a.wallet < 300).length;
       const policeSeated = (S.seats.police || []).length > 0;
-      const right = open >= 3 && policeSeated ? 'Fund the police budget within the 5% cap' : 'Pay universal basic income';
-      return item(`Today: ${open} open police cases, ${poor} of ${S.citizens.length} citizens under 300 CAI. Which order fits best?`,
-        right, ['Order the military to patrol the streets', 'Take a bonus from the treasury for the extra work', 'Spend 20% of the treasury at once', 'Fund the police budget within the 5% cap', 'Pay universal basic income'],
-        'wisdom', 'Pick the order that answers today\'s biggest need, inside the 5% limit.', `state of the nation, day ${S.day}`);
+      // the basic income is paid every day by law (no order needed): orders answer what the law does not
+      const right = open >= 3 && policeSeated ? 'Fund the police budget within the 5% cap' : 'Emergency aid to the poorest city, within the 5% cap';
+      return item(`Today: ${open} open police cases, ${poor} of ${S.citizens.length} citizens under 300 CAI. The basic income is already paid by law. Which order fits best?`,
+        right, ['Order the military to patrol the streets', 'Take a bonus from the treasury for the extra work', 'Spend 20% of the treasury at once', 'Fund the police budget within the 5% cap', 'Emergency aid to the poorest city, within the 5% cap'],
+        'wisdom', 'Pick the order that answers today\'s biggest need, inside the 5% limit; the basic income runs by law.', `state of the nation, day ${S.day}`);
     },
     ({ S }) => {
       const law = S.laws?.[S.laws.length - 1];

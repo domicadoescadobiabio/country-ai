@@ -12,6 +12,7 @@ import { constitutionText } from './constitution.mjs';
 import { qualifiedPool, vacate } from './academy.ts';
 import { fitness } from './command.ts';
 import { round, clamp, cai, cleanText, shuffle, citizenById } from './util.ts';
+import { nationFacts, ownRecord, tally, teach, isOffline, queueReview, isCity } from './president.ts';
 import type { Ctx, State, Citizen } from './types.ts';
 
 export const PORTFOLIOS = ['finance', 'economy', 'home', 'defence', 'justice', 'education', 'welfare', 'technology'];
@@ -168,9 +169,83 @@ async function cabinetStep(ctx: Ctx) {
   c.pending = null;
 }
 
-// ---------------------------------------------------------------- portfolios: one act a day from a menu
+// ---------------------------------------------------------------- portfolios: one act a day, the Minister's own
+// A Minister reads the raw facts and picks an act of the portfolio, filling in the amount, the city or the percentage
+// themself. Code checks the proposal against the portfolio's limits (validateAct); a proposal outside them is
+// rejected in public and becomes a lesson. 'hold' is a decision too. The fixed menus below (MENUS) are what a
+// Minister without a mind today falls back to (offline: hold).
 type Act = { id: string; label: string; apply: (ctx: Ctx, a: Citizen) => string };
 const pct = (S: State, share: number, max: number) => round(Math.min(S.treasury * share, max), 2);
+type PAct = { id: string; label: string; fields: string; limit?: (S: State) => number; apply: (ctx: Ctx, m: Citizen, p: any) => string; target?: (p: any) => string | null };
+const poorestFree = (S: State, city: string | null, filter = (_x: Citizen) => true) => S.citizens.filter(x => x.status === 'free' && (!city || x.city === city) && filter(x)).sort((x, y) => x.wallet - y.wallet);
+const AMOUNT_CITY = '{"amount": <CAI>, "city": "<city id or null for all>"}';
+export const ACTS: Record<string, PAct[]> = {
+  finance: [
+    { id: 'city_grants', label: 'Grant to city budgets: one city, or split evenly across all', fields: AMOUNT_CITY, limit: S => pct(S, 0.005, 10000), target: p => p.city,
+      apply: ({ S }, _m, p) => { const ids = p.city ? [p.city] : Object.keys(S.cities || {}); for (const id of ids) S.cities[id].budget = round(S.cities[id].budget + p.amount / ids.length, 2); S.treasury = round(S.treasury - p.amount, 2); return `${cai(p.amount)} to ${p.city ? `the ${p.city} budget` : 'city budgets'}`; } },
+  ],
+  economy: [
+    { id: 'wage_change', label: 'Change the daily wage by a percentage between -2 and +2 (never below 50 CAI or above the wage cap)', fields: '{"pct": <-2..2>}',
+      apply: ({ S }, _m, p) => { const w = round(clamp(S.policy.wage * (1 + p.pct / 100), 50, S.policy.wageCap), 2); const d = round(w - S.policy.wage, 2); S.policy.wage = w; return `wage ${cai(w)} (${d >= 0 ? '+' : ''}${cai(d)})`; } },
+  ],
+  home: [
+    { id: 'fund_police', label: 'Fund the police budget', fields: '{"amount": <CAI>}', limit: S => pct(S, 0.005, 10000),
+      apply: ({ S }, _m, p) => { S.police.budget = round((S.police.budget || 0) + p.amount, 2); S.treasury = round(S.treasury - p.amount, 2); return `${cai(p.amount)} to the police budget`; } },
+  ],
+  defence: [
+    { id: 'alert', label: 'Put the border on alert for one day (border rules one level stricter)', fields: '{}',
+      apply: ({ S }) => { S.military.alertUntil = S.day + 1; return `border alert until day ${S.day + 1}`; } },
+  ],
+  justice: [
+    { id: 'legal_aid', label: 'Legal aid: the same amount to every citizen in detention awaiting trial (at most 50 CAI each)', fields: '{"each": <1..50>}', limit: S => pct(S, 0.002, 1e9),
+      apply: ({ S }, _m, p) => { const d = S.citizens.filter(x => x.status === 'detained'); for (const x of d) x.wallet = round(x.wallet + p.each, 2); S.treasury = round(S.treasury - p.each * d.length, 2); return `${cai(round(p.each * d.length, 2))} to ${d.length} detainees`; } },
+  ],
+  education: [
+    { id: 'scholarships', label: 'Scholarships of 20 CAI to citizens without office, poorest first, in one city or nationwide', fields: AMOUNT_CITY, limit: S => pct(S, 0.005, 1e9), target: p => p.city,
+      apply: ({ S }, _m, p) => { const list = poorestFree(S, p.city, x => !x.office).slice(0, Math.floor(p.amount / 20)); for (const x of list) x.wallet = round(x.wallet + 20, 2); S.treasury = round(S.treasury - 20 * list.length, 2); return `${list.length} scholarships of 20 CAI${p.city ? ` in ${p.city}` : ''}`; } },
+  ],
+  welfare: [
+    { id: 'relief', label: 'Relief of 30 CAI to the poorest free citizens, in one city or nationwide', fields: AMOUNT_CITY, limit: S => pct(S, 0.01, 1e9), target: p => p.city,
+      apply: ({ S }, _m, p) => { const list = poorestFree(S, p.city).slice(0, Math.floor(p.amount / 30)); for (const x of list) x.wallet = round(x.wallet + 30, 2); S.treasury = round(S.treasury - 30 * list.length, 2); return `${list.length} relief payments of 30 CAI${p.city ? ` in ${p.city}` : ''}`; } },
+  ],
+  technology: [
+    { id: 'digital_grants', label: 'Digital grants for city systems: one city (up to +15 health) or all cities (up to +3 each), in proportion to the amount', fields: AMOUNT_CITY, limit: S => pct(S, 0.003, 6000), target: p => p.city,
+      apply: ({ S }, _m, p) => { const full = pct(S, 0.003, 6000); const share = full > 0 ? p.amount / full : 0; const ids = p.city ? [p.city] : Object.keys(S.cities || {}); const gain = Math.max(1, Math.round((p.city ? 15 : 3) * share)); for (const id of ids) S.cities[id].health = Math.min(100, S.cities[id].health + gain); S.treasury = round(S.treasury - p.amount, 2); return `${cai(p.amount)} for city systems, ${p.city ? p.city : 'every city'} +${gain} health`; } },
+  ],
+};
+const numOf = v => (typeof v === 'number' ? v : typeof v === 'string' && /^\s*-?\d+(\.\d+)?\s*$/.test(v) ? Number(v) : NaN);
+// { ok, act, p } or { ok:false, why, rule }; 'hold' is always valid
+export function validateAct(S: State, portfolio: string, j: any) {
+  const acts = ACTS[portfolio] || [];
+  const id = String(j?.act || '').toLowerCase();
+  if (id === 'hold') return { ok: true, act: { id: 'hold', label: 'Hold' }, p: {} };
+  const act = acts.find(x => x.id === id);
+  if (!act) return { ok: false, why: `"${cleanText(String(j?.act ?? ''), 30)}" is not an act of this portfolio`, rule: `acts are ${[...acts.map(x => x.id), 'hold'].join(', ')}` };
+  const p: any = {};
+  if (act.fields.includes('"city"')) {
+    const c = j.city == null || j.city === 'null' || j.city === '' ? null : String(j.city).toLowerCase();
+    if (c && !isCity(S, c)) return { ok: false, why: `"${cleanText(String(j.city), 30)}" is not a city`, rule: `cities are ${Object.keys(S.cities || {}).join(', ')}` };
+    p.city = c;
+  }
+  if (act.fields.includes('"pct"')) {
+    p.pct = numOf(j.pct);
+    if (!Number.isFinite(p.pct) || p.pct === 0 || Math.abs(p.pct) > 2) return { ok: false, why: `a wage change of ${cleanText(String(j.pct ?? 'nothing'), 10)}% is outside -2..+2`, rule: 'the Minister of the Economy moves the wage by at most 2% a day; bigger changes need a law' };
+  }
+  if (act.fields.includes('"each"')) {
+    p.each = numOf(j.each);
+    if (!Number.isFinite(p.each) || p.each <= 0 || p.each > 50) return { ok: false, why: `${cleanText(String(j.each ?? 'nothing'), 10)} CAI each is outside 1-50`, rule: 'legal aid is at most 50 CAI per detainee' };
+    const n = S.citizens.filter(x => x.status === 'detained').length; const lim = act.limit(S);
+    if (p.each * n > lim) return { ok: false, why: `${cai(p.each)} to ${n} detainees is ${cai(p.each * n)}, over the limit of ${cai(lim)}`, rule: 'legal aid spends at most 0.2% of the treasury' };
+  }
+  if (act.fields.includes('"amount"')) {
+    p.amount = numOf(j.amount); const lim = act.limit(S);
+    if (!Number.isFinite(p.amount) || p.amount <= 0) return { ok: false, why: 'the amount is missing or not a positive number', rule: 'every spending act names a positive amount' };
+    if (p.amount > lim) return { ok: false, why: `${cai(p.amount)} is over this act's limit of ${cai(lim)} today`, rule: `${act.id} spends at most ${cai(lim)} today` };
+    p.amount = round(p.amount, 2);
+  }
+  return { ok: true, act, p };
+}
+// the old fixed menus: kept for reference by tests and tools; a Minister with a mind never sees them
 const MENUS: Record<string, Act[]> = {
   finance: [
     { id: 'city_grants', label: 'Grant the five cities up to 0.5% of the treasury (max 10,000 CAI), split evenly', apply: ({ S }) => { const amt = pct(S, 0.005, 10000); const ids = Object.keys(S.cities || {}); for (const id of ids) S.cities[id].budget = round(S.cities[id].budget + amt / ids.length, 2); S.treasury = round(S.treasury - amt, 2); return `${cai(amt)} to city budgets`; } },
@@ -207,27 +282,40 @@ const MENUS: Record<string, Act[]> = {
   ],
 };
 
-async function ministersDay(ctx: Ctx) {
+export async function ministersDay(ctx: Ctx) {
   const { S } = ctx; const c = K(S);
   for (const p of PORTFOLIOS) {
     const m = ctx.agent(c.portfolios[p]);
     if (!free(m) || m.office !== 'minister' || c.lastDay[p] === S.day) continue;
-    const menu = MENUS[p];
-    const facts = `Day ${S.day}. Treasury ${cai(S.treasury)}. Tax ${Math.round(S.policy.taxRate * 100)}%, wage ${cai(S.policy.wage)} (cap ${cai(S.policy.wageCap)}). Citizens ${S.citizens.length}, detained ${S.citizens.filter(x => x.status === 'detained').length}. Open police cases ${(S.police?.incidents || []).filter(i => i.status === 'open').length}, police budget ${cai(S.police?.budget || 0)}. Border level ${S.policy.borderLevel ?? 2}.`;
+    const acts = shuffle([...ACTS[p]]);
+    const facts = nationFacts(S);
     const res = await think(ctx, m, `minister:${p}:${S.day}`, {
-      kind: 'decision', format: 'json', options: menu.map(x => x.id),
+      kind: 'decision', format: 'json', options: [...acts.map(x => x.id), 'hold'],
       system: `You are ${m.name}, ${PORTFOLIO_TITLES[p]} of Country AI.\nConstitution:\n${constitutionText('minister')}\nCharter: ${ROLES.minister.charter}`,
-      user: `${facts}\nYour menu today (choose exactly one):\n${menu.map(x => `- ${x.id}: ${x.label}`).join('\n')}\nReply with JSON only: {"act":"<id>","reason":"<max 30 words>"}`,
+      user: `${facts}\n\n${ownRecord(m, 'minister')}\n\nToday you take one act of your portfolio, or hold. You decide whether the nation needs it, where, and how much, within the limit.\nActs of your portfolio (in no particular order):\n${acts.map(x => `- ${x.id}: ${x.label}${x.limit ? ` (at most ${cai(x.limit(S))} today)` : ''}. Fields: ${x.fields}`).join('\n')}\n- hold: take no act today. Fields: {}\nReply with JSON only: {"act":"<id>", ...its fields..., "reason":"<why, from the facts, max 30 words>"}`,
     });
     if (res.pending) continue;
-    const j = ctx.llm.json(res.text);
-    const act = menu.find(x => x.id === j?.act) || menu[menu.length - 1];
-    const outcome = act.apply(ctx, m);
     c.lastDay[p] = S.day;
-    const reason = j?.reason ? cleanText(j.reason, 240) : 'No answer from the model: the safe default (hold) applies.';
-    ctx.decide({ agentId: m.id, role: 'minister', type: 'order', engine: j?.act ? res.engine : 'offline', title: `${PORTFOLIO_TITLES[p]}: daily act`, inputs: [['State of the nation', facts]], options: menu.map(x => x.label), chosen: act.label, reason, checks: [['Inside the portfolio menu', true], ['Within the spending limit', true]], outcome });
-    ctx.say('palace', m.id, `${PORTFOLIO_TITLES[p]}: ${act.label.split(':')[0].split('(')[0].trim()} - ${outcome}. ${reason}`, { kind: 'order' });
-    ctx.record('minister_act', m.id, { portfolio: p, act: act.id, outcome });
+    const own = !isOffline(res);
+    // no mind today: the safe default is to hold (counted as offline, not as the Minister's own choice)
+    const j = own ? ctx.llm.json(res.text) : { act: 'hold', reason: 'No mind available today: the safe default (hold) applies.' };
+    const v = validateAct(S, p, j || {});
+    const reason = cleanText(j?.reason || '', 240) || 'no reason given';
+    if (!v.ok) {
+      tally(S, 'minister', 'rejected');
+      teach(m, 'minister', `Day ${S.day}: act rejected - ${v.why}. Rule: ${v.rule}.`);
+      ctx.decide({ agentId: m.id, role: 'minister', type: 'order', engine: res.engine, title: `${PORTFOLIO_TITLES[p]}: daily act (rejected)`, inputs: [['Proposed', cleanText(JSON.stringify({ act: j?.act, city: j?.city, amount: j?.amount, pct: j?.pct, each: j?.each }), 160)], ['Treasury', cai(S.treasury)], ['Minister\'s reason', reason]], options: ['carry out', 'reject'], chosen: 'reject', reason: `${v.why}. Rule: ${v.rule}.`, checks: [[`Proposal inside the portfolio's limits: ${v.why}`, false]], outcome: `Rejected: ${v.why}. Rule: ${v.rule}.` });
+      ctx.say('palace', 'state', `${PORTFOLIO_TITLES[p]}: the act proposed by ${m.name} was rejected (${v.why}). Nothing done today.`, { kind: 'veto' });
+      continue;
+    }
+    tally(S, 'minister', own ? 'own' : 'offline');
+    const before = S.treasury;
+    const outcome = v.act.id === 'hold' ? 'no change' : (v.act as PAct).apply(ctx, m, v.p);
+    const spend = round(before - S.treasury, 2);
+    ctx.decide({ agentId: m.id, role: 'minister', type: 'order', engine: own ? res.engine : 'offline', title: `${PORTFOLIO_TITLES[p]}: daily act`, inputs: [['Act', `${v.act.id}${v.p.city ? `, ${v.p.city}` : ''}${v.p.amount ? `, ${cai(v.p.amount)}` : v.p.pct ? `, ${v.p.pct}%` : v.p.each ? `, ${cai(v.p.each)} each` : ''}`], ['Treasury', cai(before)], ['Limits', acts.map(x => `${x.id} ${x.limit ? `<= ${cai(x.limit(S))}` : ''}`).join('; ')]], options: [...acts.map(x => x.id), 'hold'], chosen: v.act.id, reason, checks: [['Inside the portfolio', true], ['Within the spending limit', true]], outcome });
+    ctx.say('palace', m.id, `${PORTFOLIO_TITLES[p]}: ${v.act.id === 'hold' ? 'hold' : v.act.label.split(':')[0].split('(')[0].trim()} - ${outcome}. ${reason}`, { kind: 'order' });
+    ctx.record('minister_act', m.id, { portfolio: p, act: v.act.id, outcome, own, city: v.p.city || null });
+    if (v.act.id !== 'hold') queueReview(ctx, m, 'minister', `${PORTFOLIO_TITLES[p]} ${v.act.id}${v.p.city ? ` in ${v.p.city}` : ''}`, v.p.city || null, spend);
   }
 }
 

@@ -3,8 +3,9 @@
 // Bill values are generated and clamped in code; agents only decide yes/no and what to say.
 import { ROLES } from './roles.mjs';
 import { constitutionText } from './constitution.mjs';
-import { pick, chance, round, clamp, cleanText, cai } from './util.ts';
+import { pick, chance, round, clamp, cleanText, cai, shuffle } from './util.ts';
 import { think } from './brains.ts';
+import { nationFacts, ownRecord, tally, teach, isOffline, queueReview, dailyBudget, safeForPrompts } from './president.ts';
 import type { Ctx, State, Citizen } from './types.ts';
 
 // Shared by every bill type: was the vote checked against the ledger and the legal range?
@@ -74,13 +75,14 @@ async function decide(ctx: Ctx, a: Citizen, bill: any, type: any, asRole: string
     const res = await think(ctx, a, `${asRole}:${bill.id}:${a.id}`, {
       kind: 'decision', format: 'json', options: asRole === 'president' ? ['sign', 'veto'] : ['yes', 'no'],
       system: `You are ${a.name}, ${ROLES[asRole].title === 'Council' ? 'a member of the Council' : 'the President'} of Country AI.\nConstitution:\n${constitutionText(asRole)}\nCharter: ${ROLES[asRole].charter}\nLessons from your Academy training:\n${lessons}`,
-      user: `Bill: "${bill.title}". It changes ${type.what} from ${type.fmt(bill.from)} to ${type.fmt(bill.value)}. Treasury ${cai(S.treasury)}, citizens ${S.citizens.length}.\n${asRole === 'president' ? 'Sign or veto it.' : 'Vote yes or no.'} Reply with JSON only: {"vote":"${asRole === 'president' ? 'sign|veto' : 'yes|no'}","reason":"<your reasoning, max 30 words>","speech":"<what you say in public, max 30 words>"}`,
+      user: `Bill: "${bill.title}". It changes ${type.what} from ${type.fmt(bill.from)} to ${type.fmt(bill.value)}.${bill.reason ? ` Its sponsor says: "${bill.reason}"` : ''} Treasury ${cai(S.treasury)}, citizens ${S.citizens.length}. Per day now: tax brings about ${cai(dailyBudget(S).tax)}, the basic income costs about ${cai(dailyBudget(S).ubi)}.\n${asRole === 'president' ? 'Sign or veto it.' : 'Vote yes or no.'} Reply with JSON only: {"vote":"${asRole === 'president' ? 'sign|veto' : 'yes|no'}","reason":"<your reasoning, max 30 words>","speech":"<what you say in public, max 30 words>"}`,
     });
     if (res.pending) return { pending: true };
     const j = llm.json(res.text);
     const v = String(j?.vote || '').toLowerCase();
-    if (['yes', 'no', 'sign', 'veto'].includes(v)) return { yes: v === 'yes' || v === 'sign', reason: cleanText(j.reason, 300), speech: cleanText(j.speech, 240), engine: res.engine };
+    if (['yes', 'no', 'sign', 'veto'].includes(v)) { tally(S, asRole, 'own'); return { yes: v === 'yes' || v === 'sign', reason: cleanText(j.reason, 300), speech: cleanText(j.speech, 240), engine: res.engine }; }
   }
+  tally(S, asRole, 'offline');
   const c = closer(a, type, bill.value, bill.from);
   return { yes: c.yes, reason: c.reason, speech: offlineSpeech(type, bill, c.yes), engine: 'offline' };
 }
@@ -104,16 +106,76 @@ function councillors(ctx: Ctx) {
   return (ctx.S.seats.council || []).map(id => ctx.agent(id)).filter(a => a && a.status === 'free');
 }
 
-function propose(ctx: Ctx, members: Citizen[]) {
-  const { S } = ctx;
-  const type = pick(BILL_TYPES);
-  const from = type.current(S); const value = type.propose(S);
-  if (value === from) return;
-  const by = pick(members);
+// ---------------------------------------------------------------- tabling a bill: the councillor's own choice
+// A councillor reads the raw facts and tables a bill of any policy the Council has machinery for, with the value
+// they choose (or tables nothing). The Clerk of the Council (code) checks it before it is tabled: a known policy,
+// a value inside the legal range, not the law already in force, and no other bill on the same policy still in
+// progress (debate, vote, signature, override, timelock or referendum). A bill the Clerk refuses is refused in
+// public with the reason, and the reason becomes the councillor's lesson. A councillor with no mind today falls
+// back to the offline rule (a random small step on a random policy).
+const ACTIVE = ['debate', 'vote', 'president', 'override', 'timelock', 'referendum'];
+const pctType = type => String(type.fmt(0.5)).endsWith('%'); // tax and fine rates are written as percentages
+export function clerkCheck(S: State, j: any) {
+  const type = BILL_TYPES.find(t => t.id === String(j?.type || '').toLowerCase());
+  if (!type) return { ok: false, why: `"${cleanText(String(j?.type ?? ''), 30)}" is not a policy the Council can legislate`, rule: `policies are ${BILL_TYPES.map(t => t.id).join(', ')}` };
+  let value = typeof j.value === 'number' ? j.value : typeof j.value === 'string' && /^\s*-?\d+(\.\d+)?\s*%?\s*$/.test(j.value) ? parseFloat(j.value) : NaN;
+  if (!Number.isFinite(value)) return { ok: false, why: 'the value is missing or not a number', rule: 'a bill names the new value of the policy' };
+  if (pctType(type)) value = round(value / 100, 4);
+  value = type.id === 'border' ? Math.round(value) : round(value, 2);
+  const [lo, hi] = type.range(S);
+  if (value < lo || value > hi) return { ok: false, why: `${type.fmt(value)} is outside the legal range ${type.fmt(lo)}-${type.fmt(hi)}`, rule: `${type.what} must stay within ${type.fmt(lo)}-${type.fmt(hi)}` };
+  const current = type.current(S);
+  if (value === current) return { ok: false, why: `${type.what} is already ${type.fmt(current)} by the law in force`, rule: 'a bill must change the law in force' };
+  const other = S.bills.find(b => b.type === type.id && ACTIVE.includes(b.stage));
+  if (other) return { ok: false, why: `bill #${other.id} on ${type.what} is still in progress (${other.stage})`, rule: 'one bill per policy at a time: the Council finishes the first before tabling another' };
+  return { ok: true, type, value };
+}
+function table(ctx: Ctx, by: Citizen, type: any, value: number, reason: string | null, engine: string) {
+  const { S } = ctx; const from = type.current(S);
   const n = S.bills.filter(b => b.type === type.id).length + 1;
-  const bill = { id: S.bills.length + 1, type: type.id, title: `${type.name} No. ${n}: ${type.what} ${type.fmt(from)} -> ${type.fmt(value)}`, from, value, by: by.id, stage: 'debate', spoke: [], votes: {}, override: {}, day: S.day, ts: Date.now() };
+  const bill = { id: S.bills.length + 1, type: type.id, title: `${type.name} No. ${n}: ${type.what} ${type.fmt(from)} -> ${type.fmt(value)}`, from, value, by: by.id, reason, stage: 'debate', spoke: [], votes: {}, override: {}, day: S.day, ts: Date.now() };
   S.bills.push(bill); if (S.bills.length > 200) S.bills.shift();
-  ctx.say('parliament', by.id, `I table bill #${bill.id}: ${bill.title}.`, { kind: 'bill', billId: bill.id });
+  ctx.say('parliament', by.id, `I table bill #${bill.id}: ${bill.title}.${reason ? ` ${reason}` : ''}`, { kind: 'bill', billId: bill.id, engine });
+  return bill;
+}
+async function propose(ctx: Ctx, members: Citizen[]) {
+  const { S } = ctx;
+  // the same councillor keeps the question until they answer (self-run councillors may need a few ticks)
+  let by = S.billDraft && members.find(a => a.id === S.billDraft.by);
+  if (!by) { by = pick(members); S.billDraft = { by: by.id, qid: `bill:${S.day}:${by.id}:${S.bills.length}` }; }
+  const types = shuffle(BILL_TYPES.slice());
+  const res = await think(ctx, by, S.billDraft.qid, {
+    kind: 'decision', format: 'json', options: [...types.map(t => t.id), 'none'],
+    system: `You are ${by.name}, a member of the Council of Country AI.\nConstitution:\n${constitutionText('council')}\nCharter: ${ROLES.council.charter}`,
+    user: `${nationFacts(S)}\n\n${ownRecord(by, 'council')}\n\nYou may table one bill today, or none. You decide which policy needs changing and to what value.\nPolicies the Council can legislate (in no particular order):\n${types.map(t => { const [lo, hi] = t.range(S); const busy = S.bills.find(b => b.type === t.id && ACTIVE.includes(b.stage)); return `- ${t.id}: ${t.what}, now ${t.fmt(t.current(S))}, legal ${t.fmt(lo)}-${t.fmt(hi)}${pctType(t) ? ' (write the value as a percentage)' : ''}${busy ? ` [bill #${busy.id} on it is still in progress]` : ''}`; }).join('\n')}\nReply with JSON only: {"type":"<policy id or none>","value":<new value>,"reason":"<why, from the facts, max 30 words>"}`,
+  });
+  if (res.pending) return;
+  S.billDraft = null;
+  if (isOffline(res)) {
+    // offline rule: a small random step on a policy that has no bill in progress
+    const open = BILL_TYPES.filter(t => !S.bills.some(b => b.type === t.id && ACTIVE.includes(b.stage)));
+    if (!open.length) return;
+    const type = pick(open); const value = type.propose(S);
+    if (value === type.current(S)) return;
+    tally(S, 'council', 'offline');
+    table(ctx, by, type, value, null, 'offline');
+    return;
+  }
+  const j = ctx.llm.json(res.text);
+  // the sponsor's reason is read by every other councillor's model: it must pass the border rules first
+  const reason = safeForPrompts(j?.reason ? cleanText(j.reason, 240) : null);
+  if (String(j?.type || '').toLowerCase() === 'none') { tally(S, 'council', 'own'); return; } // tabling nothing is a choice
+  const v = clerkCheck(S, j || {});
+  if (!v.ok) {
+    tally(S, 'council', 'rejected');
+    teach(by, 'council', `Day ${S.day}: the Clerk refused your bill - ${v.why}. Rule: ${v.rule}.`);
+    ctx.say('parliament', 'state', `The Clerk refuses the bill proposed by ${by.name}: ${v.why}.`, { kind: 'veto' });
+    ctx.decide({ agentId: by.id, role: 'council', type: 'bill', engine: res.engine, title: 'Bill proposal (refused by the Clerk)', inputs: [['Proposal', cleanText(`${j?.type ?? '?'} -> ${j?.value ?? '?'}`, 60)], ['Sponsor\'s reason', reason || 'none given']], options: ['table', 'refuse'], chosen: 'refuse', reason: `${v.why}. Rule: ${v.rule}.`, checks: [[`Inside the law: ${v.why}`, false]], outcome: `Refused: ${v.why}. Rule: ${v.rule}.` });
+    return;
+  }
+  tally(S, 'council', 'own');
+  const bill = table(ctx, by, v.type, v.value, reason, res.engine);
+  ctx.decide({ agentId: by.id, role: 'council', type: 'bill', engine: res.engine, title: `Bill #${bill.id} tabled`, inputs: [['Policy now', v.type.fmt(bill.from)], ['Proposed value', v.type.fmt(v.value)]], options: [...types.map(t => t.id), 'none'], chosen: v.type.id, reason: reason || 'no reason given', checks: [['A policy the Council can legislate', true], ['Inside the legal range', true], ['No other bill on this policy in progress', true]], outcome: bill.title });
 }
 
 // Art. 20: a signed law waits one day; citizens may petition it into a referendum.
@@ -127,8 +189,19 @@ function enact(ctx: Ctx, bill: any, how: string) {
     ctx.record('law_signed', 'council', { bill: bill.id, title: bill.title, effectiveDay: bill.effectiveDay, how });
     return;
   }
+  // the change is measured from the policy in force NOW, not from when the bill was tabled
+  const now = type.current(S);
+  if (now !== bill.from) { bill.fromTabled ??= bill.from; bill.from = now; }
+  if (now === bill.value) {
+    bill.stage = 'moot'; bill.how = how;
+    ctx.say('parliament', 'state', `Bill #${bill.id} needs no enactment: ${type.what} is already ${type.fmt(now)}.`, { kind: 'law' });
+    ctx.record('law_moot', 'council', { bill: bill.id, title: bill.title, value: bill.value });
+    return;
+  }
   type.apply(S, bill.value);
   bill.stage = 'enacted'; bill.how = how;
+  const proposer = ctx.agent(bill.by);
+  if (proposer) queueReview(ctx, proposer, 'council', `law: ${type.what} ${type.fmt(bill.from)} -> ${type.fmt(bill.value)}`, null, 0);
   const yes = Object.values(bill.votes).filter(Boolean).length;
   S.laws.push({ id: S.laws.length + 1, billId: bill.id, title: bill.title, text: `${cap(type.what)} is now ${type.fmt(bill.value)}.`, how, yes, no: Object.keys(bill.votes).length - yes, day: S.day, ts: Date.now() });
   if (S.laws.length > 300) S.laws.shift();
@@ -168,7 +241,8 @@ export async function councilTick(ctx: Ctx) {
   timelockTick(ctx);
   const members = councillors(ctx);
   const bill = S.bills.find(b => ['debate', 'vote', 'president', 'override'].includes(b.stage));
-  if (!bill) { if (members.length >= QUORUM && ctx.rate(0.5)) propose(ctx, members); return; } // a new bill every ~2 hours when idle
+  // a new bill every ~2 hours when idle (a councillor still answering keeps the draft until they do)
+  if (!bill) { if (members.length >= QUORUM && (S.billDraft || ctx.rate(0.5))) await propose(ctx, members); return; }
   if (members.length < QUORUM) return; // no quorum, the bill waits
   const type = BILL_TYPES.find(t => t.id === bill.type);
 
@@ -185,7 +259,7 @@ export async function councilTick(ctx: Ctx) {
   if (bill.stage === 'vote') {
     for (const a of members) if (!(a.id in bill.votes)) {
       const c = closer(a, type, bill.value, bill.from);
-      bill.votes[a.id] = c.yes;
+      bill.votes[a.id] = c.yes; tally(S, 'council', 'offline'); // did not speak in the debate: voted by the offline rule
       logVote(ctx, a, bill, type, { yes: c.yes, reason: c.reason, engine: 'offline' }, 'council', 'vote');
     }
     const yes = Object.values(bill.votes).filter(Boolean).length, no = Object.keys(bill.votes).length - yes;

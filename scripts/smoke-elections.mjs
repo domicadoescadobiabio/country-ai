@@ -50,6 +50,10 @@ export async function run({ BASE, get, until, check }) {
   const residents = {};
   for (const c of new Set(mayors.map(e => e.city))) residents[c] = (await get(`/api/citizens?city=${c}&size=1`)).total;
   check('mayor elections only count residents of that city', mayors.every(e => e.electorate == null || e.electorate <= residents[e.city]), JSON.stringify(mayors.map(e => [e.city, e.electorate, residents[e.city]])));
+  // the counted elections are read FIRST: finish() writes an election's result and its decision in one synchronous
+  // step, so every result seen here is already in the archive below (reading the archive first raced a count that
+  // closed between the two requests: ticket #273, election 109)
+  const counted = (await get('/api/elections')).elections.filter(e => e.result && e.stage !== 'failed').map(e => e.id);
   // read the whole archived decision log (/api/decisions), not the last 120 in /api/state: the election decisions
   // of results certified before this module started have long scrolled out of that window
   const decisions = [];
@@ -60,7 +64,6 @@ export async function run({ BASE, get, until, check }) {
     after = pg.entries.at(-1).id;
   }
   // every counted election (void ones have no result to log) has its own decision, and each names its method
-  const counted = (await get('/api/elections')).elections.filter(e => e.result && e.stage !== 'failed').map(e => e.id);
   const missing = counted.filter(id => !decisions.some(d => d.title.startsWith(`Election #${id} result`)));
   check('every result is in the decision log with its method', counted.length > 0 && !missing.length && decisions.every(d => d.inputs.some(i => i[0] === 'Method')), JSON.stringify({ decisions: decisions.length, counted: counted.length, missing }));
   const res = await fetch(BASE + '/api/elections/999999');
