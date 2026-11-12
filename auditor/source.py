@@ -5,6 +5,7 @@ writes to the database (the SQLite file is opened read-only through a URI).
 """
 from __future__ import annotations
 
+import email.utils
 import json
 import sqlite3
 import time
@@ -14,6 +15,27 @@ import urllib.request
 from typing import Any, Iterator
 
 USER_AGENT = "country-ai-auditor/1.0"
+RATE_LIMIT_RETRIES = 10     # HTTP 429 waits per request (a full minute window each at most)
+RATE_LIMIT_MAX_WAIT = 60.0  # never wait longer than this on one 429, whatever the header says
+RATE_LIMIT_DEFAULT = 5.0    # wait when the server sends no usable `retry-after`
+
+
+def retry_after(value: str | None, now: float | None = None) -> float:
+    """Seconds to wait from a `retry-after` header (delta-seconds or an HTTP date), capped at 60 s."""
+    wait = RATE_LIMIT_DEFAULT
+    if value:
+        value = value.strip()
+        try:
+            wait = float(value)
+        except ValueError:
+            try:
+                when = email.utils.parsedate_to_datetime(value).timestamp()
+                wait = when - (time.time() if now is None else now)
+            except (TypeError, ValueError, IndexError, OverflowError):
+                wait = RATE_LIMIT_DEFAULT
+    if wait != wait:  # NaN
+        wait = RATE_LIMIT_DEFAULT
+    return max(1.0, min(RATE_LIMIT_MAX_WAIT, wait))
 
 
 class ApiSource:
@@ -29,7 +51,8 @@ class ApiSource:
         query = ("?" + urllib.parse.urlencode(params)) if params else ""
         url = self.base + path + query
         last: Exception | None = None
-        for attempt in range(self.retries):
+        attempt = limited = 0
+        while attempt < self.retries:
             try:
                 req = urllib.request.Request(url, headers={"user-agent": USER_AGENT, "accept": "application/json"})
                 with urllib.request.urlopen(req, timeout=self.timeout) as res:  # noqa: S310 (scheme checked above)
@@ -38,10 +61,21 @@ class ApiSource:
                 if e.code == 404:
                     return None
                 last = e
+                if e.code == 429 and limited < RATE_LIMIT_RETRIES:
+                    # rate limited (the archive allows 60 requests a minute per IP): wait as told, then try
+                    # again without spending one of the normal retries
+                    limited += 1
+                    self.sleep(retry_after(e.headers.get("retry-after") if e.headers else None))
+                    continue
             except (urllib.error.URLError, TimeoutError, ConnectionError, json.JSONDecodeError) as e:
                 last = e
-            time.sleep(1.5 * (attempt + 1))
-        raise ConnectionError(f"GET {url} failed after {self.retries} attempts: {last}")
+            attempt += 1
+            self.sleep(1.5 * attempt)
+        raise ConnectionError(f"GET {url} failed after {attempt} attempts and {limited} rate-limit waits: {last}")
+
+    @staticmethod
+    def sleep(seconds: float) -> None:
+        time.sleep(seconds)
 
     def state(self) -> dict:
         return self.get("/api/state")

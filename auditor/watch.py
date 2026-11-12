@@ -53,21 +53,38 @@ def local_brain(state: dict) -> dict | None:
 
 
 # ---------------------------------------------------------------- government
+def _votes(pending: dict) -> int:
+    v = pending.get("votes")
+    return len(v) if isinstance(v, (list, dict)) else int(v or 0)
+
+
 def cabinet_pending(state: dict, memo: dict, now: float) -> dict | None:
-    """Alarm only when the same pending nomination (votes included) has not changed for an hour."""
+    """A nomination is stuck when the same post/agent gains no vote for an hour, or has been open a full day."""
     pending = (state.get("cabinet") or {}).get("pending")
     if not pending:
         memo.pop("pending", None)
         return None
-    sig = json.dumps(pending, sort_keys=True)
+    sig = json.dumps([pending.get("post"), pending.get("agent")])
+    votes = _votes(pending)
     seen = memo.get("pending")
-    if not seen or seen["sig"] != sig:
-        memo["pending"] = {"sig": sig, "since": now}
-        return None
+    if not seen or seen["sig"] != sig or votes > seen["votes"]:
+        memo["pending"] = seen = {"sig": sig, "votes": votes, "since": now}
+    what = f"{pending.get('post')} → {pending.get('agent')} ({votes} votes)"
+    day, opened = state.get("day"), pending.get("since")
+    if isinstance(day, (int, float)) and isinstance(opened, (int, float)) and day - opened >= 1:
+        return _alarm("pemerintah:cabinet-stuck", "pemerintah", f"cabinet nomination open since day {opened}: {what}")
     if now - seen["since"] > PENDING_STALE_S:
         mins = int((now - seen["since"]) / 60)
-        return _alarm("pemerintah:cabinet-stuck", "pemerintah",
-                      f"cabinet nomination unchanged for {mins} min: {sig[:160]}")
+        return _alarm("pemerintah:cabinet-stuck", "pemerintah", f"cabinet nomination gained no vote for {mins} min: {what}")
+    return None
+
+
+def council_quorum(state: dict) -> dict | None:
+    cab = state.get("cabinet") or {}
+    free, quorum = cab.get("freeCouncillors"), cab.get("quorum")
+    if isinstance(free, (int, float)) and isinstance(quorum, (int, float)) and free < quorum:
+        return _alarm("pemerintah:council-quorum", "pemerintah",
+                      f"only {free} councillors free to vote on the cabinet, quorum is {quorum}")
     return None
 
 
@@ -160,7 +177,7 @@ def evaluate(state: dict, health: dict | None, ledger_by_kind: dict | None, memo
     if rep["window"] and rep["share"] >= REPEAT_SHARE:
         alarms.append(_alarm("rakyat:repeat", "rakyat",
                              f"{rep['repeats']}/{rep['window']} of the latest street lines are repeats"))
-    for a in (local_brain(state), cabinet_pending(state, memo, now), build_restart(health, memo)):
+    for a in (local_brain(state), cabinet_pending(state, memo, now), council_quorum(state), build_restart(health, memo)):
         if a:
             alarms.append(a)
     alarms += academy_training(state, memo)

@@ -34,15 +34,25 @@ class RunnerTest(unittest.TestCase):
 
 
 class CabinetTest(unittest.TestCase):
+    def st(self, votes, agent="a", day=2, since=2):
+        return {"day": day, "cabinet": {"pending": {"post": "justice", "agent": agent, "votes": votes, "since": since}}}
+
     def test_only_stuck_nomination_alarms(self):
         memo = {}
-        st = {"cabinet": {"pending": {"portfolio": "justice", "votes": 5}}}
-        self.assertIsNone(watch.cabinet_pending(st, memo, 0))
-        self.assertIsNone(watch.cabinet_pending(st, memo, 1800))
-        st2 = {"cabinet": {"pending": {"portfolio": "justice", "votes": 6}}}
-        self.assertIsNone(watch.cabinet_pending(st2, memo, 3000))  # votes moved: the clock restarts
-        self.assertIsNotNone(watch.cabinet_pending(st2, memo, 3000 + 3601))
+        self.assertIsNone(watch.cabinet_pending(self.st(5), memo, 0))
+        self.assertIsNone(watch.cabinet_pending(self.st(5), memo, 1800))
+        self.assertIsNone(watch.cabinet_pending(self.st(6), memo, 3000))  # a vote came in: the clock restarts
+        self.assertIsNotNone(watch.cabinet_pending(self.st(6), memo, 3000 + 3601))
+        self.assertIsNone(watch.cabinet_pending(self.st(6, agent="b"), memo, 9000))  # a new nominee
         self.assertIsNone(watch.cabinet_pending({"cabinet": {"pending": None}}, memo, 9000))
+
+    def test_open_for_a_day(self):
+        self.assertIsNotNone(watch.cabinet_pending(self.st(5, day=3, since=2), {}, 0))
+
+    def test_quorum(self):
+        self.assertIsNone(watch.council_quorum({"cabinet": {"freeCouncillors": 30, "quorum": 16}}))
+        self.assertIsNotNone(watch.council_quorum({"cabinet": {"freeCouncillors": 15, "quorum": 16}}))
+        self.assertIsNone(watch.council_quorum({"cabinet": {}}))
 
 
 class AcademyTest(unittest.TestCase):
