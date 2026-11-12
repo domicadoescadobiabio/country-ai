@@ -77,6 +77,8 @@ export function ensureFeelings(S: State, a: Citizen, now = Date.now()) {
 }
 
 // The one place a mood changes. dv moves the mood; label is a hint, kept unless it contradicts where the mood is.
+// why must be text the server writes (names, places, amounts, office titles), never a model's or a human's words:
+// it is shown to the people bonded to this citizen, inside their own prompts (feelLine).
 export function feel(S: State, a: Citizen, dv: number, label?: string | null, why?: string | null, now = Date.now()) {
   if (!a) return null;
   const m = ensureFeelings(S, a, now);
@@ -156,7 +158,10 @@ export function feelLine(S: State, a: Citizen) {
   const own = `You feel ${m.label}${m.why ? ` (${m.why})` : ''}.`;
   const others = (a.bonds || []).filter(b => b.w > 0.2 || b.kind === 'rival').slice(0, 3).map(b => {
     const o = citizenOf(S, b.id); if (!o?.mood) return null;
-    const why = o.mood.why && o.mood.why !== 'an ordinary day' ? ` (${cleanText(o.mood.why, 40)})` : '';
+    // every "why" is written by the server (see feel); it is still screened here, because it is the one piece of
+    // another citizen's state that enters this citizen's prompt
+    const w = cleanText(String(o.mood.why || '').replace(/["`{}<>]/g, ''), 40);
+    const why = w && w !== 'an ordinary day' && !borderCheck({ text: w }, 2) ? ` (${w})` : '';
     return `your ${kindWord(b.kind)} ${o.name} is ${o.mood.label}${why}`;
   }).filter(Boolean);
   return others.length ? `${own} Today ${others.join('; ')}.` : own;

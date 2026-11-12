@@ -247,7 +247,9 @@ export async function doAct(ctx: Ctx, a: Citizen, j: any, engine: string, offere
   else if (what === 'rest') { feel(S, a, 0.03, a.mood?.e < 0.4 ? 'calm' : null, null); if (a.mood) a.mood.e = Math.min(1, round(a.mood.e + 0.25, 3)); }
   if (MOODS.includes(String(j?.feel || '').toLowerCase().trim() as any)) {
     const said = String(j.feel).toLowerCase().trim();
-    feel(S, a, ['happy', 'calm', 'proud', 'loved', 'excited'].includes(said) ? 0.04 : -0.04, said, note || null);
+    // the reason is written by the server, never the model's own note: a mood's "why" is shown to the people
+    // who care about this citizen, inside their own prompts, so model text must not travel that way
+    feel(S, a, ['happy', 'calm', 'proud', 'loved', 'excited'].includes(said) ? 0.04 : -0.04, said, `feeling ${said} today`);
   }
   countAct(S, a, what);
   diary(ctx, a, what, line, note);
