@@ -182,19 +182,48 @@ const TABS = [
 const STAGE = { debate: 'in debate', vote: 'voting', president: 'on the President\'s desk', override: 'override vote', enacted: 'law', rejected: 'rejected', vetoed: 'vetoed', timelock: 'signed, waiting one day (petition open)', referendum: 'in a referendum', repealed: 'rejected by the people' };
 function renderTabs() {
   const box = $('#tabs'); box.replaceChildren();
-  for (const [id, label, show] of TABS) if (show()) box.append(h('button', { type: 'button', class: st.tab === id ? 'on' : '', text: label, onclick: () => { st.tab = id; renderTabs(); renderPanel(); } }));
+  for (const [id, label, show] of TABS) if (show()) box.append(h('button', { type: 'button', class: st.tab === id ? 'on' : '', text: label, onclick: () => { st.tab = id; renderTabs(); renderPanel(); refreshTab(); } }));
 }
-async function openCitizen(id) {
-  if (!cit(id)) { try { const r = await (await fetch(`/api/citizens/${encodeURIComponent(id)}`)).json(); if (r.citizen) (st.found ||= {})[id] = r.citizen; } catch { /* offline */ } }
-  if (st.sch) delete st.sch[id]; // fresh school record each time a profile is opened
-  st.citizen = id; st.tab = 'citizen'; renderTabs(); renderPanel();
+// One citizen, fresh: the full public record with mood and school (/api/citizens/:id, a few KB). This, not the
+// whole /api/state, keeps an open profile up to date.
+const loadingCitizen = new Set();
+async function loadCitizen(id) {
+  if (!id || loadingCitizen.has(id)) return; loadingCitizen.add(id);
+  try {
+    const r = await fetch(`/api/citizens/${encodeURIComponent(id)}`); const c = r.ok ? (await r.json())?.citizen : null;
+    (st.sch ||= {})[id] = c?.school || false;
+    if (c) { (st.found ||= {})[id] = c; const i = st.citizens.findIndex(a => a.id === id); if (i >= 0) st.citizens[i] = c; }
+  } catch { (st.sch ||= {})[id] ??= false; /* offline: keep what we have */ } finally { loadingCitizen.delete(id); }
+  if (st.tab === 'citizen') renderPanel();
 }
-// search the whole population (10,000 citizens) page by page
+function openCitizen(id) {
+  st.citizen = id; st.tab = 'citizen'; loadCitizen(id); renderTabs(); renderPanel(); // loadCitizen marks it loading first
+}
+// search the whole population (10,000 citizens) page by page, with the light list (no training records)
 async function searchCitizens() {
-  const q = st.cq || {}; const p = new URLSearchParams({ page: String(q.page || 1), size: '50' });
+  const q = st.cq || {}; const p = new URLSearchParams({ lite: '1', page: String(q.page || 1), size: '50' });
   if (q.q) p.set('q', q.q); if (q.city) p.set('city', q.city); if (q.status) p.set('status', q.status);
-  try { st.cres = await (await fetch('/api/citizens?' + p)).json(); for (const a of st.cres.citizens) (st.found ||= {})[a.id] = a; } catch { st.cres = { total: 0, page: 1, size: 50, citizens: [] }; }
+  try { st.cres = await (await fetch('/api/citizens?' + p)).json(); } catch { st.cres ||= { total: 0, page: 1, size: 50, citizens: [] }; }
   if (st.tab === 'citizens') renderPanel();
+}
+// The open tab keeps itself fresh. The state stream (SSE 'state') carries the header, the government chart and the
+// small counters; when the server announces section reads (config.stateParts), a tab whose data is not in the
+// stream asks for just its sections. Without that announcement nothing heavy is fetched.
+const TAB_PARTS = { academy: ['academy', 'training', 'gov'], offices: ['applications', 'command', 'cities'], elections: ['elections'], court: ['court', 'audit'], laws: ['bills', 'laws'],
+  police: ['police', 'underworld', 'daily'], border: ['military'], school: ['school'], treasury: ['policy', 'econ', 'treasury', 'orders', 'llmUsage', 'budget'] };
+async function refreshTab() {
+  if (document.hidden) return;
+  if (st.tab === 'citizen') return loadCitizen(st.citizen || (cit((st.seats.president || [])[0]) || st.citizens[0])?.id);
+  if (st.tab === 'citizens') return st.cres ? searchCitizens() : undefined;
+  const can = Array.isArray(st.config.stateParts) ? st.config.stateParts : [];
+  const parts = (TAB_PARTS[st.tab] || []).filter(p => can.includes(p));
+  if (!parts.length) return;
+  try {
+    const r = await fetch('/api/state?parts=' + encodeURIComponent(parts.join(',')));
+    const d = r.ok ? await r.json() : null; if (!d) return;
+    for (const p of parts) if (p in d) st[p] = d[p];
+    if (TAB_PARTS[st.tab]?.some(p => parts.includes(p))) renderPanel();
+  } catch { /* offline */ }
 }
 function kv(rows) { return h('div', { class: 'kv' }, rows.flatMap(([k, v]) => [h('span', { text: k }), h('b', { text: v })])); }
 
@@ -232,6 +261,7 @@ const PANELS = {
     return out;
   },
   citizen() {
+    if (st.citizen && !cit(st.citizen)) return [h('p', { class: 'empty', text: loadingCitizen.has(st.citizen) ? 'Loading…' : 'This citizen could not be loaded.' })];
     const a = cit(st.citizen) || cit((st.seats.president || [])[0]) || st.citizens[0];
     if (!a) return [h('p', { class: 'empty', text: 'No citizens yet.' })];
     const out = [h('div', { class: 'card' },
@@ -302,8 +332,10 @@ const PANELS = {
   },
   citizens() {
     const pop = st.population || {}; st.cq ||= { page: 1 };
+    // full records (office holders) show the wallet; the light search list shows the mood instead
     const row = a => h('div', { class: 'citizen-row', color: a.color, onclick: () => openCitizen(a.id) },
-      h('i'), h('span', { text: a.name + (a.office ? ` · ${role(a.office)?.title}` : '') + (a.status !== 'free' ? ` · ${a.status}` : '') + ` · ${cityName(a.city)}` }), h('small', { text: cai(a.wallet) }));
+      h('i'), h('span', { text: a.name + (a.office ? ` · ${role(a.office)?.title}` : '') + (a.status !== 'free' ? ` · ${a.status}` : '') + ` · ${cityName(a.city)}` }),
+      h('small', { text: typeof a.wallet === 'number' ? cai(a.wallet) : a.mood?.label ? `${a.mood.emoji || ''} ${a.mood.label}`.trim() : '' }));
     const summary = h('div', { class: 'card' }, h('h4', { text: `${(pop.total || st.citizens.length).toLocaleString('en')} citizens in ${Object.keys(pop.byCity || {}).length} cities` }),
       kv([['By city', Object.entries(pop.byCity || {}).map(([c, n]) => `${cityName(c)} ${n}`).join(' · ')], ['Status', Object.entries(pop.byStatus || {}).map(([k, n]) => `${k} ${n}`).join(' · ')],
         ['Path', Object.entries(pop.byFaction || {}).map(([k, n]) => `${k} ${n}`).join(' · ')], ['Thinks with', Object.entries(pop.byFamily || {}).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k, n]) => `${k} ${n}`).join(' · ')],
@@ -544,10 +576,7 @@ function govCard() {
 function schoolFor(id) {
   st.sch ||= {};
   if (id in st.sch) return st.sch[id];
-  st.sch[id] = null;
-  fetch(`/api/citizens/${encodeURIComponent(id)}`).then(r => (r.ok ? r.json() : null)).then(j => { st.sch[id] = j?.citizen?.school || false; })
-    .catch(() => { st.sch[id] = false; })
-    .finally(() => { if (st.tab === 'citizen') renderPanel(); });
+  st.sch[id] = null; loadCitizen(id); // the same request brings the whole profile
   return null;
 }
 // the night school in public: fields studied, the talent programme and where the teachers' time goes
@@ -684,8 +713,8 @@ function connect() {
   });
   es.addEventListener('citizens', e => { st.citizens = JSON.parse(e.data); renderStats(); });
   es.addEventListener('reset', () => load());
-  // citizens' wallets/training change constantly; refresh the full roster every 20s
-  setInterval(async () => { try { const d = await (await fetch('/api/state')).json(); st.citizens = d.citizens; if (['citizen', 'citizens'].includes(st.tab)) renderPanel(); } catch { /* offline */ } }, 20000);
+  // the open tab refreshes itself from light endpoints every 20 s (never the whole /api/state)
+  setInterval(refreshTab, 20000);
 }
 
 $('#composer').addEventListener('submit', async e => {
