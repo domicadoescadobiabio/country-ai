@@ -10,7 +10,7 @@
 //   Promotions: every 10 days per force, the Merit Board ranks members with enough time in rank;
 //     quota 1, fixed before it sits. Ranks: Recruit -> Officer -> Senior Officer.
 // Every step: decision log (#decisions) + national ledger.
-import { ROLES } from './roles.mjs';
+import { ROLES, OFFICE_FIELDS, fieldsText, topFieldsText, giftedText, giftedFor } from './roles.mjs';
 import { think } from './brains.ts';
 import { qualifiedPool } from './academy.ts';
 import { constitutionText } from './constitution.mjs';
@@ -52,12 +52,20 @@ export function fitness(S: State, a: Citizen, roleId: string) {
   const review = a.reviews?.length ? a.reviews[a.reviews.length - 1].score : 0.6;
   const jailedRecently = (a.record || []).some(r => /jailed/.test(r) && Number((r.match(/^Day (\d+)/) || [])[1]) > S.day - 10);
   const conduct = jailedRecently ? 0 : Math.max(0, 1 - (a.record || []).length * 0.1);
-  return round(exam * 0.35 + skill * 0.25 + review * 0.2 + practice * 0.1 + conduct * 0.1, 3);
+  // the talent programme's badge in a field this office works in (law for a judge, security for the forces):
+  // the offline rules lean a little towards the gifted; a mind with a model sees the badge and judges it itself
+  const gifted = giftedFor(S, a, OFFICE_FIELDS[roleId]) ? 0.05 : 0;
+  return round(exam * 0.35 + skill * 0.25 + review * 0.2 + practice * 0.1 + conduct * 0.1 + gifted, 3);
 }
 function fileOf(S: State, a: Citizen, roleId: string) {
   const q = a.quals?.[roleId];
   const r = a.reviews?.[a.reviews.length - 1];
-  return `${a.id}: ${a.name}, ${RANK_TITLES[ROLES[roleId].force]?.[a.rank] || 'citizen'}, exam ${q ? `${q.score}/${q.total}` : '-'}, skill ${Math.round((a.skill?.[roleId] ?? a.skill?.[ROLES[roleId].force] ?? 0.5) * 100)}, last review ${r ? r.grade : '-'}, record ${(a.record || []).length} entries, fitness ${fitness(S, a, roleId)}`;
+  return `${a.id}: ${a.name}, ${RANK_TITLES[ROLES[roleId].force]?.[a.rank] || 'citizen'}, exam ${q ? `${q.score}/${q.total}` : '-'}, skill ${Math.round((a.skill?.[roleId] ?? a.skill?.[ROLES[roleId].force] ?? 0.5) * 100)}, last review ${r ? r.grade : '-'}, record ${(a.record || []).length} entries, fitness ${fitness(S, a, roleId)}${expertise(S, a, roleId)}`;
+}
+// the fields of knowledge on a file: the office's own fields and the citizen's strongest ones (nothing if unknown)
+function expertise(S: State, a: Citizen, roleId: string) {
+  const own = fieldsText(a, OFFICE_FIELDS[roleId]); const top = topFieldsText(a, 3); const g = giftedText(S, a);
+  return `${own ? `, fields of the office: ${own}` : ''}${top ? `, strongest fields: ${top}` : ''}${g ? `, gifted in ${g}` : ''}`;
 }
 
 // ---------------------------------------------------------------- heads
@@ -154,6 +162,12 @@ async function presidentAppoints(ctx: Ctx, f: any, proc: any) {
     checks: [['Chosen from the Council\'s list', choice === 'reject' || list.includes(choice)], ['List rejected at most once', !(choice === 'reject' && proc.rejected)]],
     outcome: choice === 'reject' ? 'Council must send a new list' : `${ctx.agent(choice).name} appointed`,
   });
+  // the President's choice is graded two days later like any decision; the card records the appointee's fields
+  if (choice !== 'reject' && pres && how !== 'silence') {
+    const { queueReview } = await import('./president.ts');
+    const who = ctx.agent(choice); const fields = fieldsText(who, OFFICE_FIELDS[f.chief]); const g = giftedText(S, who);
+    queueReview(ctx, pres, 'president', `appointed ${who.name} as ${role.title}${fields ? ` (fields of the office: ${fields}${g ? `; gifted in ${g}` : ''})` : g ? ` (gifted in ${g})` : ''}`, null, 0);
+  }
   if (choice === 'reject') {
     proc.excluded.push(...list); proc.rejected = true;
     Object.assign(proc, { stage: 'shortlist', ballots: {}, list: [] });

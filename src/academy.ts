@@ -2,7 +2,7 @@
 // Elected offices (President, Council, Mayors): passing seats the agent (transitional, until elections).
 // Appointed offices (police, military, their heads): passing only QUALIFIES the agent; the chain of
 // command (src/command.mjs) appoints from the qualified pool (constitution Art. 2, 10, 11).
-import { ROLES, ROLE_ORDER, ruleQuestions } from './roles.mjs';
+import { ROLES, ROLE_ORDER, ruleQuestions, fieldQuestionFor, topFieldsText, giftedText, giftedFor, OFFICE_FIELDS } from './roles.mjs';
 import { constitutionText, CONSTITUTION } from './constitution.mjs';
 import { clamp, chance, pick, shuffle } from './util.ts';
 import { think } from './brains.ts';
@@ -80,7 +80,8 @@ function chooseCandidate(ctx: Ctx, roleId: string) {
   const busy = thin || role.elected ? runningElsewhere(S, roleId) : null;
   const pool = S.citizens.filter(a => !a.brain && !inExam(S, a.id) && examEligible(S, a, roleId) && (!busy || !busy.has(a.id)) && (!role.elected || (!a.office && a.wallet >= 100)) && (!thin || thin.includes(a.city)));
   if (!pool.length) return null;
-  return pool.map(a => ({ a, s: suitability(a, role) })).sort((x, y) => y.s - x.s)[0].a;
+  // the state's talent programme: the gifted in a field this office works in are a little likelier to be examined
+  return pool.map(a => ({ a, s: suitability(a, role) + (giftedFor(S, a, OFFICE_FIELDS[roleId]) ? 0.15 : 0) })).sort((x, y) => y.s - x.s)[0].a;
 }
 
 // Turn a bank item ({q, right, wrong[], tests, lesson}) into a question with shuffled options.
@@ -92,9 +93,13 @@ export function buildItem(item: any) {
 // and near-miss options (knowledge of the law plus arithmetic), so picking the most reasonable-sounding answer
 // is no longer enough to pass 4 of 5.
 const RULE_ITEMS = 3;
+// and, when the people's fields of knowledge offer one (src/expertise.ts), one question from a field the office
+// works in (law for a judge, security for the police, ...) takes the place of a handbook scenario
 function buildExam(role: any) {
   const rules = ruleQuestions(role.id, RULE_ITEMS);
-  return shuffle([...shuffle(role.exam).slice(0, EXAM_SIZE - rules.length), ...rules]).map(buildItem);
+  const field = fieldQuestionFor(role.id);
+  const extra = field ? [field] : [];
+  return shuffle([...shuffle(role.exam).slice(0, EXAM_SIZE - rules.length - extra.length), ...rules, ...extra]).map(buildItem);
 }
 
 function attemptsFor(a: Citizen, roleId: string) { return a.training.filter(t => t.roleId === roleId).length + 1; }
@@ -129,7 +134,8 @@ function start(ctx: Ctx, roleId: string, a: Citizen) {
   const A = ctx.S.academy; (A.rooms ||= []).push(session); A.current = A.rooms[0];
   A.sessions++;
   const again = session.attempt > 1 ? ` Attempt ${session.attempt}, carrying ${(a.lessons[roleId] || []).length} written lessons.` : '';
-  ctx.say('academy', a.id, `Enrolling for ${role.title}. Reading the constitution (${CONSTITUTION.length} articles) and the office charter.${again}`, { kind: 'enroll', roleId });
+  const top = topFieldsText(a, 3); const g = giftedText(ctx.S, a);
+  ctx.say('academy', a.id, `Enrolling for ${role.title}. Reading the constitution (${CONSTITUTION.length} articles) and the office charter.${again}${top ? ` Strongest fields: ${top}.` : ''}${g ? ` Gifted in ${g}.` : ''}`, { kind: 'enroll', roleId });
 }
 
 async function examStep(ctx: Ctx, session: any) {

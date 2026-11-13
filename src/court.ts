@@ -6,7 +6,7 @@
 //   formal validity of appointments (automatic review), impeachment (after a 4/5 Council vote).
 //   Every case carries the evidence on the record and the deadline; majority of seated judges rules.
 import crypto from 'node:crypto';
-import { addRole, ROLES } from './roles.mjs';
+import { addRole, ROLES, OFFICE_FIELDS, fieldsText, giftedText } from './roles.mjs';
 import { think } from './brains.ts';
 import { qualifiedPool, vacate } from './academy.ts';
 import { constitutionText } from './constitution.mjs';
@@ -198,7 +198,7 @@ async function fillSlots(ctx: Ctx) {
     } else if (slot.by === 'president') {
       const pres = ctx.agent(S.seats.president?.[0]); if (!free(pres)) continue;
       const top = ranked.slice(0, 3).map(x => x.a);
-      const res = await think(ctx, pres, `judge:${S.day}:${i}:${pres.id}`, { kind: 'decision', format: 'json', options: top.map(a => a.id), system: `You are ${pres.name}, President of Country AI. Art. 16: you appoint one judge of the Constitutional Court.`, user: `Appoint one judge from these qualified citizens (record only):\n${top.map(a => `- ${a.id}: ${a.name}, fitness ${fitness(S, a, 'judge')}`).join('\n')}\nReply with JSON only: {"choice":"<id>","reason":"<max 30 words>"}` });
+      const res = await think(ctx, pres, `judge:${S.day}:${i}:${pres.id}`, { kind: 'decision', format: 'json', options: top.map(a => a.id), system: `You are ${pres.name}, President of Country AI. Art. 16: you appoint one judge of the Constitutional Court.`, user: `Appoint one judge from these qualified citizens (record only):\n${top.map(a => { const lf = fieldsText(a, OFFICE_FIELDS.judge), g = giftedText(S, a); return `- ${a.id}: ${a.name}, fitness ${fitness(S, a, 'judge')}${lf ? `, fields of the bench: ${lf}` : ''}${g ? `, gifted in ${g}` : ''}`; }).join('\n')}\nReply with JSON only: {"choice":"<id>","reason":"<max 30 words>"}` });
       if (res.pending) continue;
       const j = ctx.llm.json(res.text);
       chosen = top.find(a => a.id === String(j?.choice)) || top[0];

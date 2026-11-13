@@ -184,9 +184,65 @@ async function autonomyChecks(check) {
   }
 }
 
+// ---------------- expertise in government: the people's fields of knowledge on cards, files and exams
+// A stand-in for src/expertise.ts (the Rakyat box) with the agreed interface; the real module plugs in the same way.
+async function expertiseChecks(check) {
+  const roles = await import('../src/roles.mjs');
+  const el = await import('../src/elections.ts');
+  const pres = await import('../src/president.ts');
+  const cab = await import('../src/cabinet.ts');
+  // a stand-in shaped like the people's interface (population.mjs + school.ts), levels 1-5, with the gifted badge
+  const FIELDS = ['law', 'economics', 'accounting', 'security', 'management'].map(id => ({ id, name: id }));
+  const fake = {
+    FIELDS,
+    topFields: (a, n) => Object.entries(a.fx || {}).sort((x, y) => y[1] - x[1]).slice(0, n).map(([id, level]) => ({ id, name: id, level })),
+    fieldLevel: (a, id) => (a.fx || {})[id] ?? 1,
+    gifted: (S, a) => a.gift || [],
+    fieldQuestion: id => (id === 'law' ? { q: 'A contract signed under threat is...', right: 'void', wrong: ['valid', 'valid if notarised', 'valid for a year'], lesson: 'Consent given under threat is no consent.' } : null),
+  };
+  // without the people's modules nothing changes
+  roles.setExpertiseSource(null);
+  check('expertise: without the fields of knowledge cards and files show nothing extra', roles.topFieldsText({ fx: { law: 5 } }) === '' && el.card({ day: 1, decisions: [] }, { id: 'x', name: 'X' }, 'mayor').fields === '-');
+  roles.setExpertiseSource(fake);
+  const cand = { id: 'c', name: 'C', fx: { law: 5, economics: 4, accounting: 2, security: 1 }, gift: ['law'] };
+  const vc = el.card({ day: 1, decisions: [] }, cand, 'mayor');
+  check('expertise: the voter card shows the top 3 fields with their level 1-5 and the gifted badge, numbers only', vc.fields === 'law 5/5, economics 4/5, accounting 2/5' && vc.gifted === 'law', JSON.stringify(vc));
+  check('expertise: a portfolio\'s own fields (finance: economics, accounting) are read, unknown fields are skipped', roles.fieldsText(cand, roles.PORTFOLIO_FIELDS.finance) === 'economics 4/5, accounting 2/5');
+  const fq = roles.fieldQuestionFor('judge');
+  check('expertise: a judge\'s Academy exam can draw a law question; an office whose fields offer none gets none', fq && fq.from === 'field: law' && fq.wrong.length === 3 && roles.fieldQuestionFor('mayor') === null);
+  // the offline rules lean towards the gifted in the office's field (fitness); minds see the badge and judge it
+  const { fitness } = await import('../src/command.ts');
+  const twin = g => ({ id: 't', name: 't', quals: { judge: { day: 1, score: 5, total: 5 } }, record: [], gift: g });
+  check('expertise: fitness leans a little (0.05) towards the gifted in the office\'s own field only', Math.abs(fitness({ day: 3 }, twin(['law']), 'judge') - fitness({ day: 3 }, twin([]), 'judge') - 0.05) < 1e-9 && fitness({ day: 3 }, twin(['security']), 'judge') === fitness({ day: 3 }, twin([]), 'judge'));
+  // the President nominating a Vice President sees each candidate's fields; the choice is graded with them
+  const citizens = Array.from({ length: 8 }, (_, i) => ({ id: `p${i}`, name: `p${i}`, status: 'free', wallet: 500, city: 'neura', traits: { integrity: 0.5, wisdom: 0.5, diligence: 0.5, restraint: 0.5 }, lessons: {}, fx: { management: 1 + (i % 5), economics: 5 - (i % 5), law: 3 }, gift: i === 4 ? ['management'] : [] }));
+  const by = Object.fromEntries(citizens.map(a => [a.id, a]));
+  const p = by.p0; p.office = 'president'; p.brain = { type: 'remote' };
+  for (const id of ['p3', 'p4']) by[id].quals = { vice_president: { day: 1, score: 5, total: 5 } };
+  const S = { day: 4, tick: 1, treasury: 100000, citizens, seats: { president: ['p0'], council: [] }, policy: { taxRate: 0.1, ubi: 30, wage: 100, wageCap: 200 }, econ: {}, orders: [], bills: [], laws: [], police: { incidents: [] }, cities: { neura: { health: 80, budget: 0 } }, decisions: [] };
+  const ctx = { S, agent: id => by[id], say() {}, log() {}, record() {}, decide: d => d, rate: () => true, llm: { enabled: false, json: t => { try { return JSON.parse(t); } catch { return null; } } } };
+  await cab.cabinetStep(ctx);
+  const q = p.inbox?.[0];
+  check('expertise: the President nominating the Vice President reads each candidate\'s fields for the post, no advice', q && /fields of this post: management [1-5]\/5, economics [1-5]\/5/.test(q.prompt) && /strongest fields:/.test(q.prompt) && !/should|recommend/i.test(q.prompt), q?.prompt?.slice(0, 400));
+  q.answer = JSON.stringify({ choice: 'p4', reason: 'more management' });
+  await cab.cabinetStep(ctx);
+  const rv = (S.gov?.reviews || []).find(r => r.agentId === 'p0' && /nominated p4/.test(r.what));
+  check('expertise: the nomination is queued for a report card that records the nominee\'s fields and badge', rv && /fields of the post: management 5\/5, economics 1\/5; gifted in management/.test(rv.what), JSON.stringify(rv));
+  check('expertise: the gifted badge is on the nominee file the President reads', /p4: [^\n]*gifted in management/.test(q.prompt));
+  // the real modules of the people (population.mjs + school.ts) plug into the same adapter
+  roles.resetExpertise();
+  const got = await roles.loadExpertise();
+  const one = { id: 'c-real', name: 'Real', traits: { integrity: 0.5, wisdom: 0.5, diligence: 0.5, restraint: 0.5 } };
+  const ft = roles.fieldsText(one, ['law', 'not-a-field']);
+  const rq = roles.fieldQuestionFor('judge');
+  check('expertise: the real population.mjs + school.ts load; a level reads "law n/5", unknown ids are skipped, a judge gets a bank question', !!got && /^law [1-5]\/5$/.test(ft) && rq && rq.wrong.length === 3 && new Set([rq.right, ...rq.wrong]).size === 4 && /^field: /.test(rq.from), JSON.stringify({ ft, rq: rq && { from: rq.from, q: rq.q } }));
+  roles.setExpertiseSource(null);
+}
+
 export async function run({ get, until, check }) {
   await ruleQuestionChecks(check);
   await autonomyChecks(check);
+  await expertiseChecks(check);
   await lostSeatDrillChecks(check);
   const s = await get('/api/state');
   // Kemandirian v1 in the live republic: the basic income runs by law, and the autonomy figures are public

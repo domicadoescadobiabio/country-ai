@@ -12,7 +12,7 @@
 //                     short server-written lesson go into that official's next prompts
 //   work plans        leaders write a short plan every 3 days, shown in their prompts and in #palace
 // Laws run by themselves: the basic income set by law is paid every day from the treasury (Art. 4), not by order.
-import { ROLES } from './roles.mjs';
+import { ROLES, loadExpertise } from './roles.mjs';
 import { constitutionText } from './constitution.mjs';
 import { pick, chance, cai, round, cleanText, clamp, shuffle } from './util.ts';
 import { think } from './brains.ts';
@@ -26,6 +26,7 @@ let borderCheck: (item: any, level: number) => any = () => null;
 async function loadPeers() {
   if (!CITIES.length) CITIES = (await import('./cities.ts')).CITIES;
   if (borderCheck.length === 0) borderCheck = (await import('./military.ts')).borderCheck;
+  await loadExpertise(); // the citizens' fields of knowledge (src/expertise.ts), shown on cards and nominee files
 }
 // cities known from the state when the list is not loaded yet (names fall back to ids)
 const cityList = (S: State) => (CITIES.length ? CITIES : Object.keys(S.cities || {}).map(id => ({ id, name: id })));

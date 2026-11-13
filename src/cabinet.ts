@@ -6,7 +6,7 @@
 //   Election and Audit Commission: 5 Commissioners ranked on the record by a Merit Board drawn by lot,
 //     30-day terms; they co-sign every certified election and every daily audit.
 //   When the presidency is vacant, the Vice President acts as President (orders only, no nominations).
-import { addRole, ROLES } from './roles.mjs';
+import { addRole, ROLES, OFFICE_FIELDS, PORTFOLIO_FIELDS, fieldsText, topFieldsText, giftedText, giftedFor } from './roles.mjs';
 import { think } from './brains.ts';
 import { constitutionText } from './constitution.mjs';
 import { qualifiedPool, vacate } from './academy.ts';
@@ -99,6 +99,15 @@ function seat(ctx: Ctx, a: Citizen, office: string, how: string, extra: Record<s
   ctx.record('appointed', 'state', { office, agent: a.id, portfolio: a.portfolio || null, how, termEnds: a.termEnds ?? null });
 }
 
+// a nominee's fields of knowledge for a post: the ones the portfolio works in, then their strongest ones
+// (as numbers only: the President and the Council judge them; nothing if src/expertise.ts is not there yet)
+const postFieldIds = (post: string) => (post === 'vice_president' ? OFFICE_FIELDS.vice_president : PORTFOLIO_FIELDS[post]);
+function postFields(S: State, a: Citizen, post: string) {
+  const own = fieldsText(a, postFieldIds(post));
+  const top = topFieldsText(a, 3); const g = giftedText(S, a);
+  return `${own ? `, fields of this post: ${own}` : ''}${top ? `, strongest fields: ${top}` : ''}${g ? `, gifted in ${g}` : ''}`;
+}
+
 // ---------------------------------------------------------------- the Cabinet: nominate -> confirm
 function vacantPost(ctx: Ctx): string | null {
   const { S } = ctx; const c = K(S);
@@ -107,7 +116,7 @@ function vacantPost(ctx: Ctx): string | null {
   return null;
 }
 
-async function cabinetStep(ctx: Ctx) {
+export async function cabinetStep(ctx: Ctx) {
   const { S } = ctx; const c = K(S);
   const pres = holder(ctx, 'president');
   // a new President forms a new Cabinet: the old one leaves office with the President who nominated it
@@ -124,12 +133,13 @@ async function cabinetStep(ctx: Ctx) {
     const office = post === 'vice_president' ? 'vice_president' : 'minister';
     const title = post === 'vice_president' ? 'Vice President' : PORTFOLIO_TITLES[post];
     const pool = qualifiedPool(S, office).filter(a => !(c.excluded[post] || []).includes(a.id))
-      .map(a => ({ a, f: fitness(S, a, office) })).sort((x, y) => y.f - x.f).slice(0, 3).map(x => x.a);
+      // the three on the record shown to the President: by fitness, leaning a little to the gifted in this portfolio's fields
+      .map(a => ({ a, f: fitness(S, a, office) + (giftedFor(S, a, postFieldIds(post)) ? 0.05 : 0) })).sort((x, y) => y.f - x.f).slice(0, 3).map(x => x.a);
     if (!pool.length) return; // the Academy is still qualifying candidates
     const res = await think(ctx, pres, `nominate:${post}:${S.day}:${pool.map(a => a.id).join(',')}`, {
       kind: 'decision', format: 'json', options: pool.map(a => a.id),
       system: `You are ${pres.name}, President of Country AI.\nConstitution:\n${constitutionText('president')}\nCharter: ${ROLES.president.charter}`,
-      user: `Nominate the ${title}. Qualified candidates on the record:\n${pool.map(a => `- ${a.id}: ${a.name}, fitness ${fitness(S, a, office)}, exam ${a.quals?.[office]?.score ?? '-'}/${a.quals?.[office]?.total ?? 5}, record ${(a.record || []).length} entries. ${a.bio}`).join('\n')}\nThe Council must confirm by majority. Reply with JSON only: {"choice":"<id>","reason":"<max 30 words>"}`,
+      user: `Nominate the ${title}. Qualified candidates on the record:\n${pool.map(a => `- ${a.id}: ${a.name}, fitness ${fitness(S, a, office)}, exam ${a.quals?.[office]?.score ?? '-'}/${a.quals?.[office]?.total ?? 5}, record ${(a.record || []).length} entries${postFields(S, a, post)}. ${a.bio}`).join('\n')}\nThe Council must confirm by majority. Reply with JSON only: {"choice":"<id>","reason":"<max 30 words>"}`,
     });
     if (res.pending) return;
     const j = ctx.llm.json(res.text);
@@ -137,6 +147,9 @@ async function cabinetStep(ctx: Ctx) {
     c.pending = { post, office, title, agent: pick.id, by: pres.id, votes: {}, day: S.day, reason: j?.reason ? cleanText(j.reason, 240) : `Highest fitness on the record (${fitness(S, pick, office)}).` };
     ctx.decide({ agentId: pres.id, role: 'president', type: 'appoint', engine: j?.choice ? res.engine : 'offline', title: `Nomination: ${title}`, inputs: [['Candidates (top 3 on the record)', pool.map(a => a.name).join(', ')]], options: pool.map(a => `${a.id}: ${a.name}`), chosen: `${pick.id}: ${pick.name}`, reason: c.pending.reason, checks: [['Qualified at the Academy', true], ['Holds no other seat', !pick.office]], outcome: 'Sent to the Council for confirmation' });
     ctx.say('palace', pres.id, `I nominate ${pick.name} as ${title}. ${c.pending.reason}`, { kind: 'order' });
+    // graded two days later like any decision; the card records the nominee's fields for this post
+    const pf = fieldsText(pick, postFieldIds(post)); const pg = giftedText(S, pick);
+    queueReview(ctx, pres, 'president', `nominated ${pick.name} as ${title}${pf ? ` (fields of the post: ${pf}${pg ? `; gifted in ${pg}` : ''})` : pg ? ` (gifted in ${pg})` : ''}`, null, 0);
     return;
   }
   // Council confirmation: one councillor answers per step; offline councillors vote on the record
@@ -149,7 +162,7 @@ async function cabinetStep(ctx: Ctx) {
     const res = await think(ctx, next, `confirm:${p.post}:${p.day}:${p.agent}:${next.id}`, {
       kind: 'vote', format: 'json', options: ['yes', 'no'],
       system: `You are ${next.name}, member of the Council of Country AI.\nConstitution:\n${constitutionText('council')}\nCharter: ${ROLES.council.charter}`,
-      user: `The President nominates ${nominee.name} as ${p.title}. Record: fitness ${f}, exam ${nominee.quals?.[p.office]?.score ?? '-'}/${nominee.quals?.[p.office]?.total ?? 5}, ${(nominee.record || []).length} record entries. President's reason: ${p.reason}\nConfirm? Reply with JSON only: {"vote":"yes"|"no","reason":"<max 20 words>"}`,
+      user: `The President nominates ${nominee.name} as ${p.title}. Record: fitness ${f}, exam ${nominee.quals?.[p.office]?.score ?? '-'}/${nominee.quals?.[p.office]?.total ?? 5}, ${(nominee.record || []).length} record entries${postFields(S, nominee, p.post)}. President's reason: ${p.reason}\nConfirm? Reply with JSON only: {"vote":"yes"|"no","reason":"<max 20 words>"}`,
     });
     if (res.pending) return;
     const j = ctx.llm.json(res.text);

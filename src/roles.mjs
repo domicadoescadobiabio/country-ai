@@ -15,6 +15,100 @@ export function addRole(role) {
   ROLE_ORDER.sort((a, b) => ROLES[a].order - ROLES[b].order);
 }
 
+// ---------------------------------------------------------------- expertise (fields of knowledge)
+// Citizens have interests, talents and a skill level per field (24 fields: math, economics, law, medicine,
+// security, ...). The fields live with the people (src/population.mjs, src/school.ts: the Rakyat box); the
+// government SHOWS them where a real state would look at them (voter and candidate cards, nominee files and
+// shortlists, one Academy question from a field the office needs) as numbers, with no score and no advice.
+// Only the offline rules (no mind available today) lean a little towards the gifted (fitness, in command.ts).
+// The people's interface, read through this adapter:
+//   population.mjs  FIELDS {id, name}[], topFields(a, n) -> {id, name, level 1-5}[], fieldSkill(a, id), fieldLevel(skill) 1-5
+//   school.ts       giftedFields(S, id) -> field ids the citizen is gifted in today; fieldQuestion(id, level) -> an exam
+//                   item (also offered as EXPERTISE_API, levels 0-100; cards here keep the school's 1-5 levels)
+// Until those modules load every helper below returns nothing, and cards look as they did before.
+let EXPERTISE = null; // null: not tried yet, false: not available, else the adapter
+export const LEVEL_MAX = 5;
+export async function loadExpertise() {
+  if (EXPERTISE === null) {
+    try {
+      const pop = await import('./population.mjs'); const school = await import('./school.ts');
+      EXPERTISE = {
+        FIELDS: (pop.FIELDS || []).map(f => (Array.isArray(f) ? { id: f[0], name: f[1] } : { id: f.id, name: f.name })),
+        topFields: (a, n) => pop.topFields(a, n),
+        fieldLevel: (a, id) => pop.fieldLevel(pop.fieldSkill(a, id)),
+        gifted: (S, a) => (S && a ? school.giftedFields(S, a.id) : []),
+        // the people's own exam item for a field (school.ts fieldQuestion, level 3); the bank read is a fallback
+        fieldQuestion: id => (typeof school.fieldQuestion === 'function' ? school.fieldQuestion(id, 3) : bankQuestion(school.BANKS?.[id], 3)),
+      };
+    } catch { EXPERTISE = false; }
+  }
+  return EXPERTISE || null;
+}
+export function setExpertiseSource(mod) { EXPERTISE = mod || false; } // tests: a stand-in, or none
+export function resetExpertise() { EXPERTISE = null; } // tests: load the real modules again on the next loadExpertise()
+// an Academy question from a field's bank (src/school.ts BANKS): a calculation (fresh numbers) at about level L,
+// or a fact at or under L; null if the bank has neither
+function bankQuestion(bank, L) {
+  if (!bank) return null;
+  const calcs = (bank.calc || []).filter(c => c.min <= L && L <= c.max);
+  const facts = (bank.facts || []).filter(f => f[0] <= L);
+  if (calcs.length && (!facts.length || Math.random() < 0.6)) {
+    const c = calcs[Math.floor(Math.random() * calcs.length)]; const [q, right, wrong] = c.make(L);
+    return { q, right, wrong, lesson: c.lesson };
+  }
+  if (!facts.length) return null;
+  const [, q, right, wrong, lesson] = facts[Math.floor(Math.random() * facts.length)];
+  return { q, right, wrong, lesson };
+}
+// the fields each office (and each Cabinet portfolio) works in, with the people's field ids; unknown ids are skipped
+export const OFFICE_FIELDS = {
+  president: ['economics', 'management', 'law'], vice_president: ['management', 'economics'],
+  minister: ['management', 'economics', 'accounting'], council: ['law', 'economics', 'civics'],
+  police_chief: ['security', 'law', 'management'], police: ['security', 'law'],
+  military_chief: ['security', 'management', 'logistics'], military: ['security', 'logistics'],
+  judge: ['law', 'philosophy'], commissioner: ['math', 'law'], mayor: ['management', 'engineering', 'logistics'],
+};
+export const PORTFOLIO_FIELDS = {
+  finance: ['economics', 'accounting', 'math'], economy: ['economics', 'management', 'trade'],
+  home: ['law', 'security'], defence: ['security', 'logistics', 'management'], justice: ['law', 'philosophy'],
+  education: ['psychology', 'language', 'philosophy'], welfare: ['medicine', 'psychology', 'economics'],
+  technology: ['programming', 'engineering', 'math'],
+};
+const known = id => !EXPERTISE || !Array.isArray(EXPERTISE.FIELDS) || EXPERTISE.FIELDS.some(f => f.id === id);
+const nameOf = id => (EXPERTISE && Array.isArray(EXPERTISE.FIELDS) && EXPERTISE.FIELDS.find(f => f.id === id)?.name) || id;
+const lvl = v => (Number.isFinite(Number(v)) ? Math.round(Math.max(1, Math.min(LEVEL_MAX, Number(v)))) : null);
+// "law 4/5, economics 3/5, management 3/5": a citizen's strongest fields (empty string when unknown)
+export function topFieldsText(a, n = 3) {
+  if (!EXPERTISE || typeof EXPERTISE.topFields !== 'function' || !a) return '';
+  try { return (EXPERTISE.topFields(a, n) || []).slice(0, n).map(f => `${f.name || nameOf(f.id)} ${lvl(f.level) ?? '-'}/${LEVEL_MAX}`).join(', '); } catch { return ''; }
+}
+// "economics 4/5, accounting 2/5": a citizen's level in the fields an office or portfolio works in
+export function fieldsText(a, ids) {
+  if (!EXPERTISE || typeof EXPERTISE.fieldLevel !== 'function' || !a) return '';
+  try { return [...new Set(ids || [])].filter(known).map(id => `${nameOf(id)} ${lvl(EXPERTISE.fieldLevel(a, id)) ?? '-'}/${LEVEL_MAX}`).join(', '); } catch { return ''; }
+}
+// the talent programme's badge: the fields a citizen is gifted in today (ids), and as text ("economics, law")
+export function giftedIn(S, a) {
+  if (!EXPERTISE || typeof EXPERTISE.gifted !== 'function' || !a) return [];
+  try { return (EXPERTISE.gifted(S, a) || []).filter(id => typeof id === 'string' && known(id)); } catch { return []; }
+}
+export const giftedText = (S, a) => giftedIn(S, a).map(nameOf).join(', ');
+// gifted in a field this office (or portfolio) works in: what the offline rules lean on, a little
+export const giftedFor = (S, a, ids) => { const g = giftedIn(S, a); return (ids || []).some(id => g.includes(id)); };
+// one exam question from a field the office needs, or null (no fields module, or none for this office)
+export function fieldQuestionFor(roleId) {
+  if (!EXPERTISE || typeof EXPERTISE.fieldQuestion !== 'function') return null;
+  const ids = (OFFICE_FIELDS[roleId] || []).filter(known);
+  for (const id of [...ids].sort(() => Math.random() - 0.5)) {
+    try {
+      const it = EXPERTISE.fieldQuestion(id);
+      if (it && typeof it.q === 'string' && typeof it.right === 'string' && Array.isArray(it.wrong) && it.wrong.length >= 3 && new Set([it.right, ...it.wrong.slice(0, 3)]).size === 4)
+        return { tests: it.tests || 'wisdom', q: it.q, right: it.right, wrong: it.wrong.slice(0, 3), lesson: it.lesson || `A ${nameOf(id)} question for this office.`, from: `field: ${nameOf(id)}` };
+    } catch { /* a broken question is skipped */ }
+  }
+  return null;
+}
+
 addRole({
   id: 'president',
   title: 'President',
