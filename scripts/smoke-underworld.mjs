@@ -58,6 +58,12 @@ export async function mischiefChecks(check) {
   const briber = person('bri', { mischief: 0.9, wallet: 500 }); S.citizens.push(briber);
   const paidBefore = paid; await uw.doMischief(ctx, briber, 'bribe_cop', { amount: 100 }, 'test');
   check('a petty bribe never starts a paid model call (the officer decides from their traits)', paid === paidBefore);
+  const broke = person('broke', { mischief: 0.9, wallet: 30 }); S.citizens.push(broke);
+  const nb = await uw.doMischief(ctx, broke, 'bribe_cop', { amount: 200 }, 'test');
+  check('a bribe with too little money left fails and never pushes a wallet below zero (ticket #314)', !nb.ok && broke.wallet === 30 && broke.mischiefDay == null, JSON.stringify(nb));
+  const vandal = person('van', { mischief: 0.9 }); S.citizens.push(vandal);
+  const vd = await uw.doMischief(ctx, vandal, 'vandal', {}, 'test');
+  check('vandalism names the damaged city, for restitution into its budget (ticket #309)', vd.ok && vd.incident.city === 'neura' && vd.incident.type === 'vandalism', JSON.stringify(vd.incident));
 
   // 5. through daily life: chosen by the model, counted, kept quiet in public; refusing is on the record
   const D = republic([person('x1', { mischief: 0.9, wallet: 300 }), person('x2', { wallet: 400 }), person('x3', { wallet: 400 })]);

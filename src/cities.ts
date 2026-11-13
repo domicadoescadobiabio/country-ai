@@ -128,8 +128,11 @@ export function validateMayor(S: State, city: any, residents: number, j: any) {
   if (action === 'save') return { ok: true, action, amount: 0 };
   const amount = Number(j?.amount);
   if (!Number.isFinite(amount) || amount <= 0) return { ok: false, why: 'no amount given', rule: 'an amount in CAI above 0' };
-  if (amount > city.budget + 0.01) return { ok: false, why: `${cai(amount)} is more than the city budget of ${cai(city.budget)}`, rule: 'a Mayor spends only what the city budget holds' };
-  if (action === 'local_income' && Math.floor(amount / Math.max(1, residents)) < 1) return { ok: false, why: `${cai(amount)} split over ${residents} residents is less than 1 CAI each`, rule: 'local income pays every free resident at least 1 CAI' };
+  // exactly the budget, no tolerance: a budget may never go below zero (ticket #313)
+  if (!(Number(city.budget) >= 0) || amount > city.budget) return { ok: false, why: `${cai(amount)} is more than the city budget of ${cai(city.budget || 0)}`, rule: 'a Mayor spends only what the city budget holds' };
+  // nobody free to pay: dividing by zero residents would make the budget NaN (ticket #313)
+  if (action === 'local_income' && !(residents >= 1)) return { ok: false, why: 'there are no free residents to pay', rule: 'local income needs at least one free resident' };
+  if (action === 'local_income' && Math.floor(amount / residents) < 1) return { ok: false, why: `${cai(amount)} split over ${residents} residents is less than 1 CAI each`, rule: 'local income pays every free resident at least 1 CAI' };
   if (action === 'safety' && !S.police) return { ok: false, why: 'there is no police budget yet', rule: 'safety money goes to the Police' };
   return { ok: true, action, amount: round(amount, 2) };
 }

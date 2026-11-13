@@ -190,6 +190,23 @@ try {
     await daily.tick(nctx);
     check('the summary is said once', said.filter(m => m.kind === 'night').length === 1);
     void later;
+
+    // a citizen who already rested twice is not offered rest; if the model rests anyway it is asked once more
+    const r1 = { id: 'r1', name: 'Rhea Rest', city: 'neura', status: 'free', wallet: 300, traits, bio: 'Cook in Neura City. Saves every coin.', diary: [], practice: {}, quals: {}, record: [], lessons: {}, joinedDay: 0, training: [], origin: 'native' };
+    const RS = { day: 4, policy: { wage: 100, taxRate: 0.1, ubi: 20 }, cities: { neura: { health: 70, budget: 0 } }, treasury: 0, citizens: [r1], seats: {}, elections: { list: [] }, applications: {}, police: { incidents: [] }, academy: { rooms: [] }, feed: {} };
+    RS.foundedAt = Date.now() - (3 * 24 + 10) * 3600000; // 10:00 on day 4
+    r1.lifeDay = 4; r1.lifeCount = { rest: 2 };
+    const rctx = { ...nctx, S: RS, agent: id => RS.citizens.find(x => x.id === id) };
+    const lifeJobs = () => workerPull(16, 'ollama/test').filter(j => /^life:r1:/.test(j.id));
+    RS.daily = { lastAt: Date.now() - 60000 }; await daily.tick(rctx); await daily.tick(rctx);
+    const ask1 = lifeJobs();
+    for (const j of ask1) workerAnswer(j.id, '{"act":"rest","note":"a calm afternoon"}');
+    await daily.tick(rctx); await daily.tick(rctx);
+    const ask2 = lifeJobs();
+    check('rest picked when it is not on the menu is asked once more, saying rest is not possible', ask1.length === 1 && !/- rest:/.test(ask1[0].user) && ask2.length === 1 && /rest is not possible right now/.test(ask2[0].user) && !RS.daily.byAct?.rest, JSON.stringify({ a1: ask1.length, a2: ask2.length, byAct: RS.daily.byAct }));
+    for (const j of ask2) workerAnswer(j.id, '{"act":"work","note":"back to it"}');
+    await daily.tick(rctx);
+    check('the second answer is the one that counts', RS.daily.byAct?.work === 1 && !RS.daily.byAct?.rest, JSON.stringify(RS.daily.byAct));
   }
 
   // a goal for the week (owner, 13 Nov): chosen by the citizen's own model from a menu, measured by the server
@@ -219,6 +236,7 @@ try {
     const city = { budget: 500, health: 60 }; const MS = { police: { budget: 0 } };
     const ok = j => validateMayor(MS, city, 100, j);
     check('a Mayor\'s proposal within the budget is accepted as proposed', ok({ action: 'repair', amount: 240 }).ok && ok({ action: 'repair', amount: 240 }).amount === 240 && ok({ action: 'save' }).ok && MAYOR_ACTIONS.length === 4);
+    check('no free residents, or a cent over the budget, are rejected (ticket #313)', !validateMayor(MS, city, 0, { action: 'local_income', amount: 100 }).ok && !ok({ action: 'repair', amount: 500.005 }).ok && ok({ action: 'repair', amount: 500 }).ok && !validateMayor(MS, { budget: NaN }, 10, { action: 'repair', amount: 1 }).ok);
     check('over budget, no amount, unknown actions or a split under 1 CAI each are rejected with a rule', !ok({ action: 'repair', amount: 501 }).ok && /city budget/.test(ok({ action: 'repair', amount: 501 }).rule) && !ok({ action: 'safety' }).ok && !ok({ action: 'party', amount: 10 }).ok && !ok({ action: 'local_income', amount: 50 }).ok && !validateMayor({}, city, 100, { action: 'safety', amount: 10 }).ok);
   }
 

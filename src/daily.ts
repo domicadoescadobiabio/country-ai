@@ -26,7 +26,7 @@ export const DAILY_LIMITS: Record<string, number> = { shop: 2, help: 2, study: 3
 const cityName = id => CITIES.find(c => c.id === id)?.name || id;
 
 type Allow = { apply: string[]; run: string[] };
-const pending = new Map<string, { agent: string; stage: 'day' | 'study' | 'night'; system: string; user: string; menu?: string[]; allow?: Allow; tempted?: string[]; studyId?: string; office?: string; options?: string[]; night?: number }>();
+const pending = new Map<string, { agent: string; stage: 'day' | 'study' | 'night'; system: string; user: string; menu?: string[]; allow?: Allow; tempted?: string[]; studyId?: string; office?: string; options?: string[]; night?: number; retried?: boolean }>();
 const D = (S: State) => {
   S.daily ||= {};
   const d = S.daily;
@@ -414,7 +414,15 @@ async function poll(ctx: Ctx) {
       if (g?.ok) feel(S, a, g.correct ? 0.04 : -0.04, g.correct ? 'proud' : 'anxious', g.correct ? `got a ${p.office} practice question right` : `missed a ${p.office} practice question`);
       continue;
     }
-    await doAct(ctx, a, ctx.llm.json(r.text) || {}, r.engine, p.menu, p.allow, p.tempted || []);
+    const j = ctx.llm.json(r.text) || {};
+    // rest was not on the menu (rested twice already today) and the model rested anyway: ask once more, saying
+    // so plainly. A small local model drifts back to "rest" on calm afternoons (74% rest on day 3, 13 Nov), which
+    // made the daily rest limit meaningless. A second "rest" is recorded honestly as rest.
+    if (String(j.act || '').toLowerCase().trim() === 'rest' && p.menu && !p.menu.includes('rest') && !p.retried) {
+      pending.set(`${qid}:again`, { ...p, retried: true, user: `${p.user}\nNote: you have already rested enough today, so rest is not possible right now. Choose one of the acts listed above.` });
+      continue;
+    }
+    await doAct(ctx, a, j, r.engine, p.menu, p.allow, p.tempted || []);
   }
 }
 

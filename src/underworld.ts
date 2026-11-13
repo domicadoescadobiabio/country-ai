@@ -276,12 +276,16 @@ export async function doMischief(ctx: Ctx, a: Citizen, kind: string, j: any = {}
   if (kind === 'vandal') {
     const amount = round(clamp(20 + Math.random() * 60, 20, Math.max(20, (city?.budget || 0) * 0.2)), 2);
     if (city) { city.budget = round(Math.max(0, city.budget - amount), 2); city.health = Math.max(0, city.health - 1); }
-    const i = inc({ type: 'vandalism', victim: 'state', amount, status: 'open', evidence: `damage worth ${cai(amount)} in ${a.city}${seen ? `; a witness named ${a.name}` : ''}`, strength: seen ? 0.85 : 0.55 });
+    // inc.city: the Court's restitution goes back into this city's budget (src/police.ts, ticket #309)
+    const i = inc({ type: 'vandalism', victim: 'state', city: a.city, amount, status: 'open', evidence: `damage worth ${cai(amount)} in ${a.city}${seen ? `; a witness named ${a.name}` : ''}`, strength: seen ? 0.85 : 0.55 });
     return { ok: true, what: kind, incident: i, line: `damaged the city (${cai(amount)})` };
   }
   if (kind === 'bribe_cop') {
-    const o = pick(policeIn(S, a.city)); const amount = round(clamp(Number(j.amount) || 100, 50, Math.min(300, a.wallet)), 2);
-    if (!o || amount < 50) { st.tried--; st.today--; a.mischiefDay = null; return { ok: false, error: 'no officer to bribe' }; }
+    // the wallet is checked again here, not only when the menu was built: it may have dropped in between, and
+    // clamp(…, 50, min(300, wallet)) would otherwise still return 50 and push the wallet below zero (ticket #314)
+    const o = pick(policeIn(S, a.city));
+    if (!o || !(a.wallet >= 50)) { st.tried--; st.today--; a.mischiefDay = null; return { ok: false, error: o ? 'no money for a bribe' : 'no officer to bribe' }; }
+    const amount = round(clamp(Number(j.amount) || 100, 50, Math.min(300, a.wallet)), 2);
     const r: any = await offerBribe(ctx, a, o, amount, engine, true);
     return { ok: true, what: kind, incident: r.incident, accepted: r.accepted, line: r.accepted ? `paid an officer ${cai(amount)}` : r.reported ? `was reported for offering an officer ${cai(amount)}` : 'an officer refused the money' };
   }
