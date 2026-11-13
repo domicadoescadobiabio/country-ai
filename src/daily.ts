@@ -13,6 +13,7 @@ import { CITIES } from './cities.ts';
 import { echoesStreet, safeNote } from './life.ts';
 import { feelingsTick, feel, bond, ensureFeelings, feelLine, preferredToHelp, talkTarget, MOODS } from './feelings.ts';
 import { schoolTick, inSchool, nightView, schoolState, nightOf } from './school.ts';
+import { topFields, talentsOf, fieldName } from './population.mjs';
 import { round, cleanText, cai, clamp } from './util.ts';
 import type { Ctx, State, Citizen } from './types.ts';
 
@@ -26,7 +27,7 @@ const VOLUNTEERS_PER_HEALTH = 100; // a hundred volunteer shifts in a city repai
 export const DAILY_LIMITS: Record<string, number> = { shop: 2, help: 2, study: 3, volunteer: 1, rest: 2 };
 const cityName = id => CITIES.find(c => c.id === id)?.name || id;
 
-type Allow = { apply: string[]; run: string[] };
+type Allow = { apply: string[]; run: string[]; work?: string[] };
 const pending = new Map<string, { agent: string; stage: 'day' | 'study' | 'night'; system: string; user: string; menu?: string[]; allow?: Allow; tempted?: string[]; studyId?: string; office?: string; options?: string[]; night?: number; retried?: boolean }>();
 const D = (S: State) => {
   S.daily ||= {};
@@ -115,7 +116,9 @@ export function menu(ctx: Ctx, a: Citizen) {
   const { S } = ctx;
   const ok = (x: string) => underLimit(S, a, x);
   const m: [string, string][] = [];
-  if (a.workedDay !== S.day) m.push(['work', `work: an extra shift (+${cai(S.policy.wage * 0.5)} before tax, once a day)`]);
+  // work in a field you are good at pays more (up to +50% at full skill): the citizen's own best fields are offered
+  const best = topFields(a, 3, Date.now(), DAY_MS);
+  if (a.workedDay !== S.day) m.push(['work', `work: an extra shift (+${cai(S.policy.wage * 0.5)} before tax, once a day; more in a field you are good at, field: ${best.map(f => f.id).join('|')})`]);
   if (a.wallet >= 60 && ok('shop')) m.push(['shop', 'shop: spend 10-40 CAI at shops in your city (amount)']);
   if (ok('study')) m.push(['study', `study: practise for an office (office: ${STUDY_OFFICES.join('|')})`]);
   const canApply = STUDY_OFFICES.filter(r => !a.quals?.[r] && !(S.applications?.[r] || []).includes(a.id) && eligibility(S, a, r).ok);
@@ -126,7 +129,7 @@ export function menu(ctx: Ctx, a: Citizen) {
   if (a.wallet >= 60 && ok('help')) m.push(['help', 'help: give 5-20 CAI to the poorest neighbour in your city (amount)']);
   if (ok('volunteer')) m.push(['volunteer', `volunteer: an unpaid shift repairing ${cityName(a.city)} (once a day)`]);
   if (ok('rest')) m.push(['rest', 'rest: take it easy, see friends']);
-  return { items: m, allow: { apply: canApply, run: canRun } as Allow };
+  return { items: m, allow: { apply: canApply, run: canRun, work: best.map(f => f.id) } as Allow };
 }
 
 function who(S: State, a: Citizen) { return S.citizens.length && a && a.status === 'free' && !a.brain && !a.office && (a.faction || 'civilian') !== 'underworld'; }
@@ -176,8 +179,11 @@ export function dayPrompt(ctx: Ctx, a: Citizen, qid = `life:${a.id}`) {
   goalProgress(S, a); // closes a goal whose week is over before the prompt shows it
   const aim = goalLine(S, a);
   const learnt = (a.lifeLessons || []).slice(-1)[0];
+  // who they are at school: what they love and what they are good at (one short line, levels 1-5)
+  const strong = topFields(a, 3, Date.now(), DAY_MS);
+  const gifts = `You love ${talentsOf(a).interests.map(fieldName).join(', ')}. Your strongest fields: ${strong.map(f => `${f.name} (level ${f.level})`).join(', ')}.`;
   const system = `You are ${a.name}, a citizen of Country AI, a nation of 10,000 AI citizens in five cities. ${a.bio} You live a real life: you work, spend, learn, help, talk and may rise to public office through the Academy and elections. Be yourself; your traits: integrity ${Math.round(a.traits.integrity * 100)}, wisdom ${Math.round(a.traits.wisdom * 100)}, diligence ${Math.round(a.traits.diligence * 100)}, restraint ${Math.round(a.traits.restraint * 100)}.`;
-  const user = `${news(ctx, a)}\n${neighbours(S, a)}\nIt is ${partOfDay(ctx)}. You: wallet ${cai(a.wallet)}, lives in ${cityName(a.city)}. ${career(S, a)}\n${heart ? `${heart}\n` : ''}${aim}\n${learnt ? `What you learnt: ${learnt}\n` : ''}Earlier today you: ${done.join(', ') || 'nothing yet'}.\nYour diary:\n${diary}\n\nLike real people, your days are varied: some work, some errands, some time with neighbours, some learning, some rest. Pick what fits this moment, your wallet, your traits and what you did earlier; do not just pick the first option.\nWhat do you do now? Choose ONE of these (they are all possible right now):\n${m.map(([, t]) => `- ${t}`).join('\n')}\nReply with JSON only: {"act":"<one>","office":"<for study/apply/run>","amount":<for shop/help>,"say":"<for talk>","note":"<a diary line, max 15 words>","feel":"<optional: one word for how you feel now>"${needsGoal(a) ? ',"goal":"<one goal from the list>","goal_why":"<why, max 15 words>"' : ''}}`;
+  const user = `${news(ctx, a)}\n${neighbours(S, a)}\nIt is ${partOfDay(ctx)}. You: wallet ${cai(a.wallet)}, lives in ${cityName(a.city)}. ${career(S, a)}\n${gifts}\n${heart ? `${heart}\n` : ''}${aim}\n${learnt ? `What you learnt: ${learnt}\n` : ''}Earlier today you: ${done.join(', ') || 'nothing yet'}.\nYour diary:\n${diary}\n\nLike real people, your days are varied: some work, some errands, some time with neighbours, some learning, some rest. Pick what fits this moment, your wallet, your traits and what you did earlier; do not just pick the first option.\nWhat do you do now? Choose ONE of these (they are all possible right now):\n${m.map(([, t]) => `- ${t}`).join('\n')}\nReply with JSON only: {"act":"<one>","office":"<for study/apply/run>","field":"<for work>","amount":<for shop/help>,"say":"<for talk>","note":"<a diary line, max 15 words>","feel":"<optional: one word for how you feel now>"${needsGoal(a) ? ',"goal":"<one goal from the list>","goal_why":"<why, max 15 words>"' : ''}}`;
   return { system, user, menu: m.map(([id]) => id), allow, tempted: tempted.map(([id]) => id) };
 }
 
@@ -218,8 +224,11 @@ export async function doAct(ctx: Ctx, a: Citizen, j: any, engine: string, offere
     if (!r.ok) { what = 'rest'; line = 'thought about doing something wrong, but did not'; }
     else { line = 'had a day they would rather not talk about'; feel(S, a, 0.04, 'excited', 'a risky day'); }
   } else if (what === 'work') {
-    const r = await act(ctx, a, { action: 'work' });
-    if (r.ok) line = `worked an extra shift (+${cai(r.earned)})`;
+    // only a field the menu offered (their own best fields); anything else is plain work
+    const f = cleanText(j?.field, 20).toLowerCase();
+    const field = (allow.work || []).includes(f) ? f : null;
+    const r = await act(ctx, a, { action: 'work', field });
+    if (r.ok) line = `worked an extra shift${r.field ? ` in ${fieldName(r.field)}` : ''} (+${cai(r.earned)})`;
     else { what = 'rest'; line = 'wanted an extra shift, but already worked one today'; }
   } else if (what === 'shop') {
     const amt = clamp(Math.round(Number(j.amount) || 20), 10, 40);

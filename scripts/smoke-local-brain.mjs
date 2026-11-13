@@ -268,6 +268,11 @@ try {
   check('the daily prompt carries a short feelings line', heart.length > 0 && heart.every(l => l.length <= 300) && lifePrompts.every(p => /"feel":/.test(p)), `${heart.length}/${lifePrompts.length} ${heart[0] || ''}`);
   check('/api/state shows the republic clock in daily.clock', life?.clock && ['night', 'morning', 'day', 'evening'].includes(life.clock.phase) && typeof life.clock.hour === 'number' && typeof life.clock.awake === 'boolean', JSON.stringify(life?.clock));
   check('daily life entries carry a mood for the map', (life?.recent || []).length > 0 && life.recent.every(x => x.mood));
+  // interests and talents (owner, 13 Nov): every prompt says what this citizen loves and is good at, and they differ
+  const gifts = lifePrompts.map(p => (p.match(/^You love .*$/m) || [])[0]).filter(Boolean);
+  check('the daily prompt says what each citizen loves and their strongest fields, and citizens differ', gifts.length > 0 && gifts.length === lifePrompts.length && new Set(gifts).size > Math.min(5, gifts.length - 1) && gifts.every(l => l.length <= 260), `${new Set(gifts).size}/${gifts.length} ${gifts[0] || ''}`);
+  const sch = (await get('/api/state')).school;
+  check('/api/state shows the school with the fields citizens study', sch && Array.isArray(sch.fields) && typeof sch.choices === 'number' && sch.coreShare > 0, JSON.stringify(sch && { fields: sch.fields?.slice(0, 3), choices: sch.choices }));
   const diaries = (life?.recent || []).filter(x => x.act === 'work');
   check('nobody is counted as working a refused second shift', diaries.every(x => /^worked/.test(x.line)), JSON.stringify(diaries.slice(-3)));
   // the runner under local-brain.cmd reloads itself when its code changes (exit 3 = start the new code)

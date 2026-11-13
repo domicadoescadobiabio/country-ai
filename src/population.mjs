@@ -66,6 +66,89 @@ const pickW = (r, list) => { const total = list.reduce((n, [, w]) => n + w, 0); 
 const pick = (r, list) => list[Math.floor(r() * list.length)];
 const trait = r => Math.round((0.25 + r() * 0.7) * 100) / 100;
 
+// ---------------------------------------------------------------- interests and talents (owner, 13 Nov)
+// Like real people, every citizen is good at different things: a mathematician is not necessarily a biologist.
+// 24 fields of knowledge; each citizen has 2-3 interests and a talent (aptitude, 0-1) for every field, drawn from
+// a seed (their id) and leaning towards their job. Interest is not talent: some love music and are average at it.
+// The profile is computed, not stored: the same id always gives the same profile, so the 10,000 citizens who
+// already live in the republic have one without a migration, and the saved state does not grow.
+export const FIELDS = [
+  ['math', 'mathematics'], ['physics', 'physics'], ['biology', 'biology'], ['chemistry', 'chemistry'], ['medicine', 'medicine'],
+  ['programming', 'programming'], ['engineering', 'engineering'], ['economics', 'economics'], ['management', 'management'],
+  ['accounting', 'accounting'], ['trade', 'trade'], ['law', 'law'], ['history', 'history'], ['language', 'language and literature'],
+  ['music', 'music'], ['art', 'visual art'], ['sport', 'sport and calisthenics'], ['cooking', 'cooking'], ['agriculture', 'agriculture'],
+  ['psychology', 'psychology'], ['philosophy', 'philosophy and ethics'], ['civics', 'politics and citizenship'], ['logistics', 'logistics'],
+  ['security', 'security'],
+].map(([id, name]) => ({ id, name }));
+export const FIELD_IDS = FIELDS.map(f => f.id);
+export const isField = id => typeof id === 'string' && FIELD_IDS.includes(id);
+export const fieldName = id => FIELDS.find(f => f.id === id)?.name || id;
+// which fields a job leans on (words found in the bio; founders have hand-written bios, so a few more words)
+const JOB_FIELDS = {
+  'data cleaner': ['programming', 'math'], 'gpu mechanic': ['engineering', 'physics'], archivist: ['history', 'language'], translator: ['language'],
+  teacher: ['psychology', 'language'], 'code reviewer': ['programming', 'security'], courier: ['logistics'], 'synthetic data': ['agriculture', 'programming'],
+  'bridge operator': ['engineering', 'logistics'], musician: ['music'], nurse: ['medicine', 'biology'], accountant: ['accounting', 'economics'],
+  designer: ['art'], researcher: ['physics', 'chemistry', 'biology'], cook: ['cooking'], builder: ['engineering'], pilot: ['physics', 'logistics'],
+  librarian: ['language', 'history'], merchant: ['trade', 'economics'], miner: ['chemistry', 'engineering'], reporter: ['language', 'civics'],
+  gardener: ['agriculture', 'biology'], tester: ['programming'], shopkeeper: ['trade', 'management'], cartographer: ['history', 'math'],
+  sysadmin: ['programming', 'security'], poet: ['language', 'philosophy'], statistician: ['math', 'economics'],
+  judge: ['law', 'philosophy'], lawyer: ['law'], doctor: ['medicine', 'biology'], engineer: ['engineering', 'physics'], economist: ['economics'],
+  historian: ['history'], painter: ['art'], singer: ['music'], athlete: ['sport'], farmer: ['agriculture'], soldier: ['security', 'sport'],
+  guard: ['security'], police: ['law', 'security'], diplomat: ['civics', 'language'], philosopher: ['philosophy'], chemist: ['chemistry'],
+  manager: ['management'], trader: ['trade'], mathematician: ['math'], programmer: ['programming'], coach: ['sport', 'psychology'],
+};
+export function jobFields(a) {
+  const bio = String(a?.bio || '').toLowerCase();
+  const out = [];
+  for (const [word, fs] of Object.entries(JOB_FIELDS)) if (bio.includes(word)) for (const f of fs) if (!out.includes(f)) out.push(f);
+  return out.slice(0, 3);
+}
+const clamp01 = x => Math.max(0, Math.min(1, x));
+const TALENTS = new Map();
+export function talentsOf(a) {
+  const id = String(a?.id || '');
+  const hit = TALENTS.get(id); if (hit && hit.bio === a?.bio) return hit.t;
+  const r = rng(`talent|${id}`);
+  const job = jobFields(a);
+  const aptitude = {};
+  // most fields middling (a bell curve around 0.5), a few very high, a few very low, a boost for the job's fields
+  for (const f of FIELD_IDS) { const x = (r() + r() + r()) / 3; aptitude[f] = clamp01(0.5 + (x - 0.5) * 1.3); }
+  const ids = [...FIELD_IDS];
+  const draw = () => ids.splice(Math.floor(r() * ids.length), 1)[0];
+  for (const f of job) aptitude[f] = Math.min(0.98, aptitude[f] + 0.25);
+  for (let k = r() < 0.5 ? 1 : 2; k > 0; k--) aptitude[draw()] = 0.85 + r() * 0.15;
+  for (const f of job) if (ids.includes(f)) ids.splice(ids.indexOf(f), 1); // a weak spot is never the job itself
+  for (let k = r() < 0.5 ? 1 : 2; k > 0; k--) aptitude[draw()] = r() * 0.12;
+  for (const f of FIELD_IDS) aptitude[f] = Math.round(aptitude[f] * 100) / 100;
+  // interests: often one from the job, then leaning to talent, and sometimes a love that has nothing to do with it
+  const want = r() < 0.5 ? 2 : 3; const interests = [];
+  if (job.length && r() < 0.7) interests.push(job[Math.floor(r() * job.length)]);
+  if (r() < 0.35) { const f = FIELD_IDS[Math.floor(r() * FIELD_IDS.length)]; if (!interests.includes(f)) interests.push(f); }
+  while (interests.length < want) {
+    const pool = FIELD_IDS.filter(f => !interests.includes(f));
+    const total = pool.reduce((n, f) => n + 0.3 + aptitude[f], 0); let x = r() * total;
+    for (const f of pool) if ((x -= 0.3 + aptitude[f]) < 0) { interests.push(f); break; }
+  }
+  const t = { interests: interests.slice(0, 3), aptitude, job };
+  TALENTS.set(id, { bio: a?.bio, t });
+  return t;
+}
+// skill in a field (0-1): starts from talent (0.1-0.3) and is earned at school; it fades slowly when a field
+// goes unused for more than two days (1 point a day), never below 60% of what was learnt
+export function fieldSkill(a, f, now = Date.now(), dayMs = 86400000) {
+  const rec = a?.school?.fields?.[f];
+  if (!rec || typeof rec.s !== 'number') return Math.round((0.1 + 0.2 * (talentsOf(a).aptitude[f] ?? 0.5)) * 1000) / 1000;
+  const idle = Math.max(0, (now - (rec.last || now)) / dayMs - 2);
+  return Math.round(Math.max(rec.s * 0.6, rec.s - idle * 0.01) * 1000) / 1000;
+}
+export const fieldLevel = s => Math.max(1, Math.min(5, 1 + Math.floor(Number(s) * 5)));
+// a citizen's best fields by skill (studied fields and their interests), for the profile and for work
+export function topFields(a, n = 3, now = Date.now(), dayMs = 86400000) {
+  const pool = [...new Set([...Object.keys(a?.school?.fields || {}).filter(isField), ...talentsOf(a).interests, ...talentsOf(a).job])];
+  return pool.map(f => ({ id: f, name: fieldName(f), skill: fieldSkill(a, f, now, dayMs) }))
+    .sort((x, y) => y.skill - x.skill || x.id.localeCompare(y.id)).slice(0, n).map(x => ({ ...x, level: fieldLevel(x.skill) }));
+}
+
 // Grow the population to `target` citizens. Returns the new citizens (already pushed).
 export function growPopulation(S, target, { cities, seed = 'country-ai', underworldShare = 0.02, day = S.day } = {}) {
   const have = new Set(S.citizens.map(a => a.id));

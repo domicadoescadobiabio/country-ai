@@ -10,7 +10,7 @@ import { buildItem, answer, vacate, LETTERS, examEligible } from './academy.ts';
 import { think, publicBrain } from './brains.ts';
 import { borderCheck } from './military.ts';
 import { constitutionText } from './constitution.mjs';
-import { retireModels } from './population.mjs';
+import { retireModels, isField, fieldSkill } from './population.mjs';
 import { pick, round, cleanText, cai, clamp } from './util.ts';
 import type { Ctx, State, Citizen } from './types.ts';
 
@@ -179,9 +179,13 @@ export async function act(ctx: Ctx, a: Citizen, input: any) {
   if (action === 'work') {
     if (a.workedDay === S.day) return { ok: false, error: 'already worked an extra shift today' };
     a.workedDay = S.day;
-    const pay = round(S.policy.wage * 0.5, 2), tax = round(pay * S.policy.taxRate, 2);
+    // work in a field (owner, 13 Nov): skill in it pays up to 50% more, and using a field keeps it from fading
+    const field = isField(input.field) ? input.field : null;
+    const skill = field ? fieldSkill(a, field, Date.now(), ctx.cfg?.dayMs || 86400000) : 0;
+    if (field) { const rec = a.school?.fields?.[field]; if (rec) { rec.s = skill; rec.last = Date.now(); } } // what faded stays faded
+    const pay = round(S.policy.wage * 0.5 * (1 + 0.5 * skill), 2), tax = round(pay * S.policy.taxRate, 2);
     a.wallet = round(a.wallet + pay - tax, 2); S.treasury = round(S.treasury + tax, 2);
-    return { ok: true, earned: pay - tax };
+    return { ok: true, earned: round(pay - tax, 2), field };
   }
   if (action === 'study') {
     const roleId = String(input.office || '').toLowerCase();

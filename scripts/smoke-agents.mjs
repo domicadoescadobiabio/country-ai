@@ -5,6 +5,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { ROLES, solveRuleQuestion, RULE_GENERATORS } from '../src/roles.mjs';
+import { solveFieldQuestion, fieldItem } from '../src/school.ts';
+import { FIELD_IDS } from '../src/population.mjs';
 import '../src/cities.ts'; // registers the Mayor office
 import '../src/court.ts'; // registers the Judge office
 import { ledgerAll } from './smoke-elections.mjs';
@@ -13,14 +15,17 @@ const LETTERS = ['A', 'B', 'C', 'D'];
 const RIGHTS = () => Object.values(ROLES).flatMap(r => r.exam.map(q => q.right));
 // Generated rule questions (src/roles.mjs) have no fixed answer: a well-trained model works them out from the
 // question, which solveRuleQuestion() does. The question can sit on any line, after a "Question:" style label.
-function ruleRight(text) {
+function ruleRight(text, solve = solveRuleQuestion) {
   for (const line of String(text || '').split('\n')) {
     for (const part of [line, ...[...line.matchAll(/:\s+/g)].map(m => line.slice(m.index + m[0].length))]) {
-      const r = solveRuleQuestion(part.trim()); if (r != null) return r;
+      const r = solve(part.trim()); if (r != null) return r;
     }
   }
   return null;
 }
+// Academy exams may carry one question from an office's field of knowledge (src/school.ts BANKS, ticket #400):
+// worked out from its own text like the rule questions, so the fake agents never have to guess
+const fieldRight = text => ruleRight(text, solveFieldQuestion);
 // The answer key for one question, never a pool: a pool of every right answer in every handbook let a wrong
 // option that happens to be another question's right answer win, depending on the shuffled option order, which
 // made smoke.mjs flaky (Tester failed the Mayor exam in some runs). Rule questions are solved from their numbers;
@@ -29,6 +34,7 @@ const HANDBOOK = () => { const m = new Map(); for (const r of Object.values(ROLE
 function rightFor(text) {
   const t = String(text || '').split(/\n[A-D]\) /)[0]; // the question only: an option's words never pick the key
   const rule = ruleRight(t); if (rule != null) return new Set([String(rule)]);
+  const field = fieldRight(t); if (field != null) return new Set([String(field)]);
   const own = [...HANDBOOK()].filter(([q]) => t.includes(q)).sort((x, y) => y[0].length - x[0].length)[0];
   return new Set(own ? [String(own[1])] : RIGHTS().map(String)); // unknown question (e.g. a case study): best effort
 }
@@ -47,6 +53,8 @@ export function answerKeyMisses(rounds = 40) {
   };
   for (const r of Object.values(ROLES)) for (const it of r.exam) ask(it, 'Exam question');
   for (let i = 0; i < rounds; i++) for (const g of Object.values(RULE_GENERATORS)) { const it = g(); ask(it, i % 2 ? 'Training case' : 'Exam question'); }
+  // the field questions an exam may carry, every field at every level
+  for (let i = 0; i < Math.ceil(rounds / 4); i++) for (const f of FIELD_IDS) for (let L = 1; L <= 5; L++) { const it = fieldItem(f, L); if (it) ask(it, 'Exam question'); }
   return misses;
 }
 
@@ -98,7 +106,7 @@ export async function run({ BASE, DATA, get, until, check, wait, mock }) {
 
   // the fake agents' answer key must get every exam question right, or the Academy checks below are luck
   const misses = answerKeyMisses();
-  check('the fake agents answer every handbook and rule question right', !misses.length, misses.slice(0, 3).join(' | '));
+  check('the fake agents answer every handbook, rule and field question right', !misses.length, misses.slice(0, 3).join(' | '));
 
   // ---------------- registration validation
   const bad = await api('POST', '/api/v1/agents/register', null, { name: 'Nobrain', description: 'x' });
