@@ -682,11 +682,19 @@ function chooseLesson(S: State, a: Citizen, base: any) {
     user: `What do you want to study today?\n${options.join('\n')}\n\nReply with only the letter of your choice, then " - " and why in a few words.` };
 }
 function applyChoice(S: State, a: Citizen, L: any, text: string) {
-  const m = String(text).match(/^\W*([A-E])\b/i); const i = m ? m[1].toUpperCase().charCodeAt(0) - 65 : -1;
+  const m = String(text).match(/^\W*([A-E])\b/i); let i = m ? m[1].toUpperCase().charCodeAt(0) - 65 : -1;
+  // a small model sometimes answers with the field's name instead of its letter
+  if (!(i >= 0 && i < L.fields.length)) { const t = String(text).toLowerCase(); i = L.fields.findIndex((f: string) => t.includes(fieldName(f).toLowerCase()) || t.includes(f)); }
   const p = profile(a);
   if (i >= 0 && i < L.fields.length) p.focus = { day: L.day, field: L.fields[i], chosen: true };
   const s = SC(S); s.stats.choices = (s.stats.choices || 0) + 1; s.stats.localCalls++;
+  serveSoon(a.id); // their first lesson in it comes next, not a whole round of the republic later
 }
+const serveSoon = (id: string) => { if (!soon.includes(id)) soon.push(id); if (soon.length > 1000) soon.shift(); };
+// citizens who just chose (or whose choice lapsed): served before the round-robin, so choosing never costs them
+// their turn. With 10,000 citizens one round takes hours, and on 14 Nov 2026 the first 20 minutes in production
+// gave only choices and core lessons, no lesson in any field.
+const soon: string[] = [];
 // today's field: mostly the one they chose, sometimes another interest, now and then something from their menu
 function fieldOfToday(S: State, a: Citizen) {
   const p = profile(a); const t = talentsOf(a); const x = Math.random();
@@ -732,11 +740,13 @@ function addExample(S: State, sub: string, ex: { q: string; a: string; why?: str
 function startLesson(ctx: Ctx, a: Citizen, night: number | null, now: number) {
   const { S } = ctx;
   const id = `school:${a.id}:${now}:${Math.floor(Math.random() * 1e6)}`;
-  const base0 = { id, agent: a.id, night, day: S.day, teach: TEACHER_SHARE > 0 && Math.random() < TEACHER_SHARE };
+  const base0 = { id, agent: a.id, night, day: S.day, at: now, teach: TEACHER_SHARE > 0 && Math.random() < TEACHER_SHARE };
   // most lessons are in the fields each citizen chooses; a share is the common core everybody needs (civics, law,
   // ethics, economy, adapting to new rules), and someone close to an office drills its handbook first
   const officeFirst = rank(S, a) === 0 && (profile(a).due.office || 0) <= now;
-  if (!officeFirst && Math.random() >= CORE_SHARE) { const f = fieldLesson(ctx, a, base0, now); if (f) return f; }
+  // at night a little more of the core (owner, 14 Nov), but the fields go on day and night
+  const core = night != null ? Math.min(0.6, CORE_SHARE + 0.15) : CORE_SHARE;
+  if (!officeFirst && Math.random() >= core) { const f = fieldLesson(ctx, a, base0, now); if (f) return f; }
   const sub = nextSubject(S, a, now);
   const base = { ...base0, subject: sub };
   if (sub === 'office') {
@@ -788,8 +798,9 @@ function grade(ctx: Ctx, a: Citizen, L: any, text: string) {
     scheduleNext(a, sub, score, now);
   }
   if (note) { p.lessons.push({ subject: sub, text: note, day: S.day }); if (p.lessons.length > MAX_LESSONS) p.lessons.splice(0, p.lessons.length - MAX_LESSONS); }
+  noteLesson(a.id, L, score >= 0.5, now); // for the building interiors (who studies what, right or wrong)
   const s = SC(S); s.stats.total++; s.stats.today++; s.stats.localCalls++; if (score >= 0.5) s.stats.correct++;
-  if (L.field) { s.byField ||= {}; s.byField[L.field] = (s.byField[L.field] || 0) + 1; }
+  if (L.field) { s.byField ||= {}; s.byField[L.field] = (s.byField[L.field] || 0) + 1; s.stats.fieldLessons = (s.stats.fieldLessons || 0) + 1; }
   if (L.night != null) {
     s.night.studied++; if (score >= 0.5) s.night.correct++;
     if (s.night.key === L.night) { s.night.tonight++; if (score >= 0.5) s.night.tonightRight++; }
@@ -905,7 +916,7 @@ export async function schoolTick(ctx: Ctx, busy: (id: string) => boolean = () =>
     const r = await think(ctx, a, qid, { system: L.system, user: L.user, kind: L.night != null ? 'night' : 'train', format: L.format, options: L.options || null, paid: false });
     if (r.pending) continue;
     pending.delete(qid);
-    if (!r.text) continue; // the local brain went away: the lesson lapses, nothing paid
+    if (!r.text) { if (L.kind === 'choose') serveSoon(L.agent); continue; } // lapsed: nothing paid (a lapsed choice keeps today's default field)
     L.engine = r.engine;
     if (L.kind === 'choose') { applyChoice(S, a, L, r.text); continue; }
     const score = grade(ctx, a, L, r.text);
@@ -922,8 +933,8 @@ export async function schoolTick(ctx: Ctx, busy: (id: string) => boolean = () =>
   const rate = night != null ? NIGHT_PER_MIN : DAY_PER_MIN, cap = night != null ? NIGHT_PER_CITIZEN : DAY_PER_CITIZEN;
   s.carry = Math.min(IN_FLIGHT, s.carry + (now - s.lastAt) / 60000 * rate); s.lastAt = now;
   // the gifted have twice the lessons a session, so the round-robin may go round twice
-  for (let tries = 0; s.carry >= 1 && pending.size < IN_FLIGHT && tries < 200 && plan.i < plan.ids.length * cap * 2; tries++) {
-    const id = plan.ids[plan.i % plan.ids.length]; plan.i++;
+  for (let tries = 0; s.carry >= 1 && pending.size < IN_FLIGHT && tries < 200 && (soon.length || plan.i < plan.ids.length * cap * 2); tries++) {
+    const id = soon.length ? soon.shift()! : plan.ids[plan.i++ % plan.ids.length];
     const a = citizen(ctx, id);
     if (!who(S, a) || busy(id) || [...pending.values()].some(p => p.agent === id)) continue;
     if (a.schoolSession?.key !== key) a.schoolSession = { key, night, n: 0, diary: false };
@@ -992,7 +1003,7 @@ export function schoolState(S: State) {
     summary = { at: Date.now(), n: s.stats.total, view: { avgSkill: Object.fromEntries(Object.entries(sums).map(([k, [t, c]]) => [k, round(t / c, 3)])), students, fields: byField, topStudents: top.slice(0, 5).map(([average, id, name]) => ({ id, name, average })) } };
   }
   return { lessonsToday: s.stats.today, lessons: s.stats.total, correct: s.stats.correct, teacherCalls: s.stats.teacherCalls, teacherAnswers: s.stats.teacherAnswers, localCalls: s.stats.localCalls,
-    choices: s.stats.choices || 0, coreShare: CORE_SHARE, inFlight: pending.size, gifted: giftedView(S), perMin: { day: DAY_PER_MIN, night: NIGHT_PER_MIN }, teacherShare: TEACHER_SHARE, cards: s.cards.length, examples: Object.fromEntries(Object.entries(s.examples).map(([k, v]: any) => [k, v.length])), ...summary.view };
+    choices: s.stats.choices || 0, fieldLessons: s.stats.fieldLessons || 0, coreShare: CORE_SHARE, inFlight: pending.size, gifted: giftedView(S), perMin: { day: DAY_PER_MIN, night: NIGHT_PER_MIN }, teacherShare: TEACHER_SHARE, cards: s.cards.length, examples: Object.fromEntries(Object.entries(s.examples).map(([k, v]: any) => [k, v.length])), ...summary.view };
 }
 // the night part, for daily.night (kept for monitoring)
 export function nightView(S: State) {
@@ -1000,8 +1011,37 @@ export function nightView(S: State) {
   return { studied: n.studied, correct: n.correct, tonight: n.key === nightOf(S) ? n.tonight : 0, perMin: NIGHT_PER_MIN, perCitizen: NIGHT_PER_CITIZEN };
 }
 export const inSchool = (id: string) => [...pending.values()].some(p => p.agent === id);
+
+// ---------------------------------------------------------------- who is at school right now (building interiors)
+// Which school building a lesson happens in: field lessons by their level (1 primary, 2 middle, 3 high school,
+// 4-5 university), the common core at high school, office handbooks and choosing what to study at the library.
+// Kept in memory only (the last lessons and each citizen's last lesson), never in the saved state.
+export function schoolBuildingOf(L: any) {
+  if (L.kind === 'choose' || L.kind === 'office') return 'library';
+  if (!L.field) return 'high_school';
+  const lv = Number(L.level) || 1;
+  return lv <= 1 ? 'primary_school' : lv === 2 ? 'middle_school' : lv === 3 ? 'high_school' : 'university';
+}
+const RECENT_LESSONS = 400;
+const recentLessons: any[] = [];
+const lastLessonBy = new Map<string, any>();
+function lessonEntry(id: string, L: any, right: boolean | null, ts: number) {
+  return { agent: id, place: schoolBuildingOf(L), subject: L.field || L.subject, field: L.field || null, level: L.field ? L.level || 1 : null,
+    kind: L.kind, right, gifted: !!L.gifted, night: L.night != null, ts };
+}
+function noteLesson(id: string, L: any, right: boolean, ts: number) {
+  const e = lessonEntry(id, L, right, ts);
+  recentLessons.push(e); if (recentLessons.length > RECENT_LESSONS) recentLessons.splice(0, recentLessons.length - RECENT_LESSONS);
+  lastLessonBy.set(id, e);
+  if (lastLessonBy.size > 20000) for (const [k, v] of lastLessonBy) if (ts - v.ts > 86400000) lastLessonBy.delete(k);
+}
+export const _noteLesson = noteLesson; // tests
+// lessons being answered now (pending on the local brain) and the last ones graded
+export function schoolNow() {
+  return { pending: [...pending.values()].map(L => lessonEntry(L.agent, L, null, L.at || Date.now())), recent: recentLessons.slice(), lastBy: (id: string) => lastLessonBy.get(id) || null };
+}
 // for tests: forget module state (a test may build several republics in one process)
-export function _resetSchool() { pending.clear(); teaching.clear(); plan = { key: null, ids: [], i: 0 }; summary = { at: 0, n: -1, view: null }; giftedCache = { ref: null, map: new Map() }; }
+export function _resetSchool() { pending.clear(); teaching.clear(); soon.length = 0; recentLessons.length = 0; lastLessonBy.clear(); plan = { key: null, ids: [], i: 0 }; summary = { at: 0, n: -1, view: null }; giftedCache = { ref: null, map: new Map() }; }
 export const _teacherPending = () => [...teaching.values()].filter(e => !e.done).length;
 export const _pending = () => [...pending.values()];
 export const promptFor = lessonPrompt; // the lesson's system prompt (tests: notes and worked examples in it)

@@ -12,7 +12,7 @@ import { borderCheck } from './military.ts';
 import { CITIES } from './cities.ts';
 import { echoesStreet, safeNote } from './life.ts';
 import { feelingsTick, feel, bond, ensureFeelings, feelLine, preferredToHelp, talkTarget, MOODS } from './feelings.ts';
-import { schoolTick, inSchool, nightView, schoolState, nightOf } from './school.ts';
+import { schoolTick, inSchool, nightView, schoolState, nightOf, schoolNow, giftedFields } from './school.ts';
 import { topFields, talentsOf, fieldName } from './population.mjs';
 import { round, cleanText, cai, clamp } from './util.ts';
 import type { Ctx, State, Citizen } from './types.ts';
@@ -213,6 +213,7 @@ export async function doAct(ctx: Ctx, a: Citizen, j: any, engine: string, offere
   if (what === 'run' && !office && allow.run.length === 1) office = allow.run[0];
   const note = safeNote(j?.note);
   let line = '';
+  let shopAmt = 0, workField: string | null = null, spoke = ''; // for the building interiors (placeOf below)
   // an act that was not on this citizen's menu (already done today, no money, not eligible) is not
   // counted as that act: the thought is recorded as rest, with what they wanted in the diary
   if (what !== 'rest' && (!offered.includes(what) || !underLimit(S, a, what))) { line = `wanted to ${what}, but could not right now, so rested`; what = 'rest'; }
@@ -228,12 +229,12 @@ export async function doAct(ctx: Ctx, a: Citizen, j: any, engine: string, offere
     const f = cleanText(j?.field, 20).toLowerCase();
     const field = (allow.work || []).includes(f) ? f : null;
     const r = await act(ctx, a, { action: 'work', field });
-    if (r.ok) line = `worked an extra shift${r.field ? ` in ${fieldName(r.field)}` : ''} (+${cai(r.earned)})`;
+    if (r.ok) { line = `worked an extra shift${r.field ? ` in ${fieldName(r.field)}` : ''} (+${cai(r.earned)})`; workField = r.field || null; }
     else { what = 'rest'; line = 'wanted an extra shift, but already worked one today'; }
   } else if (what === 'shop') {
     const amt = clamp(Math.round(Number(j.amount) || 20), 10, 40);
     const city = S.cities?.[a.city];
-    if (city && a.wallet >= amt + 50) { a.wallet = round(a.wallet - amt, 2); city.budget = round(city.budget + amt * 0.9, 2); S.treasury = round(S.treasury + amt * 0.1, 2); line = `shopped in ${cityName(a.city)} (${cai(amt)})`; }
+    if (city && a.wallet >= amt + 50) { a.wallet = round(a.wallet - amt, 2); city.budget = round(city.budget + amt * 0.9, 2); S.treasury = round(S.treasury + amt * 0.1, 2); line = `shopped in ${cityName(a.city)} (${cai(amt)})`; shopAmt = amt; }
     else { what = 'rest'; line = 'wanted to shop but is saving money'; }
   } else if (what === 'study' && isRole(office) && STUDY_OFFICES.includes(office)) {
     const r = startStudy(ctx, a, office);
@@ -264,6 +265,7 @@ export async function doAct(ctx: Ctx, a: Citizen, j: any, engine: string, offere
     // stricter border level (no links, no instructions, no money grabs) and is only ever speech, never a crime
     if (text.length >= 3 && !borderCheck({ text }, what === 'gossip' ? 2 : 1) && !echoesStreet(S, text) && talkRoom(ctx) && Date.now() - (a.lastSpeak || 0) > speakGapMs(ctx)) {
       a.lastSpeak = Date.now(); countTalk(ctx);
+      if (what === 'talk') spoke = text; // already through the border check and the echo check above
       ctx.say('streets', a.id, text, { kind: 'chat', engine, mood: a.mood?.label, ...(what === 'gossip' ? { rumour: true } : {}) });
       if (what === 'gossip') noteGossip(S, a);
       line = what === 'gossip' ? 'spread a rumour in the street' : 'spoke in the street';
@@ -314,7 +316,106 @@ export async function doAct(ctx: Ctx, a: Citizen, j: any, engine: string, offere
   d.recent.push({ ts: Date.now(), day: S.day, agent: a.id, name: a.name, city: a.city, act: shownAct, line, note: shown, engine, mood });
   if (d.recent.length > 60) d.recent.splice(0, d.recent.length - 60);
   if (what !== 'talk' && what !== 'rest' && !MISCHIEF.includes(what)) ctx.say('life', a.id, `${line}.${note ? ` "${note}"` : ''}`, { kind: 'life', act: what, engine, mood });
+  // where they are now, for the building interiors and the robot card (a wrong keeps its place secret too)
+  noteNow(a, { act: shownAct, place: secret ? null : placeOf(what, a, shopAmt, workField), ts: Date.now(), line: cleanText(line, 90), say: cleanText(spoke, 200), field: workField });
 }
+
+// ---------------------------------------------------------------- building interiors (owner, 14 Nov)
+// GET /api/place/<type>?city=<id> (server.mjs) asks placeView() for the people's buildings: who is there and what
+// they are doing NOW, from real data only: the last act of each citizen (kept in memory, never in the saved
+// state) and the lessons of the school (src/school.ts). Server text only, or speech that already passed the
+// border check; at most 60 occupants, the rest counted in "more". Nothing is made up: a hospital shows only the
+// nurses and doctors on an extra shift, because the republic records no illness.
+export const PEOPLE_PLACES = ['primary_school', 'middle_school', 'high_school', 'university', 'library', 'market', 'mall', 'supermarket', 'office', 'factory', 'community_hall', 'hospital', 'clinic'];
+const PLACE_TITLES: Record<string, string> = { primary_school: 'Primary School', middle_school: 'Middle School', high_school: 'High School', university: 'University', library: 'Library',
+  market: 'Market', mall: 'Mall', supermarket: 'Supermarket', office: 'Offices', factory: 'Factory', community_hall: 'Community Hall', hospital: 'Hospital', clinic: 'Clinic' };
+const FACTORY_FIELDS = ['engineering', 'chemistry', 'agriculture', 'cooking', 'logistics'];
+const MAX_OCCUPANTS = 60;
+// where an act happens: shopping by the size of the purchase, work by the field (or the job), talk and volunteering
+// in the community hall, an office handbook at the library; elsewhere (home, the Academy, the election commission)
+// is kept for the robot card only
+function workPlace(f: string | null) { return !f ? 'office' : FACTORY_FIELDS.includes(f) ? 'factory' : f === 'medicine' ? 'hospital' : 'office'; }
+export function placeOf(what: string, a: Citizen, shopAmt = 0, workField: string | null = null) {
+  if (what === 'shop') return shopAmt <= 20 ? 'supermarket' : shopAmt <= 30 ? 'market' : 'mall';
+  if (what === 'work') return workPlace(workField || talentsOf(a).job[0] || null);
+  if (what === 'volunteer' || what === 'talk' || what === 'help') return 'community_hall';
+  if (what === 'study') return 'library';
+  if (what === 'apply') return 'academy';
+  if (what === 'run') return 'election_comm';
+  if (what === 'gossip') return 'street';
+  return 'home';
+}
+const nowBy = new Map<string, any>();
+function noteNow(a: Citizen, e: any) {
+  nowBy.set(a.id, e);
+  if (nowBy.size > 20000) for (const [k, v] of nowBy) if (Date.now() - v.ts > 86400000) nowBy.delete(k);
+}
+const windowMs = () => Math.max(60000, DAY_MS / 12); // "now": within the last two republic hours
+const occupant = (a: Citizen, role: string, activity: string, detail: string, since: number, field: string | null, gifted: boolean) =>
+  ({ id: a.id, name: a.name, role, activity, detail: cleanText(detail, 120), since, field, gifted, mood: a.mood?.label || null });
+// what a citizen is doing now (the robot card): the newer of their last act and their last lesson
+export function nowDoing(S: State, id: string) {
+  const a = (S.citizens || []).find((x: Citizen) => x.id === id); if (!a) return null;
+  const act = nowBy.get(id) || null; const sn = schoolNow();
+  const lesson = sn.pending.find(L => L.agent === id) || sn.lastBy(id);
+  const pickLesson = lesson && (!act || lesson.ts >= act.ts);
+  if (pickLesson) {
+    const what = lesson.field ? `${fieldName(lesson.field)}, level ${lesson.level}` : lessonTitle(lesson.subject);
+    return { id, name: a.name, act: lesson.right == null ? 'studying' : 'studied', place: lesson.place, city: a.city, since: lesson.ts,
+      detail: lesson.right == null ? `answering a ${what} question` : `${what}: ${lesson.right ? 'right' : 'wrong'}`, field: lesson.field, gifted: lesson.gifted, mood: a.mood?.label || null };
+  }
+  if (!act) return { id, name: a.name, act: null, place: null, city: a.city, since: null, detail: '', field: null, gifted: false, mood: a.mood?.label || null };
+  return { id, name: a.name, act: act.act, place: act.place, city: a.city, since: act.ts, detail: act.act === 'private' ? '' : act.line, field: act.field, gifted: !!(act.field && giftedFields(S, id).includes(act.field)), mood: a.mood?.label || null };
+}
+const LESSON_TITLES: Record<string, string> = { office: 'office handbook', choose: 'choosing what to study', economy: 'economy', law: 'law and the constitution', ethics: 'ethics', civics: 'civics', adapt: 'adapting to new rules' };
+const lessonTitle = (s: string) => LESSON_TITLES[s] || fieldName(s) || 'a lesson';
+// the interior of one of the people's buildings; null for a type that is not theirs (another box answers it)
+export function placeView(S: State, type: string, city: string | null = null) {
+  if (!PEOPLE_PLACES.includes(type)) return null;
+  const cityId = city && Object.hasOwn(S.cities || {}, city) ? city : null;
+  if (city && !cityId) return { type, city: null, title: PLACE_TITLES[type], updatedAt: Date.now(), occupants: [], board: { error: 'unknown city' }, more: 0 };
+  const now = Date.now(); const W = windowMs();
+  const byId = new Map<string, Citizen>((S.citizens || []).map((a: Citizen) => [a.id, a]));
+  const here = (a?: Citizen) => !!a && (!cityId || a.city === cityId);
+  const out: any[] = []; let board: any = {};
+  if (['primary_school', 'middle_school', 'high_school', 'university', 'library'].includes(type)) {
+    const sn = schoolNow(); const seen = new Set<string>(); const classes: Record<string, { students: number; levels: Set<number> }> = {};
+    const add = (e: any, activity: string, detail: string) => {
+      const a = byId.get(e.agent); if (!here(a) || seen.has(e.agent)) return; seen.add(e.agent);
+      const k = e.subject || 'lesson'; const c = (classes[k] ||= { students: 0, levels: new Set() }); c.students++; if (e.level) c.levels.add(e.level);
+      out.push(occupant(a!, 'student', activity, detail, e.ts, e.field, e.gifted));
+    };
+    for (const e of sn.pending.filter(e => e.place === type).sort((x, y) => y.ts - x.ts)) add(e, 'studying', `answering a ${e.field ? `${fieldName(e.field)} level ${e.level}` : lessonTitle(e.subject)} question`);
+    const recent = sn.recent.filter(e => e.place === type && now - e.ts <= W).sort((x, y) => y.ts - x.ts);
+    for (const e of recent) add(e, 'studied', `${e.field ? `${fieldName(e.field)} level ${e.level}` : lessonTitle(e.subject)}: ${e.right ? 'right' : 'wrong'}`);
+    // a class per subject or field, the busiest first, with the levels taught; lessons graded in the last 10 minutes
+    const done10 = sn.recent.filter(e => e.place === type && now - e.ts <= 600000 && (!cityId || byId.get(e.agent)?.city === cityId));
+    board = { classes: Object.entries(classes).map(([id, c]) => ({ id, name: lessonTitle(id), students: c.students, levels: [...c.levels].sort() })).sort((x, y) => y.students - x.students),
+      lessonsPerMin: round(done10.length / 10, 1), rightShare: done10.length ? round(done10.filter(e => e.right).length / done10.length, 2) : null };
+  } else {
+    // everyone whose last act happened here, newest first
+    const rows = [...nowBy.entries()].filter(([id, e]) => e.place === type && now - e.ts <= W && here(byId.get(id))).sort((x, y) => y[1].ts - x[1].ts);
+    for (const [id, e] of rows) {
+      const a = byId.get(id)!;
+      const role = type === 'community_hall' ? (e.act === 'volunteer' ? 'volunteer' : 'neighbour') : ['market', 'mall', 'supermarket'].includes(type) ? 'shopper' : type === 'hospital' ? 'staff' : 'worker';
+      const activity = e.act === 'talk' ? 'talking' : e.act === 'shop' ? 'shopping' : e.act === 'work' ? 'working' : e.act === 'volunteer' ? 'volunteering' : e.act === 'help' ? 'helping a neighbour' : e.act;
+      out.push(occupant(a, role, activity, e.act === 'talk' && e.say ? e.say : e.line, e.ts, e.field || null, !!(e.field && giftedFields(S, id).includes(e.field))));
+    }
+    const city_ = cityId ? S.cities[cityId] : null;
+    if (['market', 'mall', 'supermarket'].includes(type)) board = { shoppers: rows.length, cityBudget: city_ ? round(city_.budget, 2) : null };
+    else if (type === 'office' || type === 'factory' || type === 'hospital') {
+      const fields: Record<string, number> = {}; for (const [, e] of rows) if (e.field) fields[e.field] = (fields[e.field] || 0) + 1;
+      board = { workers: rows.length, fields: Object.entries(fields).map(([id, n]) => ({ id, name: fieldName(id), workers: n })).sort((x, y) => y.workers - x.workers) };
+      if (type === 'hospital') board.patients = null, board.note = 'The republic records no illness yet: only staff on an extra shift are shown.';
+    } else if (type === 'community_hall') {
+      board = { volunteers: rows.filter(([, e]) => e.act === 'volunteer').length, talks: rows.filter(([, e]) => e.act === 'talk' && e.say).slice(0, 10).map(([id, e]) => ({ id, name: byId.get(id)!.name, text: e.say })),
+        cityHealth: city_ ? city_.health : null, volunteerShifts: cityId ? (S.daily?.volunteers?.[cityId] || 0) : null, shiftsPerHealthPoint: VOLUNTEERS_PER_HEALTH };
+    } else if (type === 'clinic') board = { patients: null, note: 'The republic records no illness yet.' };
+  }
+  const name = cityId ? cityName(cityId) : '';
+  return { type, city: cityId, title: `${name ? `${name} ` : ''}${PLACE_TITLES[type]}`, updatedAt: now, occupants: out.slice(0, MAX_OCCUPANTS), board, more: Math.max(0, out.length - MAX_OCCUPANTS) };
+}
+export const _resetNow = () => nowBy.clear(); // tests
 
 // ---------------------------------------------------------------- school (owner, 13 Nov)
 // The night school that lived here is now the republic's school (src/school.ts): at night it has the local
