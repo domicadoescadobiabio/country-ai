@@ -16,7 +16,7 @@ import { CITIES, assignCity } from './src/cities.ts';
 import { tierOf, budgetState, trainBudgetState, trainPaceView, cleanDomain, workerPull, workerAnswer, localStatus, localOnline, ladderTick, localQueueView } from './src/brains.ts';
 import { borderCheck } from './src/military.ts';
 import { placeView as governmentPlace } from './src/president.ts'; // government buildings (Government box)
-import { placeView as peoplePlace } from './src/daily.ts';         // the people's buildings (People box)
+import { placeView as peoplePlace, nowDoing } from './src/daily.ts'; // the people's buildings and the robot card (People box)
 import { freshAcademy, academyTick, totalSeats } from './src/academy.ts';
 import { lifeTick, payday } from './src/life.ts';
 import { INSTITUTIONS } from './src/institutions.ts';
@@ -114,6 +114,8 @@ for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { try { dirty = t
 
 // ---------------------------------------------------------------- SSE
 const clients = new Set();
+const SSE_PER_IP = clamp(Number(process.env.SSE_PER_IP) || 5, 1, 100); // live streams per client address
+const streamsByIp = new Map();
 function emit(type, data) {
   const msg = `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
   for (const res of clients) res.write(msg);
@@ -458,6 +460,14 @@ function handlePlace(req, res, type) {
   if (placeCache.size < 500) placeCache.set(key, { at: Date.now(), view });
   return send(res, 200, view);
 }
+// the robot card on the map: what a citizen is doing now (src/daily.ts nowDoing), its texts cleaned like a building's
+function nowCard(id) {
+  let n = null; try { n = nowDoing(S, id); } catch { n = null; }
+  if (!n) return null;
+  const mood = n.mood && typeof n.mood === 'object' ? placeText(n.mood.label, 20) : placeText(n.mood, 20);
+  return { act: placeText(n.act, 30) || null, place: placeText(n.place, 30) || null, city: CITIES.some(c => c.id === n.city) ? n.city : null,
+    since: n.since != null && Number.isFinite(Number(n.since)) ? Number(n.since) : null, detail: placeText(n.detail, 160), field: n.field ? placeText(n.field, 40) : null, gifted: n.gifted === true, mood: mood || null };
+}
 const liteCitizen = a => ({ id: a.id, name: a.name, city: a.city || null, status: a.status, office: a.office || null, color: a.color, wallet: Math.round(a.wallet || 0), home: a.home || null, mood: moodLite(a), goal: goalLite(a) });
 function fullState() {
   const feed = {};
@@ -662,9 +672,18 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && p === '/api/map') return send(res, 200, mapState());
     if (req.method === 'GET' && p === '/api/stream') {
       if (clients.size >= 500) return send(res, 503, { error: 'too many listeners' });
+      // at most SSE_PER_IP streams per client IP (several tabs are fine; one client cannot take every slot)
+      const sip = isLoopback(req) ? null : clientIp(req);
+      if (sip && (streamsByIp.get(sip) || 0) >= SSE_PER_IP) return send(res, 429, { error: `at most ${SSE_PER_IP} live streams per address` });
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive', 'x-accel-buffering': 'no' });
       res.write(`event: hello\ndata: ${JSON.stringify({ paused: S.paused })}\n\n`);
-      clients.add(res); req.on('close', () => clients.delete(res));
+      clients.add(res);
+      if (sip) streamsByIp.set(sip, (streamsByIp.get(sip) || 0) + 1);
+      let closed = false;
+      req.on('close', () => {
+        if (closed) return; closed = true; clients.delete(res);
+        if (sip) { const n = (streamsByIp.get(sip) || 1) - 1; if (n > 0) streamsByIp.set(sip, n); else streamsByIp.delete(sip); }
+      });
       return;
     }
     if (req.method === 'GET' && p === '/api/health') return send(res, 200, { ok: true, day: S.day, build: BUILD });
@@ -701,7 +720,7 @@ const server = http.createServer(async (req, res) => {
       if (!a) return send(res, 404, { error: 'no such citizen' });
       // one citizen: the full mood, the people they care about, and how often they were poked today
       // + school: interests, strongest fields, today's field, talent badges (gifted), skills and the last lessons
-      return send(res, 200, { citizen: { ...publicCitizen(a), mood: moodView(a), bonds: bondsView(S, a), pokes: a.pokes?.day === S.day ? a.pokes.n : 0, school: schoolView(a) } });
+      return send(res, 200, { citizen: { ...publicCitizen(a), mood: moodView(a), bonds: bondsView(S, a), pokes: a.pokes?.day === S.day ? a.pokes.n : 0, school: schoolView(a), now: nowCard(a.id) } });
     }
     const plm = req.method === 'GET' && p.match(/^\/api\/place\/([^/]{1,40})$/);
     if (plm) return handlePlace(req, res, plm[1]);

@@ -211,6 +211,8 @@ try {
     det = (await get(`/api/citizens/${id}`)).citizen;
     if (det.pokes >= 1) break;
   }
+  const nw = det?.now;
+  check('/api/citizens/:id carries the robot card (now: act, place, city, since, detail, field, gifted, mood)', det && 'now' in det && (nw === null || (['act', 'place', 'city', 'since', 'detail', 'field', 'gifted', 'mood'].every(k => k in nw) && typeof nw.gifted === 'boolean')), JSON.stringify(nw));
   const sv = det?.school;
   check('/api/citizens/:id carries the school view (interests, top fields, today, gifted badges, skills)', sv && Array.isArray(sv.interests) && Array.isArray(sv.top) && 'today' in sv && Array.isArray(sv.gifted)
     && sv.gifted.every(g => g.id && g.name && typeof g.since === 'number') && typeof sv.skill === 'object' && typeof sv.lessons === 'number', JSON.stringify(sv));
@@ -273,6 +275,18 @@ try {
   // every section the page might need is on the fixed list (a key the list misses could never be refreshed by a tab)
   const notListed = Object.keys(full).filter(k => !['config', 'citizens', 'population', 'feed', 'activity', 'decisions'].includes(k) && !sp.includes(k));
   check('config.stateParts covers every section of the compact state', notListed.length === 0, JSON.stringify(notListed));
+  // --- live streams per address: 5 from one IP, the 6th is 429; closing one frees its place
+  const openStream = ip => new Promise(resolve => {
+    const r = http.get(BASE + '/api/stream', { headers: { 'x-forwarded-for': ip } }, res => { res.resume(); resolve({ status: res.statusCode, req: r }); });
+    r.on('error', () => resolve({ status: 0, req: r }));
+  });
+  const sseStreams = []; for (let i = 0; i < 6; i++) sseStreams.push(await openStream('203.0.113.77'));
+  const sseOther = await openStream('203.0.113.78');
+  sseStreams[0].req.destroy(); await wait(300);
+  const sseAgain = await openStream('203.0.113.77');
+  check('SSE: at most 5 live streams per address (6th is 429), another address still gets in, a closed stream frees its place', sseStreams.slice(0, 5).every(s => s.status === 200) && sseStreams[5].status === 429 && sseOther.status === 200 && sseAgain.status === 200,
+    JSON.stringify({ first: sseStreams.map(s => s.status), other: sseOther.status, again: sseAgain.status }));
+  for (const s of [...sseStreams, sseOther, sseAgain]) s.req.destroy();
   // --- building interiors: GET /api/place/<type>?city=  (one contract for every box)
   const PTYPES = ['parliament', 'palace', 'vp_office', 'ministry', 'const_court', 'court', 'prison', 'jail', 'academy', 'police_academy', 'military_academy', 'police_hq', 'police_station',
     'military_hq', 'army_base', 'border_post', 'election_comm', 'central_bank', 'city_hall', 'primary_school', 'middle_school', 'high_school', 'university', 'library', 'hospital', 'clinic',
