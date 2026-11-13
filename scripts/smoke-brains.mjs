@@ -87,7 +87,7 @@ try {
   // --- the school's teachers: teach() mixes providers by TRAIN_TEACHER_MIX, has its own paced budget inside the day's total
   check('/api/state publishes budget.train (spent, calls per provider, denied)', s.budget?.train && typeof s.budget.train.spent === 'number' && 'claude' in (s.budget.train.calls || {}) && 'openrouter' in s.budget.train.calls && typeof s.budget.train.denied === 'number', JSON.stringify(s.budget?.train));
   process.env.ANTHROPIC_BASE_URL = MOCK; // the SDK in this process talks to the same mock
-  const { teach, trainBudgetState, budgetState, workerPull, localStatus, saveExample, parseTeacherMix } = await import('../src/brains.ts');
+  const { teach, trainBudgetState, budgetState, workerPull, localStatus, saveExample, parseTeacherMix, _resetLocal } = await import('../src/brains.ts');
   const { makeLLM } = await import('../src/llm.ts');
   const llmT = makeLLM({ anthropicKey: 'test-claude', orKey: 'test-or', orBase: MOCK, llmPerMin: 5000, claudeModel: 'claude-opus-5-5' }, () => {});
   const OR_T = 'deepseek/deepseek-v4-pro-0813', CL_T = 'claude-sonnet-5-5';
@@ -132,21 +132,41 @@ try {
   await think(qctx, cit('asp'), 'q-exam-asp', { system: 's', user: 'u', kind: 'exam' });
   await think(qctx, cit('asp'), 'q-night-asp', { system: 's', user: 'u', kind: 'night', paid: false });
   const order = workerPull(16).map(j => j.id).filter(id => /^q-(train|life|exam|night)-/.test(id));
-  check('local queue: exam and daily life go before school training and night school, an aspirant\'s included', JSON.stringify(order) === JSON.stringify(['q-exam-asp', 'q-life-c2', 'q-train-c1', 'q-train-asp', 'q-night-asp']), JSON.stringify(order));
+  check('local queue: an aspirant\'s exam goes first; school, night school and daily life are all served (no starving)', order[0] === 'q-exam-asp' && order.length === 5 && ['q-life-c2', 'q-train-c1', 'q-train-asp', 'q-night-asp'].every(id => order.includes(id)), JSON.stringify(order));
+  // a training job waits up to 15 minutes before it lapses (it may stand behind daily life), and lapsing is not an error
   const realNow = Date.now; const exp0 = localStatus().expired, texp0 = localStatus().trainExpired;
-  Date.now = () => realNow() + 200000;
-  try { workerPull(0); const lapsed = await think(qctx, cit('c1'), 'q-train-c1', { system: 's', user: 'u', kind: 'train' });
-    check('local queue: a training job that lapses is not counted as an expired (failed) job', lapsed.engine === 'offline (local queue full)' && localStatus().expired === exp0 && localStatus().trainExpired === texp0 + 1, JSON.stringify({ lapsed, st: localStatus() }));
+  try {
+    Date.now = () => realNow() + 200000; workerPull(0);
+    const still = await think(qctx, cit('c1'), 'q-train-c1', { system: 's', user: 'u', kind: 'train' });
+    Date.now = () => realNow() + 16 * 60000; workerPull(0);
+    const lapsed = await think(qctx, cit('c1'), 'q-train-c1', { system: 's', user: 'u', kind: 'train' });
+    check('local queue: a training job is still waiting after 200 s, lapses only after 15 min, and is not counted as a failed job', still.pending === true && lapsed.engine === 'offline (local queue full)' && localStatus().expired === exp0 && localStatus().trainExpired === texp0 + 1, JSON.stringify({ still, lapsed, st: localStatus() }));
   } finally { Date.now = realNow; }
-  workerPull(16);
+  // fair share: with daily life and training both waiting, 2 of every 5 jobs handed out are training (LOCAL_TRAIN_SHARE 0.4),
+  // exams and votes still go first; the runner pulls one job at a time, as scripts/local-brain.mjs does
+  _resetLocal(); workerPull(0); // an empty queue, the runner online
+  const fs = n => `q-fs-${n}`;
+  for (let i = 0; i < 60; i++) await think(qctx, cit('fl' + i), fs('life-' + i), { system: 's', user: 'u', kind: 'life', paid: false });
+  for (let i = 0; i < 60; i++) await think(qctx, cit('ft' + i), fs('train-' + i), { system: 's', user: 'u', kind: 'train' });
+  await think(qctx, cit('asp'), fs('exam-asp'), { system: 's', user: 'u', kind: 'exam' });
+  await think(qctx, cit('fv'), fs('vote-fv'), { system: 's', user: 'u', kind: 'vote' });
+  const handed = []; for (let i = 0; i < 52; i++) handed.push(...workerPull(1).map(j => j.id));
+  const afterFirst = handed.slice(2), trainShare = afterFirst.filter(id => id.includes('-train-')).length / afterFirst.length;
+  check('local queue: exam and vote first, then 40% of what is handed out is training while daily life waits too', handed[0] === fs('exam-asp') && handed[1] === fs('vote-fv') && afterFirst.length === 50 && Math.abs(trainShare - 0.4) <= 0.04, JSON.stringify({ first: handed.slice(0, 3), trainShare, n: afterFirst.length }));
+  check('local queue: training is handed out evenly, not in one burst (at most 1 in a row)', !afterFirst.some((id, i) => i && id.includes('-train-') && afterFirst[i - 1].includes('-train-')), afterFirst.map(id => id.includes('-train-') ? 'T' : 'L').join(''));
+  check('localBrain shows the training share and how many training jobs wait', localStatus().trainShare === 0.4 && typeof localStatus().queuedTrain === 'number', JSON.stringify(localStatus()));
+  _resetLocal(); workerPull(0); // the cap test starts from an empty queue
+
   const trainRes = []; for (let i = 0; i < 125; i++) trainRes.push(await think(qctx, cit('t' + i), `q-cap-${i}`, { system: 's', user: 'u', kind: 'train' }));
   // fill the queue to exactly 400 with daily life, then a vote arrives: it takes a training job's place
   const room = 400 - localStatus().queued; for (let i = 0; i < room; i++) await think(qctx, cit('l' + i), `q-fill-${i}`, { system: 's', user: 'u', kind: 'life', paid: false });
-  const full = localStatus().queued;
+  const full = localStatus().queued, trainBefore = localStatus().queuedTrain;
+  const lifeOver = await think(qctx, cit('lx'), 'q-fill-over', { system: 's', user: 'u', kind: 'life', paid: false });
   const vote = await think(qctx, cit('v1'), 'q-vote-v1', { system: 's', user: 'u', kind: 'vote' });
-  const tPending = trainRes.filter(r => r.pending).length; // a training job or two from above may still hold a place
-  check('local queue: training holds at most 120 places, and a vote still gets in when the queue is full', tPending >= 110 && tPending <= 120 && !trainRes.at(-1).pending && full === 400 && vote.pending === true && localStatus().queued === 400, JSON.stringify({ tPending, full, vote, q: localStatus().queued }));
-  workerPull(16);
+  const tPending = trainRes.filter(r => r.pending).length;
+  check('local queue: training holds at most 120 places; on a full queue daily life waits but a vote takes a training place', tPending === 120 && !trainRes.at(-1).pending && full === 400
+    && lifeOver.pending !== true && trainBefore === 120 && vote.pending === true && localStatus().queuedTrain === 119 && localStatus().queued === 400, JSON.stringify({ tPending, full, lifeOver, vote, st: localStatus() }));
+  _resetLocal();
 
   // --- the distillation set: masked text, no agent ids
   const saved = []; const sctx = { S: { day: 7 }, trainExample: e => { saved.push(e); return saved.length; } };

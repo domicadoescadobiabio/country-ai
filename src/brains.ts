@@ -172,15 +172,23 @@ export function isAspirant(S, a) {
 // ---------------------------------------------------------------- the local brain (a worker on the founders' machine)
 // The worker pulls questions over HTTPS (/api/worker/pull), answers them with an open model it runs itself
 // and posts the answers back. The server never calls out to it, and it costs the treasury nothing.
-const LOCAL = { jobs: new Map(), lastPull: 0, model: null, answered: 0, expired: 0, trainExpired: 0, runner: null };
+const LOCAL = { jobs: new Map(), lastPull: 0, model: null, answered: 0, expired: 0, trainExpired: 0, runner: null, trainCredit: 0 };
 const LOCAL_WAIT_MS = 180000, LOCAL_LEASE_MS = 90000, LOCAL_QUEUE_MAX = 400;
-// Queue priorities (lower goes first): aspirants 0, votes 1, other questions 2, daily life 3, school training 4.
-// Training jobs never hold more than LOCAL_TRAIN_MAX places, and a higher job that finds the queue full takes the
-// place of the oldest unleased training job: the school only ever uses the brain's spare time.
+// Queue priorities: aspirants 0, votes 1, other questions 2, daily life 3, school and night school 4.
+// Aspirants and votes always go first. The rest is shared: while training jobs are waiting they get
+// LOCAL_TRAIN_SHARE (default 0.4) of what the runner pulls, priorities 2-3 the remainder; a group with nothing
+// waiting leaves its share to the other. A credit counter makes the split exact and repeatable (0.4 = 2 of every 5).
+// Training jobs hold at most LOCAL_TRAIN_MAX places and wait up to LOCAL_TRAIN_WAIT_MS before they lapse, so a
+// training job is not lost just for standing in line behind daily life. Only an exam or a vote that finds the
+// queue full may take a training job's place.
 export const TRAIN_PRIORITY = 4;
 const LOCAL_TRAIN_MAX = 120;
+const envNum = (k, d, lo, hi) => { const v = Number(process.env[k]); return Number.isFinite(v) && process.env[k] !== '' ? Math.min(hi, Math.max(lo, v)) : d; };
+export const LOCAL_TRAIN_SHARE = envNum('LOCAL_TRAIN_SHARE', 0.4, 0, 1);
+const LOCAL_TRAIN_WAIT_MS = envNum('LOCAL_TRAIN_WAIT_MS', 900000, 60000, 3600000);
 export const localOnline = () => Date.now() - LOCAL.lastPull < 20000;
-export function localStatus() { return { online: localOnline(), model: LOCAL.model, queued: [...LOCAL.jobs.values()].filter(j => j.answer == null).length, answered: LOCAL.answered, expired: LOCAL.expired, trainExpired: LOCAL.trainExpired, runner: LOCAL.runner }; }
+export function localStatus() { return { online: localOnline(), model: LOCAL.model, queued: [...LOCAL.jobs.values()].filter(j => j.answer == null).length, answered: LOCAL.answered, expired: LOCAL.expired, trainExpired: LOCAL.trainExpired, trainShare: LOCAL_TRAIN_SHARE,
+  queuedTrain: [...LOCAL.jobs.values()].filter(j => j.answer == null && j.priority >= TRAIN_PRIORITY).length, runner: LOCAL.runner }; }
 // What the runner says it is (scripts/local-brain.mjs sends it with every pull). Shown on /api/state, so only
 // known fields survive, each a clamped number or a boolean; anything else (strings, nested objects) is dropped.
 // A pull without it (a runner older than version 2) clears it, so the state always describes the live runner.
@@ -201,10 +209,26 @@ export function workerPull(max = 4, model = null, runner = undefined) {
   LOCAL.lastPull = Date.now(); if (model) LOCAL.model = String(model).slice(0, 60);
   LOCAL.runner = cleanRunner(runner);
   const now = Date.now(); const out = [];
-  const open = [...LOCAL.jobs.values()].filter(j => j.answer == null && (!j.leasedAt || now - j.leasedAt > LOCAL_LEASE_MS)).sort((x, y) => x.priority - y.priority || x.createdAt - y.createdAt);
-  for (const j of open.slice(0, Math.max(1, Math.min(16, max)))) { j.leasedAt = now; out.push({ id: j.id, system: j.system, user: j.user, format: j.format, options: j.options }); }
+  const byAge = (x, y) => x.priority - y.priority || x.createdAt - y.createdAt;
+  const open = [...LOCAL.jobs.values()].filter(j => j.answer == null && (!j.leasedAt || now - j.leasedAt > LOCAL_LEASE_MS));
+  const first = open.filter(j => j.priority <= 1).sort(byAge);                       // aspirants, votes
+  const rest = open.filter(j => j.priority >= 2 && j.priority < TRAIN_PRIORITY).sort(byAge); // questions, daily life
+  const train = open.filter(j => j.priority >= TRAIN_PRIORITY).sort(byAge);          // school, night school
+  for (let n = Math.max(1, Math.min(16, max)); n > 0; n--) {
+    let j = first.shift();
+    if (!j) {
+      if (rest.length && train.length) {
+        LOCAL.trainCredit += LOCAL_TRAIN_SHARE;
+        if (LOCAL.trainCredit >= 1 - 1e-9) { LOCAL.trainCredit -= 1; j = train.shift(); } else j = rest.shift();
+      } else j = rest.shift() || train.shift(); // one group is empty: the other takes its share
+    }
+    if (!j) break;
+    j.leasedAt = now; out.push({ id: j.id, system: j.system, user: j.user, format: j.format, options: j.options });
+  }
   return out;
 }
+// tests only: start the local queue empty (no jobs, no training credit); the counters are kept
+export function _resetLocal() { LOCAL.jobs.clear(); LOCAL.trainCredit = 0; }
 export function workerAnswer(id, text, model = null) {
   const j = LOCAL.jobs.get(String(id)); if (!j || j.answer != null) return false;
   j.answer = cleanText(text, 900); j.model = model ? String(model).slice(0, 60) : LOCAL.model; LOCAL.answered++;
@@ -217,8 +241,9 @@ function askLocal(qid, a, { system, user, kind, format, options }, priority) {
     const trainJobs = () => [...LOCAL.jobs.values()].filter(x => x.priority >= TRAIN_PRIORITY);
     if (train && trainJobs().length >= LOCAL_TRAIN_MAX) return null; // the school waits for room
     if (LOCAL.jobs.size >= LOCAL_QUEUE_MAX) {
-      // queue full: a higher job takes the place of the oldest training job not yet handed to the worker
-      const victim = train ? null : trainJobs().filter(x => !x.leasedAt && x.answer == null).sort((x, y) => x.createdAt - y.createdAt)[0];
+      // queue full: only an exam or a vote takes the place of the oldest training job not yet handed to the
+      // worker; daily life and other questions wait (training keeps its share even when life floods the queue)
+      const victim = priority <= 1 ? trainJobs().filter(x => !x.leasedAt && x.answer == null).sort((x, y) => x.createdAt - y.createdAt)[0] : null;
       if (!victim) return null; // use another path
       LOCAL.jobs.delete(victim.id);
     }
@@ -227,7 +252,9 @@ function askLocal(qid, a, { system, user, kind, format, options }, priority) {
     return { pending: true };
   }
   if (j.answer != null) { LOCAL.jobs.delete(qid); return { text: j.answer, engine: `local:${j.model || 'model'}` }; }
-  if (Date.now() - j.createdAt > LOCAL_WAIT_MS) { // worker too slow: another path (training simply lapses, not an error)
+  // worker too slow: another path. Training waits longer (it stands behind exams and shares with daily life) and
+  // simply lapses, not counted as an error.
+  if (Date.now() - j.createdAt > (j.priority >= TRAIN_PRIORITY ? LOCAL_TRAIN_WAIT_MS : LOCAL_WAIT_MS)) {
     LOCAL.jobs.delete(qid);
     if (j.priority >= TRAIN_PRIORITY) LOCAL.trainExpired++; else LOCAL.expired++;
     return null;
