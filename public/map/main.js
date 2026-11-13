@@ -244,7 +244,174 @@ function showBuilding(b) {
   if (inside.length) body.append(h('h4', { text: 'Inside now' }), h('ul', {}, inside.map(a => h('li', {}, h('b', { text: a.name }), h('span', { text: a.act })))));
   const live = agents.list.filter(a => a.home === b && a.name && !a.scene).slice(0, 12);
   if (live.length) body.append(h('h4', { text: 'Lives here' }), h('ul', {}, live.map(a => h('li', {}, h('b', { text: a.name }), h('span', { text: a.seat ? roleTitle(a.seat) : 'citizen' })))));
+  if (INSIDE.has(b.type)) body.prepend(h('button', { type: 'button', class: 'go-in', onclick: () => enterBuilding(b) }, 'Go inside', h('span', { text: '→' })));
   $('#info').hidden = false;
+}
+
+// ------------------------------------------------------------ inside a building (GET /api/place/<type>)
+// The interior module is imported only when someone goes in. While inside, the map does not render.
+const INSIDE = new Set(['parliament', 'palace', 'vp_office', 'ministry', 'const_court', 'court', 'prison', 'jail', 'academy', 'police_academy', 'military_academy', 'police_hq', 'police_station',
+  'military_hq', 'army_base', 'border_post', 'election_comm', 'central_bank', 'city_hall', 'primary_school', 'middle_school', 'high_school', 'university', 'library', 'hospital', 'clinic',
+  'data_center', 'market', 'mall', 'supermarket', 'office', 'factory', 'community_hall']);
+// live events that change what is inside (the interior refreshes a little after one arrives)
+const INSIDE_CH = { parliament: ['parliament', 'council'], palace: ['palace', 'cabinet'], vp_office: ['palace', 'cabinet'], ministry: ['cabinet', 'palace'], const_court: ['court'], court: ['court'], prison: ['police', 'court'], jail: ['police', 'court'],
+  academy: ['academy'], police_academy: ['academy', 'police'], military_academy: ['academy', 'border'], police_hq: ['police'], police_station: ['police'], military_hq: ['border'], army_base: ['border'], border_post: ['border'],
+  election_comm: ['election'], city_hall: ['cityhall'], data_center: ['life'] };
+const placeUrl = (type, b) => `/api/place/${encodeURIComponent(type)}?city=${encodeURIComponent(b.city || '')}${type === 'ministry' && b.extra?.portfolio ? `&portfolio=${encodeURIComponent(b.extra.portfolio)}` : ''}`;
+// the server's view, or (while that building's view is not written yet, or the server is older) one built here
+// from /api/state, like details() does
+async function placeFor(type, b) {
+  try {
+    const r = await fetch(placeUrl(type, b), { cache: 'no-store' });
+    if (r.ok) {
+      const p = await r.json();
+      const empty = !(p.occupants || []).length && !p.more && Object.keys(p.board || {}).every(k => k === 'note');
+      if (!empty) return p;
+    }
+  } catch { /* offline or no endpoint: build it here */ }
+  await refreshParts(type);
+  return localPlace(type, b);
+}
+// while inside, keep the sections this building shows fresh (when the server offers /api/state?parts=)
+const PLACE_PARTS = { parliament: ['bills', 'laws', 'cabinet'], palace: ['orders', 'cabinet'], vp_office: ['cabinet'], ministry: ['cabinet'], const_court: ['court'], court: ['court'], prison: ['police'], jail: ['police'],
+  academy: ['training'], police_academy: ['training'], military_academy: ['training'], police_hq: ['police'], police_station: ['police'], military_hq: ['military'], army_base: ['military'], border_post: ['military'],
+  election_comm: ['elections'], city_hall: ['cities'], primary_school: ['school'], middle_school: ['school'], high_school: ['school'], university: ['school'], library: ['school'], central_bank: ['orders'] };
+let partsAt = 0;
+async function refreshParts(type) {
+  const can = st.state?.config?.stateParts; const want = (PLACE_PARTS[type] || []).filter(p => Array.isArray(can) && can.includes(p));
+  if (!want.length || Date.now() - partsAt < 10000) return; partsAt = Date.now();
+  try { const r = await fetch('/api/state?parts=' + encodeURIComponent(want.join(','))); const d = r.ok ? await r.json() : null; if (d) for (const k of want) if (k in d) st.state[k] = d[k]; } catch { /* keep */ }
+}
+function localPlace(type, b) {
+  const s = st.state || {}; const seats = s.seats || {}; const occ = []; const board = {};
+  const cityName = data.cities[b.city]?.name || b.city || '';
+  const add = (id, role, activity, extra = {}) => { if (id && !occ.some(o => o.id === id)) { const c = citizen(id); occ.push({ id, name: c?.name || nameOf(id), role, activity, detail: extra.detail || null, since: extra.since ?? null, field: extra.field || null, gifted: !!extra.gifted, mood: c?.mood?.label || null }); } };
+  const inCity = id => !b.city || citizenCity(id) === b.city;
+  const live = (s.bills || []).find(x => ['debate', 'vote', 'override'].includes(x.stage));
+  switch (type) {
+    case 'parliament': {
+      const speaker = s.cabinet?.speaker; if (speaker) add(speaker, 'Speaker', live ? `chairs the ${STAGE[live.stage] || live.stage}` : 'chairs the session');
+      for (const id of seats.council || []) { const v = live?.votes?.[id]; add(id, 'Councillor', v === true ? 'voted yes' : v === false ? 'voted no' : live ? (live.stage === 'debate' ? 'in debate' : 'deciding') : 'in session'); }
+      if (live) { const vs = Object.values(live.votes || {}); board.bill = { title: live.title, stage: STAGE[live.stage] || live.stage, yes: vs.filter(Boolean).length, no: vs.filter(x => x === false).length, seats: (seats.council || []).length }; }
+      board.laws = (s.laws || []).length; break;
+    }
+    case 'palace': case 'vp_office': {
+      for (const id of seats.president || []) add(id, 'President', 'at the desk');
+      for (const id of seats.vice_president || []) add(id, 'Vice President', type === 'palace' ? 'in the Cabinet room' : 'at the desk');
+      if (type === 'palace') for (const [pf, id] of Object.entries(s.cabinet?.portfolios || {})) add(id, `Minister of ${pretty(pf)}`, 'in the Cabinet room');
+      const o = (s.orders || []).at(-1); if (o) board.lastOrder = `day ${o.day}: ${String(o.text || '').slice(0, 120)}`;
+      board.treasury = Math.round(s.treasury || 0); break;
+    }
+    case 'ministry': { const pf = b.extra?.portfolio; const id = s.cabinet?.portfolios?.[pf]; add(id, 'Minister', 'runs the ministry'); board.portfolio = pretty(pf || ''); board.minister = id ? nameOf(id) : 'vacant'; break; }
+    case 'city_hall': { const c = (s.cities || []).find(x => x.id === b.city); if (c?.mayor) add(c.mayor, 'Mayor', 'spends the city budget'); if (c) Object.assign(board, { budget: Math.round(c.budget || 0), spent: Math.round(c.spent || 0), health: c.health, residents: c.residents }); break; }
+    case 'const_court': case 'court': {
+      for (const id of seats.judge || []) add(id, 'Judge', 'on the bench');
+      for (const i of (s.police?.incidents || []).filter(x => x.status === 'trial')) for (const p of i.perps || []) add(p, 'Defendant', `on trial for ${i.type}`);
+      const open = (s.court?.cases || []).filter(c => c.status === 'open'); board.openCases = open.length; if (open.at(-1)) board.case = String(open.at(-1).claim || '').slice(0, 120);
+      board.rulings = (s.court?.cases || []).filter(c => c.status !== 'open').length; break;
+    }
+    case 'prison': case 'jail': {
+      for (const c of s.citizens || []) if (c.status === (type === 'prison' ? 'jailed' : 'detained') && (type === 'prison' || inCity(c.id))) add(c.id, type === 'prison' ? 'Inmate' : 'Held', type === 'prison' ? 'serving a sentence' : 'waiting for trial', { detail: c.jailUntil ? `${Math.max(0, c.jailUntil - (s.day || 0))} day(s) left` : null });
+      board.jailed = s.population?.byStatus?.jailed ?? 0; board.detained = s.population?.byStatus?.detained ?? 0; break;
+    }
+    case 'academy': case 'police_academy': case 'military_academy': {
+      const force = type === 'police_academy' ? /police/ : type === 'military_academy' ? /military/ : null;
+      const rooms = s.academy?.rooms || (s.academy?.current ? [s.academy.current] : []);
+      for (const r of rooms) if (!force ? true : force.test(r.roleId)) add(r.agentId, `Candidate · ${roleTitle(r.roleId)}`, `question ${Math.min(r.step + 1, r.total)} of ${r.total}`, { detail: `${(r.answers || []).filter(x => x?.ok).length} right so far` });
+      const d = s.training?.current; if (d && (!force || force.test(d.roleId))) add(d.agentId, `Drill · ${roleTitle(d.roleId)}`, `${(d.answers || []).length} of ${d.total} answered`);
+      if (force) for (const id of (type === 'police_academy' ? seats.police : seats.military) || []) if (occ.length < 40) add(id, type === 'police_academy' ? 'Officer' : 'Soldier', 'training');
+      const cur = rooms[0]; if (cur) board.exam = `${roleTitle(cur.roleId)}: question ${Math.min(cur.step + 1, cur.total)} of ${cur.total}`;
+      Object.assign(board, { sessions: s.academy?.sessions ?? 0, swornIn: s.academy?.graduates ?? 0, examRooms: rooms.length }); break;
+    }
+    case 'police_hq': case 'police_station': {
+      for (const id of seats.police_chief || []) if (type === 'police_hq') add(id, 'Chief of Police', 'commands the force');
+      for (const id of seats.police || []) if (type === 'police_hq' || inCity(id)) add(id, 'Officer', 'on duty');
+      for (const c of s.citizens || []) if (c.status === 'detained' && (type === 'police_hq' || inCity(c.id))) add(c.id, 'Held', 'in the holding cell');
+      board.arrests = s.police?.arrests ?? 0; const last = (s.police?.incidents || []).filter(i => i.perps?.length && i.solvedBy).at(-1); if (last) board.lastCase = `#${last.id} ${last.type} · ${last.status}`; break;
+    }
+    case 'military_hq': case 'army_base': case 'border_post': {
+      for (const id of seats.military_chief || []) if (type === 'military_hq') add(id, 'Commander', 'in the command room');
+      for (const id of seats.military || []) add(id, 'Soldier', type === 'border_post' ? 'screening arrivals' : 'on duty');
+      const m = s.military || {}; Object.assign(board, { borderLevel: m.level ?? null, blocked: m.blocked ?? 0, admitted: m.admitted ?? 0, raids: m.raids ?? 0 }); break;
+    }
+    case 'election_comm': {
+      for (const id of seats.commissioner || []) add(id, 'Commissioner', 'counts and audits');
+      const e = (s.elections || []).find(x => x.stage === 'voting'); if (e) Object.assign(board, { election: `${e.title} · ${e.kind}`, voted: e.voted || 0, electorate: e.electorate || 0, turnout: e.electorate ? Math.round((e.voted || 0) / e.electorate * 100) : 0 });
+      else board.note = 'No vote open right now.'; break;
+    }
+    case 'central_bank': {
+      const pf = s.cabinet?.portfolios?.finance; if (pf) add(pf, 'Minister of Finance', 'checks the treasury');
+      const p = s.policy || {}; Object.assign(board, { treasury: Math.round(s.treasury || 0), taxRate: `${Math.round((p.taxRate || 0) * 100)}%`, ubi: p.ubi, wage: p.wage, ubiPaid: Math.round(s.econ?.ubiPaid || 0) }); break;
+    }
+    case 'primary_school': case 'middle_school': case 'high_school': case 'university': case 'library': {
+      const sc = s.school || {};
+      for (const f of sc.gifted?.byField || []) if (f.top?.id) add(f.top.id, 'Top student', `studies ${f.name}`, { field: f.name, gifted: true });
+      for (const x of sc.topStudents || []) add(x.id, 'Student', 'revising the core subjects');
+      const top = (sc.fields || [])[0]; if (top) board.subject = `${top.name} · average level ${Number(top.avgLevel || 0).toFixed(1)}`;
+      Object.assign(board, { lessonsToday: sc.lessonsToday ?? 0, students: sc.students ?? 0, gifted: sc.gifted?.total ?? 0 }); break;
+    }
+    default: {
+      const ACT = { market: 'shop', mall: 'shop', supermarket: 'shop', office: 'work', factory: 'work', hospital: 'help', clinic: 'help', community_hall: 'volunteer', data_center: 'work' }[type];
+      for (const e of (s.daily?.recent || []).slice().reverse()) if ((!ACT || e.act === ACT) && (!b.city || e.city === b.city)) add(e.agent, 'Citizen', e.line || e.act, { detail: e.note ? String(e.note).slice(0, 120) : null, since: e.ts });
+      board.note = occ.length ? `Recent visitors in ${cityName}` : `Quiet right now in ${cityName}`;
+    }
+  }
+  return { type, city: b.city || null, title: `${b.name}${cityName && !b.name.includes(cityName) ? ` · ${cityName}` : ''}`, updatedAt: Date.now(), occupants: occ.slice(0, 60), board, more: Math.max(0, occ.length - 60), local: true };
+}
+
+let inside = null, insideMod = null, mapLoop = null, entering = false;
+function enterStep(pct, text) { $('#enterBar').style.setProperty('width', `${pct}%`); $('#enterStep').textContent = text; }
+async function enterBuilding(b, push = true) {
+  if (entering || inside || !INSIDE.has(b.type)) return; entering = true;
+  const box = $('#enter'); $('#enterTitle').textContent = `Entering ${b.name}`; box.hidden = false; enterStep(8, 'Opening the doors…');
+  try {
+    insideMod ||= await import('./interior.js?v=1'); enterStep(40, 'Reading who is inside…');
+    const place = await placeFor(b.type, b); enterStep(75, 'Furnishing the room…');
+    await new Promise(r => setTimeout(r, 30));
+    renderer.setAnimationLoop(null); controls.enabled = false; // the map pauses where it is (and ignores drags)
+    document.body.classList.add('inside'); $('#info').hidden = true;
+    inside = insideMod.enter({ renderer, type: b.type, place, mobile, h, refresh: () => placeFor(b.type, b), poke: pokeById });
+    inside.building = b;
+    renderer.setAnimationLoop(now => inside?.frame(now));
+    if (push) { const u = new URL(location.href); u.searchParams.set('in', b.type); u.searchParams.set('city', b.city); if (b.type === 'ministry' && b.extra?.portfolio) u.searchParams.set('portfolio', b.extra.portfolio); history.replaceState(null, '', u); }
+    enterStep(100, 'Inside');
+  } catch (e) {
+    $('#enterStep').textContent = 'Could not go inside. Try again.'; console.warn('interior', e);
+    exitBuilding();
+  } finally { entering = false; setTimeout(() => { box.hidden = true; }, 250); }
+}
+function exitBuilding() {
+  const was = inside; inside = null;
+  if (was) was.dispose();
+  document.body.classList.remove('inside'); controls.enabled = true;
+  if (mapLoop) renderer.setAnimationLoop(mapLoop);
+  const u = new URL(location.href); if (u.searchParams.has('in')) { u.searchParams.delete('in'); u.searchParams.delete('portfolio'); history.replaceState(null, '', u); }
+  if (was?.building) showBuilding(was.building);
+}
+$('#insideBack').addEventListener('click', () => exitBuilding());
+addEventListener('keydown', e => { if (e.key === 'Escape' && inside) exitBuilding(); });
+// /map.html?selftest=interior: five visits in and out of different buildings, then the GPU memory counts before and
+// after (a leak shows as growing geometries or textures) and anything left behind in the page
+async function selfTest() {
+  const out = h('div', { class: 'selftest', text: 'self-test: running…' }); document.body.append(out);
+  const types = ['parliament', 'prison', 'data_center', 'academy', 'central_bank'];
+  const wait = ms => new Promise(r => setTimeout(r, ms));
+  const mem0 = { ...renderer.info.memory }; const log = [];
+  for (let i = 0; i < 5; i++) {
+    const b = data.buildings.find(x => x.type === types[i]); if (!b) continue;
+    await enterBuilding(b, false); await wait(120);
+    log.push(`${types[i]}:${inside ? document.querySelectorAll('.itag').length : 'fail'}`);
+    exitBuilding(); await wait(40);
+  }
+  await wait(80);
+  const mem1 = renderer.info.memory;
+  out.textContent = `self-test · 5 visits (${log.join(' ')}) · geometries ${mem0.geometries}→${mem1.geometries} · textures ${mem0.textures}→${mem1.textures} · interior DOM left ${document.querySelectorAll('.inside-ui').length} · inside ${inside ? 'yes' : 'no'}`;
+}
+async function pokeById(id) {
+  const r = await fetch(`/api/poke/${encodeURIComponent(id)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+  const j = await r.json().catch(() => null);
+  if (r.ok && j?.complaint) return `${emoji(j.mood?.label && MOODS[j.mood.label] ? j.mood.label : 'annoyed')} ${j.complaint}`;
+  return r.status === 429 ? 'Too many pokes. They need a breather.' : null;
 }
 // ------------------------------------------------------------ citizens: feelings, bonds and the poke
 const isReal = a => !!(a && a.name && !a.scene && !String(a.id).includes('#'));
@@ -387,6 +554,7 @@ $('#infoClose').addEventListener('click', () => { $('#info').hidden = true; st.s
 const ray = new THREE.Raycaster(); const ndc = new THREE.Vector2(); let down = null;
 canvas.addEventListener('pointerdown', e => { down = [e.clientX, e.clientY]; });
 canvas.addEventListener('pointerup', e => {
+  if (inside || entering) return; // inside a building the interior handles its own clicks
   if (!down || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 6) return;
   ndc.set(e.clientX / innerWidth * 2 - 1, -(e.clientY / innerHeight) * 2 + 1); ray.setFromCamera(ndc, camera);
   if ($('#lyAgents').checked) { const a = agents.pickAt(ray); if (a) { showAgent(a); pokeAgent(a); return; } }
@@ -395,7 +563,7 @@ canvas.addEventListener('pointerup', e => {
 // hovering a robot shows a pointing hand: it is clickable
 let hoverAt = 0;
 canvas.addEventListener('pointermove', e => {
-  if (mobile || !agents || performance.now() - hoverAt < 80) return; hoverAt = performance.now();
+  if (mobile || !agents || inside || performance.now() - hoverAt < 80) return; hoverAt = performance.now();
   ndc.set(e.clientX / innerWidth * 2 - 1, -(e.clientY / innerHeight) * 2 + 1); ray.setFromCamera(ndc, camera);
   canvas.style.cursor = $('#lyAgents').checked && agents.pickAt(ray) ? 'pointer' : '';
 });
@@ -458,6 +626,7 @@ function stream() {
   let es; try { es = new EventSource('/api/stream'); } catch { return; }
   es.addEventListener('message', ev => {
     let m; try { m = JSON.parse(ev.data); } catch { return; }
+    if (inside && (INSIDE_CH[inside.building?.type] || []).includes(m.ch)) inside.nudge(); // something changed in there
     if (m.ch !== 'life' || !(m.act || m.kind === 'poke') || !m.agentId || queue.length > 40) return;
     queue.push(m);
   });
@@ -511,14 +680,24 @@ async function boot() {
   const at = qs.get('at'); const ab = at && Object.hasOwn(TYPES, at) && ((Object.hasOwn(data.cities.neura?.byType || {}, at) && data.cities.neura.byType[at][0]) || data.buildings.find(b => b.type === at));
   if (ab) { controls.target.set(ab.x, 0, ab.z); camera.position.set(ab.x + 160, 190, ab.z + 200); showBuilding(ab); }
   const cov = qs.get('cover'); if (cov && Object.hasOwn(COVERAGE, cov)) { $('#lyCover').value = cov; $('#lyCover').dispatchEvent(new Event('change')); }
+  // deep link inside a building: /map.html?in=parliament&city=neura (&portfolio=finance for a ministry)
+  const inType = qs.get('in');
+  if (inType && INSIDE.has(inType)) {
+    const ic = Object.hasOwn(data.cities, qs.get('city') || '') ? qs.get('city') : null; const pf = qs.get('portfolio');
+    const pool = data.buildings.filter(x => x.type === inType && (!ic || x.city === ic));
+    const ib = pool.find(x => !pf || x.extra?.portfolio === pf) || pool[0];
+    if (ib) { controls.target.set(ib.x, 0, ib.z); camera.position.set(ib.x + 160, 190, ib.z + 200); setTimeout(() => enterBuilding(ib, false), 50); }
+  }
+  if (qs.get('selftest') === 'interior') setTimeout(selfTest, 100);
   $('#lyShadows').checked = false; setShadows(false);
   $('#lyShadows').addEventListener('change', e => setShadows(e.target.checked));
   $('#lyAgents').addEventListener('change', e => { agents.visible = e.target.checked; });
   lighting(); setInterval(lighting, 60000); setInterval(renderClock, 30000);
   $('#loading').classList.add('done'); setTimeout(() => { $('#loading').hidden = true; }, 600);
-  window.COUNTRY_MAP = { data, agents, scenes, coverage, flyTo, camera, controls, night, pokeAgent, showAgent, composer, renderer }; // for debugging in the console
+  window.COUNTRY_MAP = { data, agents, scenes, coverage, flyTo, camera, controls, night, pokeAgent, showAgent, composer, renderer, enterBuilding, exitBuilding }; // for debugging in the console
   let last = performance.now();
-  renderer.setAnimationLoop(now => {
+  renderer.setAnimationLoop(mapLoop = now => {
+    if (now - last > 1000) last = now - 16; // back from inside a building: no jump
     const dt = Math.min(0.1, (now - last) / 1000); last = now;
     controls.update(); agents.update(dt, now); clock.value = now / 1000; life.update(dt, now / 1000, camera.position);
     sun.target.position.copy(controls.target); sun.position.copy(controls.target).add(sunOff);

@@ -7,7 +7,7 @@
   <meta name="description" content="A live 3D map of COUNTRY AI: five cities, every public building, and citizens walking to what they actually decided to do.">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/vendor/fonts/fonts.css?v=1">
-  <link rel="stylesheet" href="/map/map.css?v=4">
+  <link rel="stylesheet" href="/map/map.css?v=5">
 </head>
 <body>
   <canvas id="scene" aria-label="3D map of the country"></canvas>
@@ -43,6 +43,9 @@
   </section>
 
   <div class="loading" id="loading"><div class="spin"></div><p id="loadingText">Building the cities…</p></div>
-  <script src="/map/main.js?v=5" type="module"></script>
+  <!-- going inside a building: a short loading screen, then the room (public/map/interior.js) -->
+  <div class="enter" id="enter" hidden><div class="enter-box"><p id="enterTitle">Entering…</p><div class="enter-bar"><i id="enterBar"></i></div><small id="enterStep"></small></div></div>
+  <button class="inside-back" id="insideBack" type="button">← Back to the map <kbd>Esc</kbd></button>
+  <script src="/map/main.js?v=6" type="module"></script>
 </body>
 </html>
