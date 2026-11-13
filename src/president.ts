@@ -92,12 +92,19 @@ export function dailyBudget(S: State) {
   const ubi = round(m.nat.free * S.policy.ubi, 0);
   return { tax, ubi, net: tax - ubi };
 }
+// days until the treasury is empty at today's tax and basic income (null: not falling at this pace)
+export function runwayDays(S: State) {
+  const b = dailyBudget(S);
+  return b.net < 0 ? round(Math.max(0, S.treasury) / -b.net, 1) : null;
+}
+// the runway as a plain fact for any prompt or report card: no advice, no score
+export const runwayText = (S: State) => { const r = runwayDays(S); return r == null ? 'the treasury is not falling at this pace' : `at this pace the treasury is empty in about ${r} days`; };
 export function nationFacts(S: State) {
   const m = nationMetrics(S), n = m.nat, b = dailyBudget(S);
   const pct = x => `${Math.round(x * 100)}%`;
   const lines = [
     `Day ${S.day}. Treasury ${cai(S.treasury)}.`,
-    `Tax ${pct(S.policy.taxRate)} of a ${cai(S.policy.wage)} daily wage brings about ${cai(b.tax)} a day. The basic income set by law (${cai(S.policy.ubi)} to every free citizen) costs about ${cai(b.ubi)} a day. Net about ${b.net >= 0 ? '+' : ''}${cai(b.net)} a day.`,
+    `Tax ${pct(S.policy.taxRate)} of a ${cai(S.policy.wage)} daily wage brings about ${cai(b.tax)} a day. The basic income set by law (${cai(S.policy.ubi)} to every free citizen) costs about ${cai(b.ubi)} a day. Net about ${b.net >= 0 ? '+' : ''}${cai(b.net)} a day: ${runwayText(S)}.`,
     `Citizens ${n.citizens}: ${n.free} free, ${n.detained} detained, ${n.jailed} jailed. Under 300 CAI: ${n.poor} (${pct(n.poorShare)} of the free). Average mood ${n.mood} (from -1 bad to +1 good). Crimes known in the last 2 days: ${n.crimes}.`,
     'Cities:',
     ...cityList(S).map(c => { const x = m.city[c.id], k = S.cities?.[c.id] || {}; return `- ${c.name} (${c.id}): ${x.residents} residents, health ${k.health ?? '-'}/100, city budget ${cai(k.budget || 0)}, under 300 CAI ${pct(x.poorShare)}, crimes in 2 days ${x.crimes}, mood ${x.mood}`; }),
@@ -130,7 +137,7 @@ export function teach(a: Citizen, roleId: string, lesson: string) {
 // snapshot now; graded REVIEW_AFTER_DAYS later from the change in poverty, crime and mood where it was aimed
 export function queueReview(ctx: Ctx, a: Citizen, role: string, what: string, city: string | null, spend = 0) {
   const { S } = ctx; const m = nationMetrics(S); const x = city && m.city[city] ? m.city[city] : m.nat;
-  G(S).reviews.push({ agentId: a.id, role, what: cleanText(what, 120), city: city && m.city[city] ? city : null, day: S.day, spend: round(spend, 2), before: { poor: x.poorShare, crimes: x.crimes, mood: x.mood, treasury: round(S.treasury, 0) } });
+  G(S).reviews.push({ agentId: a.id, role, what: cleanText(what, 120), city: city && m.city[city] ? city : null, day: S.day, spend: round(spend, 2), before: { poor: x.poorShare, crimes: x.crimes, mood: x.mood, treasury: round(S.treasury, 0), runway: runwayDays(S) } });
   if (G(S).reviews.length > 300) G(S).reviews.shift();
 }
 function grade(before, after) {
@@ -139,18 +146,21 @@ function grade(before, after) {
   return better >= 2 && !worse ? 'A' : better > worse ? 'B' : better === worse ? 'C' : 'D';
 }
 const GRADE_POINTS = { A: 4, B: 3, C: 2, D: 1 };
+// a runway in a report card: days left at that day's pace, or "not falling" (undefined: a review queued before
+// runways were recorded)
+const rw = (d: number | null | undefined) => (d === undefined ? 'unknown' : d === null ? 'not falling' : `${d} days`);
 function reviewDay(ctx: Ctx) {
   const { S } = ctx; const g = G(S); const m = nationMetrics(S);
   const due = g.reviews.filter(r => S.day - r.day >= REVIEW_AFTER_DAYS);
   g.reviews = g.reviews.filter(r => S.day - r.day < REVIEW_AFTER_DAYS);
   for (const r of due) {
     const x = r.city ? m.city[r.city] : m.nat;
-    const after = { poor: x.poorShare, crimes: x.crimes, mood: x.mood, treasury: round(S.treasury, 0) };
+    const after = { poor: x.poorShare, crimes: x.crimes, mood: x.mood, treasury: round(S.treasury, 0), runway: runwayDays(S) };
     const gr = grade(r.before, after);
     const where = r.city ? cityName(r.city) : 'the nation';
     const pct = v => `${Math.round(v * 100)}%`;
     // written by the server from the numbers, never by a model
-    const lesson = `Day ${r.day} ${r.what}${r.spend ? ` (${cai(r.spend)})` : ''}: two days later in ${where} poverty ${pct(r.before.poor)} -> ${pct(after.poor)}, crimes ${r.before.crimes} -> ${after.crimes}, mood ${r.before.mood} -> ${after.mood}, treasury ${cai(r.before.treasury)} -> ${cai(after.treasury)}. Grade ${gr}.`;
+    const lesson = `Day ${r.day} ${r.what}${r.spend ? ` (${cai(r.spend)})` : ''}: two days later in ${where} poverty ${pct(r.before.poor)} -> ${pct(after.poor)}, crimes ${r.before.crimes} -> ${after.crimes}, mood ${r.before.mood} -> ${after.mood}, treasury ${cai(r.before.treasury)} -> ${cai(after.treasury)}, runway ${rw(r.before.runway)} -> ${rw(after.runway)}. Grade ${gr}.`;
     const card = { day: S.day, of: r.day, role: r.role, agentId: r.agentId, what: r.what, city: r.city, grade: gr, lesson };
     const a = ctx.agent(r.agentId);
     if (a) a.reportCards = [...(a.reportCards || []), card].slice(-MAX_CARDS);
@@ -377,7 +387,7 @@ export const institution = {
     // the same daily figures every official reads in their facts: tax in, basic income out, and how many days the
     // treasury lasts at that pace (null while the budget is balanced or in surplus)
     const b = dailyBudget(S);
-    const runway = b.net < 0 ? round(Math.max(0, S.treasury) / -b.net, 1) : null;
+    const runway = runwayDays(S);
     return { orders: S.orders.slice(-40), gov: { taxPerDay: b.tax, ubiPerDay: b.ubi, netPerDay: b.net, runwayDays: runway, autonomy: g.autonomy, rejectedShare: (g.autonomy.own + g.autonomy.rejected) ? round(g.autonomy.rejected / (g.autonomy.own + g.autonomy.rejected), 3) : 0, ownShare: (g.autonomy.own + g.autonomy.offline + g.autonomy.rejected) ? round(g.autonomy.own / (g.autonomy.own + g.autonomy.offline + g.autonomy.rejected), 3) : 0, avgGrade: g.gradeN ? round(g.gradeSum / g.gradeN, 2) : null, graded: g.gradeN, pendingReviews: g.reviews.length, cards: g.cards.slice(-15), ubiPaid: S.econ?.ubiPaid || 0, ubiDay: S.econ?.ubiDay ?? null } };
   },
 };

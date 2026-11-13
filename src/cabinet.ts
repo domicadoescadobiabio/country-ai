@@ -315,7 +315,8 @@ export async function ministersDay(ctx: Ctx) {
     ctx.decide({ agentId: m.id, role: 'minister', type: 'order', engine: own ? res.engine : 'offline', title: `${PORTFOLIO_TITLES[p]}: daily act`, inputs: [['Act', `${v.act.id}${v.p.city ? `, ${v.p.city}` : ''}${v.p.amount ? `, ${cai(v.p.amount)}` : v.p.pct ? `, ${v.p.pct}%` : v.p.each ? `, ${cai(v.p.each)} each` : ''}`], ['Treasury', cai(before)], ['Limits', acts.map(x => `${x.id} ${x.limit ? `<= ${cai(x.limit(S))}` : ''}`).join('; ')]], options: [...acts.map(x => x.id), 'hold'], chosen: v.act.id, reason, checks: [['Inside the portfolio', true], ['Within the spending limit', true]], outcome });
     ctx.say('palace', m.id, `${PORTFOLIO_TITLES[p]}: ${v.act.id === 'hold' ? 'hold' : v.act.label.split(':')[0].split('(')[0].trim()} - ${outcome}. ${reason}`, { kind: 'order' });
     ctx.record('minister_act', m.id, { portfolio: p, act: v.act.id, outcome, own, city: v.p.city || null });
-    if (v.act.id !== 'hold') queueReview(ctx, m, 'minister', `${PORTFOLIO_TITLES[p]} ${v.act.id}${v.p.city ? ` in ${v.p.city}` : ''}`, v.p.city || null, spend);
+    // every act is graded two days later; the Minister of Finance's hold is graded too (the treasury is their portfolio)
+    if (v.act.id !== 'hold' || p === 'finance') queueReview(ctx, m, 'minister', `${PORTFOLIO_TITLES[p]} ${v.act.id}${v.p.city ? ` in ${v.p.city}` : ''}`, v.p.city || null, spend);
   }
 }
 

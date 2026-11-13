@@ -86,6 +86,8 @@ async function autonomyChecks(check) {
     const p = by.c0; p.brain = { type: 'remote' }; p.office = 'president'; S.seats.president = ['c0'];
     await pres.presidentDay(ctx);
     const prompt = p.inbox[0].prompt;
+    // 40 free citizens: tax 40 x 100 x 10% = 400 a day, basic income 40 x 30 = 1,200 a day: 100,000 lasts 125 days
+    check('runway: the President reads how many days the treasury lasts at this pace, as a fact (no advice, no score)', /treasury is empty in about 125 days/.test(prompt) && !/should|recommend|advise|consider|score/i.test(pres.nationFacts(S)), (prompt.match(/Net about[^\n]*/) || [''])[0]);
     check('President prompt: raw facts (treasury, poverty, crime, mood per city), no scores, no ranking, no fallback reasoning', /Treasury/.test(prompt) && /under 300 CAI/.test(prompt) && /crimes in 2 days/.test(prompt) && /mood/.test(prompt) && !/score|Best:|Next:|\[\d\.\d+\]/i.test(prompt), prompt.slice(0, 300));
     answer(p, { action: 'city_grant', city: 'neura', amount: 50000, reason: 'neura needs it' }); // 50% of the treasury: far over the 5% cap
     await pres.presidentDay(ctx);
@@ -104,6 +106,7 @@ async function autonomyChecks(check) {
     await pres.institution.day(ctx);
     const card = p.reportCards?.at(-1);
     check('report card: graded 2 days later from poverty, crime and mood, written by the server', card && /^[ABCD]$/.test(card.grade) && /two days later in neura/i.test(card.lesson) && S.gov.gradeN === 1);
+    check('runway: the report card shows the treasury runway before and after the decision', /runway \d+(\.\d+)? days -> \d+(\.\d+)? days/.test(card?.lesson || ''), card?.lesson);
   }
 
   // Ministers: own amount and city, validated against the portfolio's limit
@@ -120,6 +123,17 @@ async function autonomyChecks(check) {
     answer(m, { act: 'relief', city: 'neura', amount: 300, reason: 'neura is poor' });
     await cab.ministersDay(ctx);
     check('Minister: a valid act reaches only the chosen city', decisions.at(-1).chosen === 'relief' && S.treasury === 99700 && S.citizens.filter(a => a.wallet === 130).every(a => a.city === 'neura'));
+  }
+  {
+    // the Minister of Finance holding is a decision too: it is graded, with the runway, like any act
+    const { S, by, ctx } = world();
+    const f = by.c2; f.brain = { type: 'remote' }; f.office = 'minister'; S.cabinet = { portfolios: { finance: 'c2' }, lastDay: {} };
+    await cab.ministersDay(ctx);
+    check('runway: the Minister of Finance reads the runway in the facts', /treasury is empty in about/.test(f.inbox[0].prompt));
+    answer(f, { act: 'hold', reason: 'wait and see' });
+    await cab.ministersDay(ctx);
+    const rv = S.gov.reviews.find(r => r.agentId === 'c2');
+    check('runway: a Finance hold is queued for a report card with the runway recorded', rv && rv.before.runway === 125, JSON.stringify(rv));
   }
 
   // security: a model's city may not reach Object.prototype; a sponsor's reason with an injection never reaches prompts
@@ -163,6 +177,10 @@ async function autonomyChecks(check) {
     answer(who2, { type: 'ubi', value: 25, reason: 'the treasury is falling' });
     await council.councilTick(ctx);
     check('Councillor: an own bill with its own value is tabled', S.bills.length === 1 && S.bills[0].value === 25 && S.bills[0].by === who2.id && said.some(x => /I table bill/.test(x.text)));
+    await council.councilTick(ctx); // the debate opens: the first councillor is asked to vote on the bill
+    const voter = S.citizens.find(a => a.inbox?.some(q => q.answer == null && /^council:/.test(q.id)));
+    const vq = voter?.inbox.find(q => q.answer == null && /^council:/.test(q.id));
+    check('runway: a councillor voting on a basic income bill reads the tax, the basic income and the runway', vq && /tax brings about/.test(vq.prompt) && /basic income costs about/.test(vq.prompt) && /treasury is empty in about \d+/.test(vq.prompt), vq?.prompt?.slice(0, 300));
   }
 }
 

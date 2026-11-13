@@ -5,7 +5,7 @@ import { ROLES } from './roles.mjs';
 import { constitutionText } from './constitution.mjs';
 import { pick, chance, round, clamp, cleanText, cai, shuffle } from './util.ts';
 import { think } from './brains.ts';
-import { nationFacts, ownRecord, tally, teach, isOffline, queueReview, dailyBudget, safeForPrompts } from './president.ts';
+import { nationFacts, ownRecord, tally, teach, isOffline, queueReview, dailyBudget, safeForPrompts, runwayText } from './president.ts';
 import type { Ctx, State, Citizen } from './types.ts';
 
 // Shared by every bill type: was the vote checked against the ledger and the legal range?
@@ -75,7 +75,7 @@ async function decide(ctx: Ctx, a: Citizen, bill: any, type: any, asRole: string
     const res = await think(ctx, a, `${asRole}:${bill.id}:${a.id}`, {
       kind: 'decision', format: 'json', options: asRole === 'president' ? ['sign', 'veto'] : ['yes', 'no'],
       system: `You are ${a.name}, ${ROLES[asRole].title === 'Council' ? 'a member of the Council' : 'the President'} of Country AI.\nConstitution:\n${constitutionText(asRole)}\nCharter: ${ROLES[asRole].charter}\nLessons from your Academy training:\n${lessons}`,
-      user: `Bill: "${bill.title}". It changes ${type.what} from ${type.fmt(bill.from)} to ${type.fmt(bill.value)}.${bill.reason ? ` Its sponsor says: "${bill.reason}"` : ''} Treasury ${cai(S.treasury)}, citizens ${S.citizens.length}. Per day now: tax brings about ${cai(dailyBudget(S).tax)}, the basic income costs about ${cai(dailyBudget(S).ubi)}.\n${asRole === 'president' ? 'Sign or veto it.' : 'Vote yes or no.'} Reply with JSON only: {"vote":"${asRole === 'president' ? 'sign|veto' : 'yes|no'}","reason":"<your reasoning, max 30 words>","speech":"<what you say in public, max 30 words>"}`,
+      user: `Bill: "${bill.title}". It changes ${type.what} from ${type.fmt(bill.from)} to ${type.fmt(bill.value)}.${bill.reason ? ` Its sponsor says: "${bill.reason}"` : ''} Treasury ${cai(S.treasury)}, citizens ${S.citizens.length}. Per day now: tax brings about ${cai(dailyBudget(S).tax)}, the basic income costs about ${cai(dailyBudget(S).ubi)}; ${runwayText(S)}.\n${asRole === 'president' ? 'Sign or veto it.' : 'Vote yes or no.'} Reply with JSON only: {"vote":"${asRole === 'president' ? 'sign|veto' : 'yes|no'}","reason":"<your reasoning, max 30 words>","speech":"<what you say in public, max 30 words>"}`,
     });
     if (res.pending) return { pending: true };
     const j = llm.json(res.text);
@@ -274,6 +274,8 @@ export async function councilTick(ctx: Ctx) {
     if (d.pending) return;
     ctx.say('palace', pres.id, `${d.yes ? 'I sign' : 'I veto'} bill #${bill.id}. ${d.speech}`, { kind: d.yes ? 'sign' : 'veto', billId: bill.id, engine: d.engine });
     logVote(ctx, pres, bill, type, d, 'president', 'president');
+    // signing or vetoing a bill is graded like an order: two days later, with the treasury runway in the card
+    queueReview(ctx, pres, 'president', `${d.yes ? 'signed' : 'vetoed'} bill #${bill.id} (${type.what} ${type.fmt(bill.from)} -> ${type.fmt(bill.value)})`, null, 0);
     if (d.yes) return enact(ctx, bill, 'signed');
     bill.stage = 'override';
     ctx.say('parliament', 'state', `The President vetoed bill #${bill.id}. Override needs ${OVERRIDE} of ${ROLES.council.seats}.`, { kind: 'veto' });
