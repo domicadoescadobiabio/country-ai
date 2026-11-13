@@ -128,7 +128,9 @@ check('one diary line per citizen per session', kids.every(k => k.diary.filter(x
 // ---- the teacher (teach() only): explanations become worked examples, new cards screened
 llm.enabled = true;
 const before = { calls: S.school.stats.teacherCalls, cards: S.school.cards.length };
-for (let r = 0; r < 10; r++) {
+// (at least 10 rounds, and on until a teacher has written a card: only adaptation lessons, a small share now
+// that most lessons are in the fields, can bring one)
+for (let r = 0; r < 10 || (S.school.cards.length === before.cards && r < 40); r++) {
   school._resetSchool(); for (const k of kids) k.schoolSession = null; // a new session for the test
   give(12, 40); await tick(); await tick(); answerAll(jobs()); await tick();
   await new Promise(res => setTimeout(res, 5)); await tick();
@@ -356,6 +358,8 @@ check('the morning after, one night-school summary in #life', said.filter(m => m
   check('contract: topFields(a, n) gives n fields best first, level 0-100', top.length === 3 && top[0].id === 'accounting' && top[0].level === 83 && top.every((f, i) => Number.isInteger(f.level) && f.level >= 0 && f.level <= 100 && (i === 0 || top[i - 1].level >= f.level)), JSON.stringify(top));
   check('contract: fieldLevel(a, id) is 0-100, and 0 for an unknown field', E.fieldLevel(a, 'accounting') === 83 && E.fieldLevel(a, 'music') > 0 && E.fieldLevel(a, 'music') <= 30 && E.fieldLevel(a, '__proto__') === 0);
   const q = E.fieldQuestion('law'), bad = E.fieldQuestion('nope');
+  const X = await import('../src/expertise.ts');
+  check('src/expertise.ts re-exports the same contract', X.FIELDS === E.FIELDS && X.topFields === E.topFields && X.fieldLevel === E.fieldLevel && X.fieldQuestion === E.fieldQuestion && X.default === E && X.fieldLevel(a, 'accounting') === 83);
   check('contract: fieldQuestion(id) gives an exam question {q, right, wrong, lesson, tests}, null for an unknown field', q && q.q && q.right && q.wrong.length >= 2 && q.wrong.length <= 3 && !q.wrong.includes(q.right) && q.lesson && q.tests && bad === null, JSON.stringify(q));
 }
 
