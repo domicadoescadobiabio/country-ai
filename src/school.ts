@@ -591,6 +591,9 @@ export function updateField(a: Citizen, f: string, score: number, level: number,
 const GIFTED_SHARE = env('SCHOOL_GIFTED_SHARE', 0.08, 0.01, 0.25);
 const GIFTED_MAX = Math.round(env('SCHOOL_GIFTED_MAX', 25, 1, 500));
 const GIFTED_MIN_LESSONS = 6, GIFTED_MIN_POT = 0.55, GIFTED_IDLE_DAYS = 3, GIFTED_TEACH = 0.6, GIFTED_KEEP_BONUS = 0.03;
+const GIFTED_RESELECT_MS = env('SCHOOL_GIFTED_RESELECT_HOURS', 3, 0.05, 48) * 3600000;
+// a field taught today (it has lessons) with no gifted student yet, or no gifted at all
+const giftedGap = (S: State) => { const by = S.school?.gifted?.byField || {}; const taught = Object.keys(S.school?.byField || {}); return !Object.keys(by).length || taught.some(f => !by[f]?.length); };
 const NORMAL_TEACHER_FLOOR = 10; // ordinary students keep at least this many teacher calls a day beyond the gifted count
 // potential in a field (0-1); 0 for someone with too few lessons or who has not studied it for days
 export function potential(a: Citizen, f: string, now = Date.now()) {
@@ -601,9 +604,12 @@ export function potential(a: Citizen, f: string, now = Date.now()) {
   const hi = Math.min(1, (rec.hi || 0) / 5); const apt = talentsOf(a).aptitude[f] ?? 0.5;
   return round(0.35 * s + 0.25 * acc + 0.15 * hi + 0.15 * growth + 0.1 * apt, 3);
 }
-// the daily selection; returns { day, byField: { field: [{ id, name, potential }] }, top, joined, left }
-export function selectGifted(S: State, now = Date.now()) {
+// the daily selection; returns { day, at, byField: { field: [{ id, name, potential }] }, top, joined, left }
+// opts.addOnly: a top-up during the day (owner, 14 Nov): nobody chosen today is dropped, only the best of the
+// newly eligible are added (up to each field's cap), so badges never flicker; dropping out is for the daily one
+export function selectGifted(S: State, now = Date.now(), opts: { addOnly?: boolean } = {}) {
   const s = SC(S); const before = s.gifted?.byField || {};
+  const addOnly = !!opts.addOnly && s.gifted?.day === S.day;
   const was = new Set(Object.entries(before).flatMap(([f, l]: any) => l.map((x: any) => `${f}|${x.id}`)));
   const cands: Record<string, { a: Citizen; pot: number }[]> = {}; const byId = new Map<string, Citizen>();
   for (const a of S.citizens) {
@@ -620,14 +626,26 @@ export function selectGifted(S: State, now = Date.now()) {
     list.sort((x, y) => y.pot - x.pot || String(x.a.id).localeCompare(String(y.a.id)));
     top[f] = { id: list[0].a.id, name: list[0].a.name, potential: round(potential(list[0].a, f, now), 3) };
     const k = Math.min(GIFTED_MAX, Math.max(1, Math.ceil(list.length * GIFTED_SHARE)));
+    if (addOnly) {
+      // today's members stay as they are; free places in the field go to the best of the others
+      const keep = [...((before as any)[f] || [])]; const ids = new Set(keep.map((x: any) => x.id));
+      const extra = list.filter(x => !ids.has(x.a.id) && x.pot >= GIFTED_MIN_POT).slice(0, Math.max(0, k - keep.length));
+      const all = [...keep, ...extra.map(x => ({ id: x.a.id, name: x.a.name, potential: round(potential(x.a, f, now), 3) }))];
+      if (all.length) byField[f] = all;
+      continue;
+    }
     const chosen = list.slice(0, k).filter(x => x.pot >= GIFTED_MIN_POT);
     if (chosen.length) byField[f] = chosen.map(x => ({ id: x.a.id, name: x.a.name, potential: round(potential(x.a, f, now), 3) }));
   }
+  // a top-up keeps the fields that had members but no candidate this time (nobody leaves during the day)
+  if (addOnly) for (const [f, l] of Object.entries(before as any)) if (!byField[f] && (l as any[]).length) byField[f] = l as any[];
   const now_ = new Set(Object.entries(byField).flatMap(([f, l]) => l.map(x => `${f}|${x.id}`)));
   // the badge on each citizen's own record (since which day), cleared for those who dropped out
   for (const key of was) if (!now_.has(key)) { const [f, id] = key.split('|'); const a = byId.get(id); if (a?.school?.gifted) delete a.school.gifted[f]; }
   for (const [f, l] of Object.entries(byField)) for (const x of l) { const a = byId.get(x.id); if (a) { const p = profile(a); p.gifted ||= {}; p.gifted[f] ??= S.day; } }
-  s.gifted = { day: S.day, byField, top, joined: [...now_].filter(k => !was.has(k)).length, left: [...was].filter(k => !now_.has(k)).length };
+  const joined = [...now_].filter(k => !was.has(k)).length, left = [...was].filter(k => !now_.has(k)).length;
+  // joined/left count the day: a top-up adds to the day's numbers
+  s.gifted = { day: S.day, at: now, byField, top, joined: addOnly ? (s.gifted.joined || 0) + joined : joined, left: addOnly ? s.gifted.left || 0 : left, topUps: addOnly ? (s.gifted.topUps || 0) + 1 : 0 };
   giftedCache = { ref: null, map: new Map() };
   return s.gifted;
 }
@@ -908,7 +926,11 @@ function makePlan(S: State, key: string, night: boolean) {
 // busy(id): true while daily life is waiting on that citizen's own thought (one thing at a time per citizen)
 export async function schoolTick(ctx: Ctx, busy: (id: string) => boolean = () => false) {
   const { S } = ctx; const s = SC(S); DAY_MS = ctx.cfg?.dayMs || DAY_MS; const now = Date.now();
-  if (s.gifted?.day !== S.day) selectGifted(S, now); // the talent programme, chosen again once a republic day
+  // the talent programme: chosen again once a republic day, and topped up during the day (add only) when a field
+  // that has lessons has no gifted student yet; at most once per SCHOOL_GIFTED_RESELECT_HOURS (real time), so the
+  // pass over 10,000 citizens never runs every tick
+  if (s.gifted?.day !== S.day) selectGifted(S, now);
+  else if (now - (s.gifted.at || 0) >= GIFTED_RESELECT_MS && giftedGap(S)) selectGifted(S, now, { addOnly: true });
   // answers from the local brain (students), then the teachers who have replied
   for (const [qid, L] of [...pending]) {
     const a = citizen(ctx, L.agent);

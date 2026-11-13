@@ -453,6 +453,41 @@ for (const phase of ['night', 'day']) {
   school._resetSchool(); _resetNow();
 }
 
+// ---- the talent programme starts the same day (owner, 14 Nov): a day that began with no field lessons is topped up
+{
+  school._resetSchool();
+  const mkR = i => ({ id: `r${i}`, name: `R ${i}`, city: 'neura', status: 'free', wallet: 300, traits, bio: 'Statistician in Neura City.', diary: [], practice: {}, quals: {}, record: [], lessons: {}, joinedDay: 0, training: [] });
+  const folk = Array.from({ length: 60 }, (_, i) => mkR(i));
+  const R = { day: 7, foundedAt: Date.now() - 6.4 * 86400000, policy: { wage: 100, taxRate: 0.1, ubi: 20 }, cities: { neura: { health: 70, budget: 0 } }, treasury: 0, citizens: folk, seats: {}, elections: { list: [] }, applications: {}, police: { incidents: [] }, academy: { rooms: [] }, feed: {} };
+  const rctx = { ...ctx, S: R, agent: id => R.citizens.find(x => x.id === id) };
+  await school.schoolTick(rctx); // the daily selection at the start of the day: nobody has had a field lesson
+  const at0 = R.school.gifted.at;
+  check('a day that starts with no field lessons has no gifted students', R.school.gifted.day === 7 && !Object.keys(R.school.gifted.byField).length);
+  // during the day the citizens have their field lessons
+  const t = Date.now();
+  for (const [i, a] of folk.entries()) { school.profile(a); a.school.fields.math = { s: round2(0.3 + i * 0.01), first: 0.3, n: 12, r: 6 + Math.floor(i / 10), hi: Math.floor(i / 12), last: t }; }
+  R.school.byField = { math: 720 };
+  await school.schoolTick(rctx);
+  check('the top-up waits for its interval (not every tick)', R.school.gifted.at === at0 && !Object.keys(R.school.gifted.byField).length);
+  skew += 3 * 3600000 + 1000; // three real hours later, the same republic day
+  for (const a of folk) a.school.fields.math.last = Date.now();
+  await school.schoolTick(rctx);
+  const firstIds = (R.school.gifted.byField.math || []).map(x => x.id);
+  check('after the interval the programme fills up the same day, without waiting for the next', R.school.gifted.day === 7 && firstIds.length === 5 && R.school.gifted.topUps === 1 && R.school.gifted.joined === 5 && school.giftedFields(R, firstIds[0]).includes('math'), JSON.stringify(R.school.gifted).slice(0, 300));
+  // a top-up only adds: today's members stay even if they fall back, newcomers fill free places up to the cap
+  const fallen = folk.find(a => a.id === firstIds[0]); fallen.school.fields.math = { ...fallen.school.fields.math, s: 0.3, r: 1, hi: 0 };
+  R.school.byField.biology = 50; // a field with lessons and nobody gifted: a gap, so a top-up is due
+  skew += 3 * 3600000 + 1000; for (const a of folk) a.school.fields.math.last = Date.now();
+  await school.schoolTick(rctx);
+  const ids2 = (R.school.gifted.byField.math || []).map(x => x.id);
+  check('a top-up never drops anyone during the day (no flickering badge)', firstIds.every(id => ids2.includes(id)) && R.school.gifted.left === 0 && R.school.gifted.topUps === 2 && school.schoolView(fallen).gifted.length === 1, `${firstIds} -> ${ids2}`);
+  check('a top-up never goes past the field\'s cap', ids2.length <= 5, String(ids2.length));
+  // the daily selection the next day is where those who fell back leave
+  R.day = 8; await school.schoolTick(rctx);
+  check('the next day\'s selection drops who fell back', !(R.school.gifted.byField.math || []).some(x => x.id === fallen.id) && school.schoolView(fallen).gifted.length === 0 && R.school.gifted.topUps === 0);
+  school._resetSchool();
+}
+
 // ---- which night it is
 {
   at(22); const evening = school.nightOf(S); at(26); const pastMidnight = school.nightOf(S); at(12); const noon = school.nightOf(S);
