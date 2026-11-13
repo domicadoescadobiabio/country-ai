@@ -12,9 +12,9 @@
 //                     short server-written lesson go into that official's next prompts
 //   work plans        leaders write a short plan every 3 days, shown in their prompts and in #palace
 // Laws run by themselves: the basic income set by law is paid every day from the treasury (Art. 4), not by order.
-import { ROLES, loadExpertise } from './roles.mjs';
+import { ROLES, loadExpertise, topFieldsText, giftedText } from './roles.mjs';
 import { constitutionText } from './constitution.mjs';
-import { pick, chance, cai, round, cleanText, clamp, shuffle } from './util.ts';
+import { pick, chance, cai, round, cleanText, clamp, shuffle, citizenById } from './util.ts';
 import { think } from './brains.ts';
 import type { Ctx, State, Citizen } from './types.ts';
 import { headOfState } from './cabinet.ts';
@@ -372,6 +372,122 @@ export async function presidentDay(ctx: Ctx) {
     outcome: r.text,
   });
   if (r.spend > 0) queueReview(ctx, pres, 'president', `order ${v.act.id}${v.p.city ? ` in ${cityName(v.p.city)}` : ''}`, v.p.city || null, r.spend);
+}
+
+// ---------------------------------------------------------------- inside the buildings (shared contract, 14 Nov)
+// GET /api/place/<type>?city=<id> (server.mjs) asks placeView() for the government's buildings. Who is there and
+// what they are doing NOW, from the real state. Public data only: names, offices, server-written text (orders,
+// outcomes, bill titles) and text that already passed the border rules (work plans, a sponsor's reason), each cut
+// short. Never a ballot, a hidden crime, an open case's suspect, a model's raw reason or a visitor's words.
+// Returns null for a type that is not a government building (other boxes answer those).
+export const PLACE_TYPES = ['parliament', 'palace', 'vp_office', 'ministry', 'const_court', 'court', 'prison', 'jail', 'police_hq', 'police_station', 'academy', 'police_academy', 'military_academy', 'military_hq', 'army_base', 'border_post', 'election_comm', 'central_bank', 'city_hall'];
+const MAX_OCC = 60;
+const short = (t: any, n = 120) => cleanText(String(t ?? ''), n);
+const who = (S: State, id: string) => (id ? citizenById(S, id) || null : null); // indexed: 10,000 citizens
+function occ(S: State, a: Citizen, role: string, activity: string, detail = '', since: number | null = null) {
+  const g = giftedText(S, a);
+  return { id: a.id, name: short(a.name, 40), role, activity: short(activity, 60), detail: short(detail, 140), since, field: topFieldsText(a, 1) || null, gifted: g || null, mood: a.mood?.label || null };
+}
+const seated = (S: State, office: string) => (S.seats?.[office] || []).map(id => who(S, id)).filter(Boolean);
+const lastOffence = (a: Citizen) => { const r = [...(a.record || [])].reverse().find(x => /convicted of/.test(x) && !/PARDONED/.test(x)); const m = r && r.match(/convicted of (\w+) \(case #(\d+)/); return m ? { offence: m[1], case: Number(m[2]) } : null; };
+const inCity = (city: string | null) => (a: Citizen) => !city || a.city === city;
+const lastDecision = (S: State, pred: (d: any) => boolean) => [...(S.decisions || [])].reverse().find(pred) || null;
+
+export function placeView(S: State, type: string, city: string | null = null, q: any = {}) {
+  if (!PLACE_TYPES.includes(type)) return null;
+  const c = city && S.cities && Object.hasOwn(S.cities, city) ? city : null;
+  let occupants = [], board: any = {}, title = '';
+  const day = S.day;
+  if (type === 'parliament') {
+    title = 'The Council';
+    const bill = (S.bills || []).find(b => ['debate', 'vote', 'president', 'override'].includes(b.stage)) || null;
+    const speaker = S.cabinet?.speaker;
+    const next = bill?.stage === 'debate' ? (S.seats.council || []).find(id => !bill.spoke.includes(id) && who(S, id)?.status === 'free') : null;
+    const lastSpoke = bill?.spoke?.at(-1);
+    occupants = seated(S, 'council').map(a => {
+      const v = bill && a.id in (bill.votes || {}) ? (bill.votes[a.id] ? 'voted yes' : 'voted no') : null;
+      const activity = a.status !== 'free' ? a.status : a.id === next ? 'about to speak' : a.id === lastSpoke ? 'just spoke' : v || (bill ? 'listening' : 'in session');
+      return occ(S, a, a.id === speaker ? 'Speaker of the Council' : 'Councillor', activity, bill ? `bill #${bill.id}` : '', a.sworn?.day ?? null);
+    });
+    const yes = bill ? Object.values(bill.votes || {}).filter(Boolean).length : 0, voted = bill ? Object.keys(bill.votes || {}).length : 0;
+    board = { bill: bill && { id: bill.id, title: short(bill.title, 140), stage: bill.stage, sponsor: who(S, bill.by)?.name || null, sponsorSays: bill.reason ? short(bill.reason, 160) : null, yes, no: voted - yes, spoke: bill.spoke.length }, waiting: (S.bills || []).filter(b => ['timelock', 'referendum'].includes(b.stage)).slice(-10).map(b => ({ id: b.id, title: short(b.title, 100), stage: b.stage })), laws: (S.laws || []).slice(-3).map(l => ({ day: l.day, text: short(l.text, 100) })), seats: (S.seats.council || []).length };
+  } else if (type === 'palace' || type === 'vp_office') {
+    title = type === 'palace' ? 'The Palace' : 'Office of the Vice President';
+    const offices = type === 'palace' ? ['president', 'vice_president'] : ['vice_president'];
+    for (const o of offices) for (const a of seated(S, o)) occupants.push(occ(S, a, ROLES[o].title, S.orderedDay === day && o === 'president' ? 'order issued today' : 'at the desk', a.workPlan ? `plan: ${a.workPlan.text}` : '', a.sworn?.day ?? null));
+    board = { lastOrders: (S.orders || []).slice(-3).map(o => ({ day: o.day, text: short(o.text, 140) })), orderToday: S.orderedDay === day, plans: occupants.length ? seated(S, 'president').concat(seated(S, 'vice_president')).filter(a => a.workPlan).map(a => ({ by: a.name, day: a.workPlan.day, text: short(a.workPlan.text, 200) })) : [] };
+  } else if (type === 'ministry') {
+    const port = q?.portfolio && S.cabinet?.portfolios && Object.hasOwn(S.cabinet.portfolios, q.portfolio) ? q.portfolio : null;
+    title = port ? `Ministry: ${port}` : 'The Ministries';
+    const ports = port ? [port] : Object.keys(S.cabinet?.portfolios || {});
+    for (const p of ports) {
+      const m = who(S, S.cabinet.portfolios[p]); if (!m) continue;
+      const d = lastDecision(S, x => x.agentId === m.id && x.role === 'minister' && x.type === 'order');
+      occupants.push(occ(S, m, `Minister (${p})`, d ? (d.day === day ? `acted today: ${d.chosen}` : `last act day ${d.day}: ${d.chosen}`) : 'no act yet', d ? d.outcome : '', m.sworn?.day ?? null));
+    }
+    board = { portfolio: port, acts: occupants.map(o => ({ minister: o.name, act: o.activity, outcome: o.detail })) };
+  } else if (type === 'const_court' || type === 'court') {
+    title = type === 'const_court' ? 'The Constitutional Court' : 'Court';
+    const k = S.court || { slots: [], cases: [] };
+    const open = (k.cases || []).filter(x => x.status === 'open' && (type === 'const_court' || x.kind === 'criminal'));
+    for (const s of k.slots || []) { const j = who(S, s.agent); if (!j) continue; const hearing = open.find(x => (x.bench || []).includes(j.id) && !(j.id in (x.votes || {}))); occupants.push(occ(S, j, `Judge (${s.by})`, hearing ? `hearing case #${hearing.id}` : 'in chambers', hearing ? short(hearing.claim, 120) : '', j.sworn?.day ?? null)); }
+    // defendants charged in open criminal cases (charged suspects are public; a case's claim is server text)
+    for (const x of open.filter(x => x.kind === 'criminal')) for (const id of x.ref?.agents || []) { const a = who(S, id); if (a && inCity(c)(a) && occupants.length < MAX_OCC + 20) occupants.push(occ(S, a, 'Defendant', `on trial, case #${x.id}`, short(x.claim, 120), x.openedDay ?? null)); }
+    const last = [...(k.cases || [])].reverse().find(x => x.status === 'decided' && (type === 'const_court' || x.kind === 'criminal'));
+    board = { open: open.slice(-20).map(x => ({ id: x.id, kind: x.kind, claim: short(x.claim, 120), votes: Object.keys(x.votes || {}).length, bench: (x.bench || []).length || null, deadline: x.deadline })), lastRuling: last && { id: last.id, kind: last.kind, ruling: last.ruling, day: last.decidedDay ?? null } };
+  } else if (type === 'prison' || type === 'jail') {
+    title = type === 'prison' ? 'Prison' : 'Jail (awaiting trial)';
+    const status = type === 'prison' ? 'jailed' : 'detained';
+    const held = S.citizens.filter(a => a.status === status && inCity(c)(a));
+    occupants = held.map(a => {
+      const o = lastOffence(a);
+      return type === 'prison'
+        ? occ(S, a, 'Prisoner', `${Math.max(0, (a.jailUntil || day) - day)} day(s) left`, o ? `convicted of ${o.offence}, case #${o.case}` : '', a.detainedDay ?? null)
+        : occ(S, a, 'Detainee', 'awaiting trial', `detained day ${a.detainedDay ?? '-'}`, a.detainedDay ?? null);
+    });
+    board = { held: held.length, maxJailDays: 3, maxDetentionDays: 3 };
+  } else if (type === 'police_hq' || type === 'police_station') {
+    title = type === 'police_hq' ? 'Police Headquarters' : 'Police Station';
+    const force = [...seated(S, 'police_chief'), ...seated(S, 'police')].filter(type === 'police_station' ? inCity(c) : () => true);
+    occupants = force.map(a => occ(S, a, a.office === 'police_chief' ? 'Chief of Police' : `Officer (${a.rank || 'officer'})`, a.status === 'free' ? 'on duty' : a.status, '', a.sworn?.day ?? null));
+    for (const a of S.citizens.filter(x => x.status === 'detained' && inCity(c)(x))) occupants.push(occ(S, a, 'Arrested', 'held for trial', `detained day ${a.detainedDay ?? '-'}`, a.detainedDay ?? null));
+    const inc = (S.police?.incidents || []).filter(i => i.status !== 'hidden');
+    board = { openCases: inc.filter(i => i.status === 'open').map(i => ({ id: i.id, type: i.type, day: i.day })).slice(-20), onTrial: inc.filter(i => i.status === 'trial').length, arrests: S.police?.arrests || 0, budget: Math.round(S.police?.budget || 0) };
+  } else if (type === 'academy' || type === 'police_academy' || type === 'military_academy') {
+    title = { academy: 'The Academy', police_academy: 'Police Academy', military_academy: 'Military Academy' }[type];
+    const want = type === 'police_academy' ? ['police', 'police_chief'] : type === 'military_academy' ? ['military', 'military_chief'] : null;
+    const rooms = (S.academy?.rooms || []).filter(r => !want || want.includes(r.roleId));
+    for (const r of rooms) { const a = who(S, r.agentId); if (a) occupants.push(occ(S, a, 'Candidate', `exam for ${ROLES[r.roleId]?.title || r.roleId}`, `question ${Math.min((r.step || 0) + 1, r.exam?.length || 5)} of ${r.exam?.length || 5}, ${r.answers?.filter(x => x.ok).length || 0} right so far`, r.startedAt ?? null)); }
+    const d = S.training?.current;
+    if (d && (!want || want.includes(d.roleId))) { const a = who(S, d.agentId); if (a) occupants.push(occ(S, a, 'Official in drill', `drill for ${ROLES[d.roleId]?.title || d.roleId}`, `question ${Math.min((d.step || 0) + 1, d.items?.length || 3)} of ${d.items?.length || 3}`, null)); }
+    board = { rooms: rooms.length, graduates: S.academy?.graduates || 0, failures: S.academy?.failures || 0, ruleQuestions: S.academy?.rules || { asked: 0, right: 0 }, drills: S.training?.drills || 0 };
+  } else if (type === 'military_hq' || type === 'army_base' || type === 'border_post') {
+    title = { military_hq: 'Military Headquarters', army_base: 'Army Base', border_post: 'Border Post' }[type];
+    const force = [...seated(S, 'military_chief'), ...seated(S, 'military')].filter(type === 'military_hq' ? () => true : inCity(c));
+    occupants = force.map(a => occ(S, a, a.office === 'military_chief' ? 'Commander of the Military' : `Soldier (${a.rank || 'officer'})`, a.status === 'free' ? (type === 'border_post' ? 'guarding the gate' : 'on duty') : a.status, '', a.sworn?.day ?? null));
+    // the gate's log without the visitors' words: what kind, what was decided, under which rule, by whom
+    board = { level: S.policy?.borderLevel ?? 2, alert: (S.military?.alertUntil ?? -1) >= day, blocked: S.military?.blocked || 0, admitted: S.military?.admitted || 0, raids: S.military?.raids || 0, recent: (S.military?.log || []).slice(-8).map(l => ({ kind: l.kind, verdict: l.verdict, rule: l.rule || null, by: who(S, l.by)?.name || null, day: l.day })) };
+  } else if (type === 'election_comm') {
+    title = 'Election Commission';
+    occupants = seated(S, 'commissioner').map(a => occ(S, a, 'Commissioner', 'overseeing the count', '', a.sworn?.day ?? null));
+    const running = (S.elections?.list || []).filter(e => !['done', 'failed'].includes(e.stage));
+    board = { running: running.slice(-20).map(e => ({ id: e.id, office: e.office, city: e.city || null, kind: e.kind, stage: e.stage, candidates: (e.candidates || []).length, turnout: e.stage === 'voting' && e.electorate?.length ? round(Object.keys(e.ballots || {}).length / e.electorate.length, 3) : null })), last: [...(S.elections?.list || [])].reverse().filter(e => e.result).slice(0, 3).map(e => ({ id: e.id, office: e.office, city: e.city || null, outcome: short(e.result.outcome, 120), turnout: e.result.metrics?.turnout ?? null })) };
+  } else if (type === 'central_bank') {
+    title = 'Central Bank';
+    const fin = who(S, S.cabinet?.portfolios?.finance);
+    if (fin) occupants.push(occ(S, fin, 'Minister of Finance', 'watching the treasury', '', fin.sworn?.day ?? null));
+    const b = dailyBudget(S);
+    board = { treasury: Math.round(S.treasury), taxRate: S.policy.taxRate, ubi: S.policy.ubi, taxPerDay: b.tax, ubiPerDay: b.ubi, netPerDay: b.net, runwayDays: runwayDays(S), ubiPaid: Math.round(S.econ?.ubiPaid || 0), taxCollected: Math.round(S.econ?.taxCollected || 0) };
+  } else if (type === 'city_hall') {
+    const k = c ? S.cities[c] : null;
+    title = c ? `City Hall (${c})` : 'City Hall';
+    const mayor = k ? who(S, k.mayor) : null;
+    const d = mayor ? lastDecision(S, x => x.agentId === mayor.id && x.role === 'mayor') : null;
+    if (mayor) occupants.push(occ(S, mayor, 'Mayor', k.lastDecisionDay === day ? 'decided the budget today' : 'at the desk', d ? d.outcome : '', mayor.sworn?.day ?? null));
+    board = k ? { city: c, budget: Math.round(k.budget || 0), health: k.health ?? null, spent: Math.round(k.spent || 0), lastDecisionDay: k.lastDecisionDay ?? null, lastOutcome: d ? short(d.outcome, 140) : null } : { cities: Object.keys(S.cities || {}) };
+  }
+  const more = Math.max(0, occupants.length - MAX_OCC);
+  return { type, city: c, title, updatedAt: Date.now(), occupants: occupants.slice(0, MAX_OCC), board, more };
 }
 
 export const institution = {
