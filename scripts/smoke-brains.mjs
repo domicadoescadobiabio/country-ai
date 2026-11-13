@@ -57,9 +57,11 @@ try {
   check('leadership thinks with Claude Opus directly', (seen.claude['claude-opus-5-5'] || 0) > 0, JSON.stringify(seen.claude));
   check('citizens with anthropic/ models think through OpenRouter, not Claude', Object.keys(seen.openrouter).some(m => m.startsWith('anthropic/')), JSON.stringify(Object.keys(seen.openrouter)));
   check('Opus requests opt into the server-side fallback', seen.fallbacksParam === 'default');
-  check('a failing OpenRouter model costs no Claude call: that citizen thinks offline', (seen.openrouter[BROKEN] || 0) > 0 && (s.llmUsage?.fallbacks || 0) === 0, JSON.stringify({ broken: seen.openrouter[BROKEN] || 0, usage: s.llmUsage }));
-  const byModel = s.llmUsage?.errorsByModel || {}; const brokenErr = byModel[`openrouter:${BROKEN}`];
-  check('errors are counted per model with the kind of failure', brokenErr?.errors > 0 && brokenErr.lastKind === 'http' && brokenErr.lastStatus === 404 && typeof brokenErr.lastAt === 'string', JSON.stringify(byModel));
+  // whether the running republic happens to pick a citizen on the broken model before LLM_PER_MIN runs out is
+  // chance, so the broken model itself is tested directly below (teach section); here only what never varies
+  check('no OpenRouter call of the running republic ever fell back to Claude', (s.llmUsage?.fallbacks || 0) === 0, JSON.stringify({ usage: s.llmUsage }));
+  const byModel = s.llmUsage?.errorsByModel || {};
+  check('every per-model error entry names its kind and time', Object.values(byModel).every(e => e.errors > 0 && ['http', 'timeout', 'bad-json', 'network', 'auth', 'rate-limit'].includes(e.lastKind) && typeof e.lastAt === 'string'), JSON.stringify(byModel));
   check('per-model error counts add up to the total', Object.values(byModel).reduce((t, e) => t + e.errors, 0) === s.llmUsage?.errors, JSON.stringify({ total: s.llmUsage?.errors, byModel }));
   check('every call is costed and the budget is published', (s.llmUsage?.costUsd || 0) > 0 && s.budget && typeof s.budget.spent === 'number', JSON.stringify(s.budget));
 
@@ -87,6 +89,18 @@ try {
   const { makeLLM } = await import('../src/llm.ts');
   const llmT = makeLLM({ anthropicKey: 'test-claude', orKey: 'test-or', orBase: MOCK, llmPerMin: 5000, claudeModel: 'claude-opus-5-5' }, () => {});
   const OR_T = 'deepseek/deepseek-v4-pro-0813', CL_T = 'claude-sonnet-5-5';
+  // a model that does not exist at OpenRouter, asked for directly (no dependence on which citizen the republic picks):
+  // the official thinks offline, Claude is never called in its place, and the failure is counted under that model
+  {
+    const { think: thinkB } = await import('../src/brains.ts');
+    const bctx = { S: { day: 1, foundedAt: Date.now(), seats: {}, academy: { rooms: [] }, elections: { list: [] } }, cfg: { dailyBudgetUsd: 0, dayMs: 86400000 }, llm: llmT, agent: () => null };
+    const official = { id: 'brokenfan', name: 'Broken Fan', model: BROKEN, office: 'council', status: 'free' };
+    const orB = seen.openrouter[BROKEN] || 0, clB = Object.values(seen.claude).reduce((t, n) => t + n, 0);
+    const rb = await thinkB(bctx, official, 'q-broken-1', { system: 's', user: 'Vote yes or no.', kind: 'vote' });
+    const be = llmT.usage.errorsByModel[`openrouter:${BROKEN}`];
+    check('a failing OpenRouter model costs no Claude call: that official thinks offline', rb.text == null && (seen.openrouter[BROKEN] || 0) === orB + 1 && Object.values(seen.claude).reduce((t, n) => t + n, 0) === clB && llmT.usage.fallbacks === 0, JSON.stringify({ rb, or: (seen.openrouter[BROKEN] || 0) - orB }));
+    check('errors are counted per model with the kind of failure', be?.errors === 1 && be.lastKind === 'http' && be.lastStatus === 404 && typeof be.lastAt === 'string', JSON.stringify(llmT.usage.errorsByModel));
+  }
   const tctx = (cfg = {}, S = {}) => ({ S: { day: 1, foundedAt: Date.now() - 3600000, ...S }, cfg: { dayMs: 86400000, dailyBudgetUsd: 25, trainBudgetUsd: 3, trainOrModel: OR_T, trainClaudeModel: CL_T, ...cfg }, llm: llmT });
   const lesson = { system: 'You are a teacher.', user: 'Explain quorum in one line.' };
   const orBefore = seen.openrouter[OR_T] || 0, opusBefore = seen.claude['claude-opus-5-5'] || 0;

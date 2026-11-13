@@ -178,8 +178,16 @@ try {
   check('poke: only application/json (a plain form post is 415)', plain.status === 415, String(plain.status));
   const burstP = []; for (let i = 3; i < 14; i++) burstP.push((await pokeAs(pool[i], '198.51.100.6')).status);
   check('poke: an IP gets 10 pokes a minute, the 11th is 429', burstP.slice(0, 10).every(s => s === 200) && burstP[10] === 429, JSON.stringify(burstP));
-  const det = (await get(`/api/citizens/${pool[0]}`)).citizen;
-  check('/api/citizens/:id carries mood, bonds and today\'s pokes', det.mood && det.mood.label && det.mood.emoji && typeof det.mood.why === 'string' && Array.isArray(det.bonds) && det.pokes >= 1, JSON.stringify({ mood: det.mood, bonds: det.bonds?.length, pokes: det.pokes }));
+  // `pokes` counts today's pokes only, and a smoke day lasts 0.5 s: poke and read again (another citizen each try,
+  // so the 3 s per-citizen limit never applies) until one pair lands inside the same republic day
+  let det = null, tries = 0;
+  for (const id of pool.slice(20, 25)) {
+    tries++;
+    const pr = await pokeAs(id, '198.51.100.7'); if (pr.status !== 200) continue;
+    det = (await get(`/api/citizens/${id}`)).citizen;
+    if (det.pokes >= 1) break;
+  }
+  check('/api/citizens/:id carries mood, bonds and today\'s pokes', det && det.mood && det.mood.label && det.mood.emoji && typeof det.mood.why === 'string' && Array.isArray(det.bonds) && det.pokes >= 1, JSON.stringify({ tries, mood: det?.mood, bonds: det?.bonds?.length, pokes: det?.pokes }));
   // goal, reputation, temptations resisted; the private side (mischief, lessons, skipped votes) never shows
   const detS = await get('/api/citizens?size=200');
   const pubOk = detS.citizens.every(a => 'goal' in a && typeof a.reputation === 'number' && typeof a.resisted === 'number' && typeof a.goalsDone === 'number' && !('mischief' in a) && !('lifeLessons' in a) && !('skipVoteDay' in a));
