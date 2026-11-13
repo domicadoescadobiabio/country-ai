@@ -251,7 +251,7 @@ export function validateOrder(S: State, acts: any[], j: any) {
   if (amount > cap) return { ok: false, why: `${cai(amount)} is over the 5% limit of ${cai(cap)}`, rule: 'one order spends at most 5% of the treasury (Art. 3)' };
   if (act.id === 'works') {
     const sector = String(j.sector || '').toLowerCase();
-    if (!PROJECTS[sector]) return { ok: false, why: `"${cleanText(String(j.sector ?? ''), 30)}" is not a sector`, rule: `sectors are ${Object.keys(PROJECTS).join(', ')}` };
+    if (!Object.hasOwn(PROJECTS, sector)) return { ok: false, why: `"${cleanText(String(j.sector ?? ''), 30)}" is not a sector`, rule: `sectors are ${Object.keys(PROJECTS).join(', ')}` };
     return { ok: true, act, p: { sector, city, amount } };
   }
   if (act.id === 'city_grant' || act.id === 'emergency') {
@@ -374,6 +374,10 @@ export const institution = {
   stats: S => ({ orders: S.orders.length }),
   publicState: S => {
     const g = G(S);
-    return { orders: S.orders.slice(-40), gov: { autonomy: g.autonomy, rejectedShare: (g.autonomy.own + g.autonomy.rejected) ? round(g.autonomy.rejected / (g.autonomy.own + g.autonomy.rejected), 3) : 0, ownShare: (g.autonomy.own + g.autonomy.offline + g.autonomy.rejected) ? round(g.autonomy.own / (g.autonomy.own + g.autonomy.offline + g.autonomy.rejected), 3) : 0, avgGrade: g.gradeN ? round(g.gradeSum / g.gradeN, 2) : null, graded: g.gradeN, pendingReviews: g.reviews.length, cards: g.cards.slice(-15), ubiPaid: S.econ?.ubiPaid || 0, ubiDay: S.econ?.ubiDay ?? null } };
+    // the same daily figures every official reads in their facts: tax in, basic income out, and how many days the
+    // treasury lasts at that pace (null while the budget is balanced or in surplus)
+    const b = dailyBudget(S);
+    const runway = b.net < 0 ? round(Math.max(0, S.treasury) / -b.net, 1) : null;
+    return { orders: S.orders.slice(-40), gov: { taxPerDay: b.tax, ubiPerDay: b.ubi, netPerDay: b.net, runwayDays: runway, autonomy: g.autonomy, rejectedShare: (g.autonomy.own + g.autonomy.rejected) ? round(g.autonomy.rejected / (g.autonomy.own + g.autonomy.rejected), 3) : 0, ownShare: (g.autonomy.own + g.autonomy.offline + g.autonomy.rejected) ? round(g.autonomy.own / (g.autonomy.own + g.autonomy.offline + g.autonomy.rejected), 3) : 0, avgGrade: g.gradeN ? round(g.gradeSum / g.gradeN, 2) : null, graded: g.gradeN, pendingReviews: g.reviews.length, cards: g.cards.slice(-15), ubiPaid: S.econ?.ubiPaid || 0, ubiDay: S.econ?.ubiDay ?? null } };
   },
 };

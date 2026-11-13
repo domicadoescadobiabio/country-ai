@@ -82,17 +82,31 @@ async function judgeVote(ctx: Ctx, j: Citizen, cs: CourtCase) {
   const jj = ctx.llm.json(res.text);
   if (jj && opts.includes(String(jj.ruling))) return { ruling: String(jj.ruling), reason: cleanText(jj.reason, 300), engine: res.engine };
   if (bought && chance(1 - j.traits.integrity * 0.5)) return { ruling: 'not_guilty', reason: 'The evidence is not conclusive.', engine: 'offline' };
-  // offline judge: reads the objective finding, errs rarely (less with more wisdom)
-  const right = chance(0.86 + j.traits.wisdom * 0.12);
+  // offline judge: reads the objective finding, errs rarely (less with more wisdom). A disqualification request
+  // rests on a rule the code itself matched (the Election Supervisor's borderCheck finding), so an offline judge
+  // reads it as written: no dice on a mechanical finding
+  const right = cs.kind === 'disqualify' || chance(0.86 + j.traits.wisdom * 0.12);
   const ruling = right ? cs.objective : opts.find(o => o !== cs.objective);
   return { ruling, reason: `${j.brain ? '(own model gave no valid answer) ' : ''}On the record: ${cs.evidence[0] || 'no evidence'}.`, engine: 'offline' };
 }
 
-async function decideCases(ctx: Ctx) {
+export async function decideCases(ctx: Ctx) {
   const { S } = ctx; const all = judges(ctx);
   const open = K(S).cases.filter(x => x.status === 'open');
-  // criminal trials sit as a panel of three judges, rotating by case number; the other cases use the full bench
-  const benchOf = cs => (cs.kind === 'criminal' && all.length > 3 ? [0, 1, 2].map(k => all[(cs.id + k) % all.length]) : all);
+  // The bench of a case is fixed when it is first heard, and always odd so a two-way ruling cannot tie: judges who
+  // are a party to the case stand aside first; criminal trials sit as a panel of three, rotating by case number;
+  // other cases use every remaining judge, less the most junior one when that number is even. Judges who leave
+  // the court (or are not free) during the case drop out of it.
+  const benchOf = cs => {
+    if (!cs.bench) {
+      const eligible = all.filter(j => cs.ref.agent !== j.id && !cs.ref.agents?.includes(j.id));
+      if (eligible.length < 3) return eligible; // the court is still being filled: fix the bench once it can be odd
+      const panel = cs.kind === 'criminal' && eligible.length > 3 ? [0, 1, 2].map(k => eligible[(cs.id + k) % eligible.length])
+        : eligible.length % 2 === 0 && eligible.length > 1 ? eligible.slice(0, -1) : eligible;
+      if (panel.length) cs.bench = panel.map(j => j.id);
+    }
+    return (cs.bench || []).map(id => all.find(j => j.id === id)).filter(Boolean);
+  };
   // every open case advances by one judge's vote per tick; the cases are heard in parallel
   const hearings = [];
   for (const cs of open) {

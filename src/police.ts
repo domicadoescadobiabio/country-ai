@@ -83,7 +83,8 @@ function crime(ctx: Ctx) {
 
 // ---------------------------------------------------------------- justice
 function sentenceDays(inc: Incident) {
-  const d = { theft: inc.amount > 200 ? 2 : 1, fraud: 2, bribe: 2, smuggling: 2, sabotage: 3, embezzlement: 3 }[inc.type] || 1;
+  // small wrongs chosen in daily life (src/underworld.ts, mischief): vandalism and a street riot are one day
+  const d = { theft: inc.amount > 200 ? 2 : 1, fraud: 2, bribe: 2, smuggling: 2, sabotage: 3, embezzlement: 3, vandalism: 1, disturbance: 1 }[inc.type] || 1;
   return Math.min(MAX_JAIL_DAYS, d);
 }
 
@@ -115,12 +116,18 @@ export function convict(ctx: Ctx, incId: number, courtCase: number) {
   const days = sentenceDays(inc); const finePct = S.policy.finePct ?? 0.5; const parts = [];
   for (const id of inc.perps) {
     const a = ctx.agent(id); if (!a) continue;
-    const back = gainedFrom(inc, id) ? Math.min(a.wallet, inc.amount) : 0;
-    if (back > 0 && inc.victim !== 'state') {
+    // restitution: vandalism pays for the damage into the budget of the damaged city (the incident's city, or
+    // else where the vandal lives); every other crime returns what the offender received (gainedFrom)
+    const city = inc.type === 'vandalism' ? [inc.city, a.city].find(c => typeof c === 'string' && S.cities && Object.hasOwn(S.cities, c)) : null;
+    const owes = city ? inc.amount > 0 : gainedFrom(inc, id);
+    const back = owes ? Math.min(a.wallet, inc.amount) : 0;
+    if (back > 0) {
       a.wallet = round(a.wallet - back, 2);
-      const v = ctx.agent(inc.victim);
-      if (v) v.wallet = round(v.wallet + back, 2); else S.treasury = round(S.treasury + back, 2);
-    } else if (back > 0) { a.wallet = round(a.wallet - back, 2); S.treasury = round(S.treasury + back, 2); }
+      const v = inc.victim !== 'state' ? ctx.agent(inc.victim) : null;
+      if (city) S.cities[city].budget = round((S.cities[city].budget || 0) + back, 2);
+      else if (v) v.wallet = round(v.wallet + back, 2);
+      else S.treasury = round(S.treasury + back, 2);
+    }
     const fine = Math.max(50, round(inc.amount * finePct));
     const paid = Math.min(a.wallet, fine); // what cannot be paid now becomes a debt, taken from future wages
     a.wallet = round(a.wallet - paid, 2); S.treasury = round(S.treasury + paid, 2);

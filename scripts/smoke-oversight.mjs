@@ -113,6 +113,53 @@ async function pardonChecks(check) {
   convict(ctx, 200, 60); convict(ctx, 201, 61);
   check('convict: a reported bribe offer costs the fine only (no restitution)', byId.offerer.wallet === 800, String(byId.offerer.wallet));
   check('convict: the official who took a bribe returns it, the briber pays only the fine', byId.taker.wallet === 50 && byId.briber2.wallet === 350, `${byId.taker.wallet} ${byId.briber2.wallet}`);
+
+  // small wrongs from daily life (ticket #284): vandalism pays the damaged city, a riot is one day
+  S.cities = { neura: { budget: 0 }, portoken: { budget: 0 } };
+  citizens.push(mk('vandal', 'native', 'civilian', { wallet: 200, city: 'neura' }), mk('rioter', 'native', 'civilian', { wallet: 200, city: 'portoken' }));
+  for (const c of citizens.slice(-2)) byId[c.id] = c;
+  const t3 = S.treasury;
+  S.police.incidents.push(inc(210, 'vandalism', ['vandal'], { amount: 120, victim: 'state', status: 'trial', strength: 0.8, mischief: true }),
+    inc(211, 'disturbance', ['rioter'], { amount: 0, victim: 'state', status: 'trial', strength: 0.9, mischief: true }));
+  convict(ctx, 210, 70); convict(ctx, 211, 71);
+  check('vandalism: the vandal pays the damage into the damaged city budget, then the fine; one day in jail', S.cities.neura.budget === 120 && byId.vandal.wallet === 20 && byId.vandal.jailUntil === S.day + 1 && S.treasury === t3 + 60 + 50, JSON.stringify({ city: S.cities.neura, wallet: byId.vandal.wallet, jail: byId.vandal.jailUntil }));
+  check('disturbance: no restitution, the minimum fine of 50, one day in jail', byId.rioter.wallet === 150 && byId.rioter.jailUntil === S.day + 1 && S.cities.portoken.budget === 0);
+
+  // elections (ticket #284): reputation is on the voter card; a citizen skipping the vote today does not vote today
+  const el = await import('../src/elections.ts');
+  check('voter card shows the candidate reputation (0-100)', el.card({ day: 5, decisions: [] }, { id: 'x', name: 'X', reputation: 0.42 }, 'mayor').reputation === 42 && el.card({ day: 5, decisions: [] }, { id: 'y', name: 'Y' }, 'mayor').reputation === 70);
+  const ev = { electorate: ['vandal', 'rioter', 'knox'], ballots: {}, noShow: [] };
+  byId.rioter.skipVoteDay = S.day;
+  const today = el.votersToday(ctx, ev);
+  check('a citizen who skips the vote today is left out of today\'s voters (and is fined if the polls close)', !today.includes('rioter') && today.includes('vandal') && today.includes('knox'));
+}
+
+// ---------------- the Court's bench is odd and a mechanical finding is read as written (ticket #320)
+// Four offline judges with no wisdom (the highest chance of a wrong vote) could split 2-2 on a disqualification.
+async function benchChecks(check) {
+  const { file, decideCases } = await import('../src/court.ts');
+  let wrong = 0, even = 0;
+  for (let t = 0; t < 200; t++) {
+    const judges = ['j1', 'j2', 'j3', 'j4'].map(id => ({ id, name: id, office: 'judge', status: 'free', traits: { wisdom: 0, integrity: 0.5, diligence: 0.5, restraint: 0.5 } }));
+    const tester = { id: 'tester', name: 'Tester', status: 'free', traits: {} };
+    const by = Object.fromEntries([...judges, tester].map(a => [a.id, a]));
+    const S = { day: 3, treasury: 1000, citizens: [...judges, tester], court: { slots: judges.map(j => ({ by: 'lot', agent: j.id })), cases: [], seq: 0 }, elections: { list: [{ id: 9, office: 'mayor', stage: 'campaign', candidates: [{ id: 'tester', deposit: 100 }] }] } };
+    const ctx = { S, cfg: {}, agent: id => by[id], say() {}, log() {}, record() {}, decide: d => d, llm: { enabled: false, json: () => null } };
+    const cs = file(ctx, { kind: 'disqualify', subject: `9:tester`, filedBy: 'supervisor', claim: 'rule matched', evidence: ['rule matched: prompt injection'], objective: 'grant', ref: { agent: 'tester', election: 9 } });
+    for (let i = 0; i < 8 && cs.status === 'open'; i++) await decideCases(ctx);
+    if (cs.ruling !== 'grant') wrong++;
+    if ((cs.bench || []).length % 2 === 0) even++;
+  }
+  check('Court: a disqualification on a rule the code matched is granted by offline judges every time (200 runs, 4 judges)', wrong === 0, `${wrong} not granted`);
+  check('Court: the bench of a case is always odd, so a two-way ruling cannot tie', even === 0, `${even} even benches`);
+  // a criminal panel stays three, and a judge who is a party stands aside before the bench is drawn
+  const judges = ['j1', 'j2', 'j3', 'j4', 'j5'].map(id => ({ id, name: id, office: 'judge', status: 'free', traits: { wisdom: 1, integrity: 1, diligence: 0.5, restraint: 0.5 } }));
+  const by = Object.fromEntries(judges.map(a => [a.id, a]));
+  const S = { day: 3, treasury: 0, citizens: judges, court: { slots: judges.map(j => ({ by: 'lot', agent: j.id })), cases: [], seq: 0 }, police: { incidents: [] } };
+  const ctx = { S, cfg: {}, agent: id => by[id], say() {}, log() {}, record() {}, decide: d => d, llm: { enabled: false, json: () => null } };
+  const cs = file(ctx, { kind: 'impeachment', subject: 'j2', claim: 'grounds', evidence: ['failed checks'], objective: 'reject', ref: { agent: 'j2' } });
+  await decideCases(ctx);
+  check('Court: a judge who is a party is left off the bench, and the bench stays odd', cs.bench && !cs.bench.includes('j2') && cs.bench.length === 3, JSON.stringify(cs.bench));
 }
 
 export async function run({ BASE, get, until, check, TOKEN }) {
@@ -144,6 +191,7 @@ export async function run({ BASE, get, until, check, TOKEN }) {
   check('recount matches the count when some ballots rank nobody', recount(se).ok, JSON.stringify(recount(se)));
 
   await pardonChecks(check);
+  await benchChecks(check);
 
   // ---------------- live republic
   const s = await until(x => x.config?.constitutionVersion >= 4 && x.court?.slots.every(sl => sl.agent) && x.audit?.recounts > 0 && x.court.cases.some(c => c.status === 'decided'), 180000);
