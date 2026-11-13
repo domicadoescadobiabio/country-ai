@@ -29,4 +29,6 @@ say "smoke: citizens' feelings and nudges (Node)"
 node scripts/smoke-feelings.mjs | tail -n 1
 say "smoke: the underworld and mischievous citizens (Node)"
 node scripts/smoke-underworld.mjs | tail -n 1
+say "smoke: the school (Node)"
+node scripts/smoke-school.mjs | tail -n 1
 ok "all checks passed"
