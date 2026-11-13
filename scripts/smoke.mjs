@@ -74,7 +74,29 @@ try {
     for (let i = 1; i <= 5; i++) st.trainAdd({ day: 1, purpose: 'train', question: `q${i}`, teacher: `t${i}`, explanation: 'e', student: 's', score: i / 5, teacherEngine: 'openrouter:x', studentEngine: 'local:y' }, 3);
     const tp = st.trainPage(0, 100);
     check('train_examples keeps the newest rows up to its cap, oldest first in the export', st.trainCount() === 3 && tp.map(r => r.question).join() === 'q3,q4,q5' && tp[2].score === 1 && tp[0].teacherEngine === 'openrouter:x', JSON.stringify(tp.map(r => [r.id, r.question])));
+    // fields of study and one example per question, on the real table
+    const ex = (q, domain, qhash) => ({ day: 2, purpose: 'school:' + domain, domain, question: q, teacher: 'A', explanation: '', student: 'B', score: 0.5, teacherEngine: 'claude:x', teacherKind: 'claude', studentEngine: 'local:y', verified: 'key', qhash });
+    const idM = st.trainAdd(ex('m1', 'math', 'h-m1'), 100), idDup = st.trainAdd(ex('m1 again', 'math', 'h-m1'), 100), idB = st.trainAdd(ex('b1', 'biology', 'h-b1'), 100);
+    const bd = st.trainByDomain(), onlyMath = st.trainPage(0, 100, 'math');
+    check('train_examples: a field per row, counts per field, export per field, and the same question hash is refused', idM > 0 && idDup === 0 && idB > 0 && bd.math === 1 && bd.biology === 1 && bd.general === 3
+      && onlyMath.length === 1 && onlyMath[0].domain === 'math' && onlyMath[0].teacherKind === 'claude' && onlyMath[0].verified === 'key', JSON.stringify({ idM, idDup, idB, bd, onlyMath: onlyMath.map(r => r.question) }));
     st.close(); try { fs.rmSync(LD, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch { /* windows handle */ }
+  }
+  // migration: a database made before fields of study opens with the new columns; old rows read as 'general'
+  {
+    const { DatabaseSync } = await import('node:sqlite');
+    const { openStore } = await import('../src/db.ts');
+    const OD = fs.mkdtempSync(path.join(os.tmpdir(), 'country-oldtrain-'));
+    const old = new DatabaseSync(path.join(OD, 'country.db'));
+    old.exec("CREATE TABLE train_examples (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, day INTEGER NOT NULL, purpose TEXT NOT NULL, question TEXT NOT NULL, teacher TEXT NOT NULL, explanation TEXT NOT NULL DEFAULT '', student TEXT NOT NULL DEFAULT '', score REAL, teacher_engine TEXT NOT NULL DEFAULT '', student_engine TEXT NOT NULL DEFAULT '')");
+    old.exec("INSERT INTO train_examples (ts, day, purpose, question, teacher) VALUES (1, 1, 'school:math', 'old question', 'old answer')");
+    old.close();
+    let mig = null, err = null;
+    try { mig = openStore(OD); } catch (e) { err = String(e.message); }
+    const rows = mig ? mig.trainPage(0, 10) : [];
+    const newId = mig ? mig.trainAdd({ day: 3, purpose: 'school:math', domain: 'math', question: 'new', teacher: 'A', explanation: '', student: '', score: 1, teacherEngine: 'openrouter:z', teacherKind: 'openrouter', studentEngine: '', verified: 'key', qhash: 'h-new' }, 100) : 0;
+    check('migration: an older train_examples gets domain, teacher_kind, verified and qhash without losing rows', !err && rows.length === 1 && rows[0].question === 'old question' && rows[0].domain === 'general' && newId > 0 && mig.trainByDomain().math === 1, JSON.stringify({ err, rows, newId }));
+    mig?.close(); try { fs.rmSync(OD, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch { /* windows handle */ }
   }
 
   for (let i = 0; i < 50; i++) { try { await get('/api/health'); break; } catch { await wait(100); } }
@@ -189,6 +211,9 @@ try {
     det = (await get(`/api/citizens/${id}`)).citizen;
     if (det.pokes >= 1) break;
   }
+  const sv = det?.school;
+  check('/api/citizens/:id carries the school view (interests, top fields, today, gifted badges, skills)', sv && Array.isArray(sv.interests) && Array.isArray(sv.top) && 'today' in sv && Array.isArray(sv.gifted)
+    && sv.gifted.every(g => g.id && g.name && typeof g.since === 'number') && typeof sv.skill === 'object' && typeof sv.lessons === 'number', JSON.stringify(sv));
   check('/api/citizens/:id carries mood, bonds and today\'s pokes', det && det.mood && det.mood.label && det.mood.emoji && typeof det.mood.why === 'string' && Array.isArray(det.bonds) && det.pokes >= 1, JSON.stringify({ tries, mood: det?.mood, bonds: det?.bonds?.length, pokes: det?.pokes }));
   // goal, reputation, temptations resisted; the private side (mischief, lessons, skipped votes) never shows
   const detS = await get('/api/citizens?size=200');
@@ -205,8 +230,13 @@ try {
   const exBody = await ex1.text();
   check('GET /api/admin/train/export needs the admin token and answers JSONL', ex0.status === 401 && ex1.status === 200 && /application\/x-ndjson/.test(ex1.headers.get('content-type') || '') && ex1.headers.get('x-train-total') !== null
     && exBody.split('\n').filter(Boolean).every(l => { try { const o = JSON.parse(l); return 'question' in o && 'teacher' in o; } catch { return false; } }), `${ex0.status} ${ex1.status} ${ex1.headers.get('content-type')}`);
+  const exD = await fetch(BASE + '/api/admin/train/export?domain=math', { headers: { 'x-admin-token': TOKEN } });
+  const exBad = await fetch(BASE + '/api/admin/train/export?domain=..%2Fetc', { headers: { 'x-admin-token': TOKEN } });
+  check('train export filters by field of study (?domain=math) and refuses a malformed one', exD.status === 200 && (await exD.text()).split('\n').filter(Boolean).every(l => JSON.parse(l).domain === 'math') && exBad.status === 400, `${exD.status} ${exBad.status}`);
   const stT = (await get('/api/state')).budget?.train;
-  check('/api/state budget.train shows the teachers\' budget, calls, denials and the examples kept', stT && typeof stT.daily === 'number' && typeof stT.examples === 'number' && stT.calls && 'claude' in stT.calls, JSON.stringify(stT));
+  check('/api/state budget.train shows the teachers\' budget, calls, denials, pacing, examples per field and the quality gate', stT && typeof stT.daily === 'number' && typeof stT.examples === 'number' && stT.calls && 'claude' in stT.calls
+    && typeof stT.allowedNow === 'number' && typeof stT.inFlight === 'number' && typeof stT.spentBy?.openrouter === 'number' && typeof stT.spentBy?.claude === 'number'
+    && typeof stT.orShortUsd === 'number' && typeof stT.orMinUsd === 'number' && typeof stT.claudeCapNow === 'number' && typeof stT.gifted?.calls === 'number' && 'yesterday' in stT && stT.byDomain && typeof stT.byDomain === 'object' && ['kept', 'unverified', 'wrong', 'duplicate'].every(k => typeof stT.dataset?.[k] === 'number'), JSON.stringify(stT));
   // archive reads are rate limited per IP (60/min by default); local callers without a proxy header are not counted
   const viaProxy = ip => fetch(BASE + '/api/ledger?limit=1', { headers: { 'x-forwarded-for': ip } });
   const burst = []; for (let i = 0; i < 61; i++) burst.push((await viaProxy('203.0.113.9')).status);

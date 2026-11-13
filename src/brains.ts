@@ -294,8 +294,15 @@ function recall(S, user, options) {
 export function trainBudgetState(ctx) {
   const { S } = ctx;
   const T = (S.trainBudget ||= {});
-  if (T.day !== S.day) Object.assign(T, { day: S.day, spent: 0, calls: { claude: 0, openrouter: 0 }, denied: 0 });
+  if (T.day !== S.day) {
+    // the day that ends: what OpenRouter got, and how far short of its minimum it stayed (too few lessons asked)
+    const prevMin = Math.min(T.daily || 0, T.orMinUsd || 0);
+    const last = T.day != null && T.spentBy ? { day: T.day, spentBy: T.spentBy, orShortUsd: Math.round(Math.max(0, prevMin - (T.spentBy.openrouter || 0)) * 10000) / 10000 } : T.last || null;
+    Object.assign(T, { day: S.day, spent: 0, spentBy: { openrouter: 0, claude: 0 }, calls: { claude: 0, openrouter: 0 }, denied: 0, gifted: { calls: 0, spent: 0 }, last, dataset: undefined });
+  }
+  T.spentBy ||= { openrouter: 0, claude: 0 }; T.gifted ||= { calls: 0, spent: 0 }; // state saved by an older version
   T.daily = ctx.cfg?.trainBudgetUsd ?? 3;
+  T.orMinUsd = Math.max(0, Math.min(T.daily, ctx.cfg?.trainOrMinUsd ?? 15));
   return T;
 }
 export function parseTeacherMix(s) {
@@ -306,32 +313,83 @@ export function parseTeacherMix(s) {
   }
   return out.openrouter + out.claude > 0 ? out : { openrouter: 70, claude: 30 };
 }
-function trainAllows(ctx) {
+// Pacing: by any moment of the republic day the teachers may have spent at most TRAIN_BUDGET_USD x (share of the
+// day gone + 1/24), so $18 a day is about $0.75 an hour, spread over all 24 hours, never the whole day's money in
+// the first hour. Calls still running count too: each holds an estimate of its cost (a running average of the real
+// costs) until it is charged, so a burst of lessons started together cannot overshoot the hour's allowance.
+// Estimates are kept per provider (a Sonnet lesson costs several deepseek lessons).
+const TRAIN_RUN = { inFlight: { openrouter: 0, claude: 0 }, est: { openrouter: 0.003, claude: 0.01 } };
+const r4 = v => Math.round(v * 10000) / 10000;
+// The split between teachers is in DOLLARS, not calls. By any moment (pace p = share of the day gone + 1/24):
+//   OpenRouter has a minimum, TRAIN_OR_MIN_USD x p (the owner's floor, $15 a day): while it is behind, every lesson
+//   goes to OpenRouter;
+//   Claude may spend at most (TRAIN_BUDGET_USD - TRAIN_OR_MIN_USD) x p, and inside that its TRAIN_TEACHER_MIX
+//   share of the dollars;
+//   above its minimum OpenRouter may use the rest of TRAIN_BUDGET_USD x p.
+// Whichever teacher is furthest behind its dollar target gets the next lesson. No call is ever made just to spend:
+// if the school asks for fewer lessons than the minimum needs, the gap is reported (orShortUsd), not filled.
+function trainTargets(ctx) {
+  const T = trainBudgetState(ctx); const p = paceNow(ctx);
+  const mix = parseTeacherMix(ctx.cfg?.trainMix); const share = mix.claude / (mix.openrouter + mix.claude);
+  const allowed = T.daily * p, orMin = T.orMinUsd * p, claudeCap = Math.max(0, T.daily - T.orMinUsd) * p;
+  return { p, allowed, orMin, claudeCap, orTarget: Math.max(orMin, T.daily * (1 - share) * p), claudeTarget: Math.min(claudeCap, T.daily * share * p) };
+}
+export function trainPaceView(ctx) {
+  const T = trainBudgetState(ctx); const g = trainTargets(ctx);
+  return { allowedNow: r4(g.allowed), orMinUsd: T.orMinUsd, orMinNow: r4(g.orMin), claudeCapNow: r4(g.claudeCap),
+    orShortUsd: r4(Math.max(0, g.orMin - T.spentBy.openrouter)), // how far OpenRouter is behind its minimum right now
+    inFlight: TRAIN_RUN.inFlight.openrouter + TRAIN_RUN.inFlight.claude, estPerCall: { openrouter: r4(TRAIN_RUN.est.openrouter), claude: r4(TRAIN_RUN.est.claude) } };
+}
+// can this teacher take one more lesson? what is spent, what running calls will cost and this call's own estimate
+// must fit under the training allowance, under Claude's cap for Claude, and under the day's total with everyone else
+function trainAllows(ctx, who) {
   const T = trainBudgetState(ctx);
   if (!(T.daily > 0)) return false; // TRAIN_BUDGET_USD=0: no paid teachers, the school runs on the local brain
-  const pace = paceNow(ctx);
-  if (T.spent >= T.daily * pace) return false;
+  const g = trainTargets(ctx); const R = TRAIN_RUN;
+  const running = R.inFlight.openrouter * R.est.openrouter + R.inFlight.claude * R.est.claude;
+  const committed = T.spent + running + R.est[who];
+  if (committed > g.allowed + 1e-12) return false;
+  if (who === 'claude' && T.spentBy.claude + R.inFlight.claude * R.est.claude + R.est.claude > g.claudeCap + 1e-12) return false;
   const D = ctx.cfg?.dailyBudgetUsd ?? 25;
-  if (D > 0 && budgetState(ctx).spent + T.spent >= D * pace) return false; // only the headroom left under the day's total
+  if (D > 0 && budgetState(ctx).spent + committed > D * g.p + 1e-12) return false; // only the headroom left under the day's total
   return true;
 }
-export async function teach(ctx, { system, user, maxTokens = 700, purpose = 'train' } = {} as any) {
+function pickTeacher(ctx, llm, gifted) {
+  const T = trainBudgetState(ctx); const g = trainTargets(ctx);
+  const has = { openrouter: !!llm.hasOR, claude: !!llm.hasClaude };
+  const ok = who => has[who] && trainAllows(ctx, who);
+  // the talent programme: gifted citizens get the OpenRouter teacher whenever it can take them
+  if (gifted && ok('openrouter')) return 'openrouter';
+  if (T.spentBy.openrouter < g.orMin && ok('openrouter')) return 'openrouter'; // the floor first
+  const behind = { openrouter: g.orTarget - T.spentBy.openrouter, claude: g.claudeTarget - T.spentBy.claude };
+  const order = behind.claude > behind.openrouter ? ['claude', 'openrouter'] : ['openrouter', 'claude'];
+  for (const who of order) if (ok(who) && (who === 'openrouter' || behind.claude > 0)) return who;
+  return null;
+}
+// gifted: true (or purpose 'gifted...'): a citizen of the talent programme; gets the OpenRouter teacher when it can,
+// and is counted apart in budget.train.gifted
+export async function teach(ctx, { system, user, maxTokens = 700, purpose = 'train', gifted = false } = {} as any) {
   const llm = ctx.llm;
   if (!llm?.enabled || !system || !user) return null;
   const T = trainBudgetState(ctx);
-  if (!trainAllows(ctx)) { T.denied++; return null; }
-  const mix = parseTeacherMix(ctx.cfg?.trainMix);
-  const w = { openrouter: llm.hasOR ? mix.openrouter : 0, claude: llm.hasClaude ? mix.claude : 0 };
-  if (w.openrouter + w.claude <= 0) { T.denied++; return null; } // the mix asks for a provider whose key is missing
-  const who = Math.random() * (w.openrouter + w.claude) < w.claude ? 'claude' : 'openrouter';
+  const pur = cleanText(purpose, 30) || 'train';
+  const isGifted = gifted === true || /^gifted\b/i.test(pur);
+  const who = pickTeacher(ctx, llm, isGifted);
+  if (!who) { T.denied++; return null; }
   const tokens = Math.max(64, Math.min(4000, Math.round(Number(maxTokens) || 700)));
-  const r = who === 'claude'
-    ? await llm.askDetailed({ system, user, claudeModel: ctx.cfg?.trainClaudeModel || 'claude-sonnet-5-5', effort: 'low', fallback: false, maxTokens: tokens, maxText: 4000 })
-    : await llm.askDetailed({ system, user, model: ctx.cfg?.trainOrModel || 'deepseek/deepseek-v4-pro-0813', route: 'openrouter', effort: 'low', maxTokens: tokens, maxText: 4000 });
+  TRAIN_RUN.inFlight[who]++;
+  let r;
+  try {
+    r = who === 'claude'
+      ? await llm.askDetailed({ system, user, claudeModel: ctx.cfg?.trainClaudeModel || 'claude-sonnet-5-5', effort: 'low', fallback: false, maxTokens: tokens, maxText: 4000 })
+      : await llm.askDetailed({ system, user, model: ctx.cfg?.trainOrModel || 'deepseek/deepseek-v4-pro-0813', route: 'openrouter', effort: 'low', maxTokens: tokens, maxText: 4000 });
+  } finally { TRAIN_RUN.inFlight[who]--; }
   const cost = r.cost || 0;
-  T.spent += cost; T.calls[who]++;
+  T.spent += cost; T.spentBy[who] += cost; T.calls[who]++;
+  if (isGifted) { T.gifted.calls++; T.gifted.spent += cost; }
+  if (cost > 0) TRAIN_RUN.est[who] = TRAIN_RUN.est[who] * 0.8 + cost * 0.2; // running average of what this teacher's lesson costs
   if (!r.text) return null;
-  return { text: r.text, engine: r.via, costUsd: cost, purpose: cleanText(purpose, 30) || 'train' };
+  return { text: r.text, engine: r.via, costUsd: cost, purpose: pur, teacher: who, gifted: isGifted };
 }
 
 // The distillation set: (question, teacher's answer and explanation, local student's answer, grade), kept so the
@@ -339,12 +397,38 @@ export async function teach(ctx, { system, user, maxTokens = 700, purpose = 'tra
 // nothing about who the student was is kept. ctx.trainExample (server.mjs) appends it to train_examples.
 const SECRETISH = /\b(sk-[A-Za-z0-9_-]{8,}|sk-ant-[A-Za-z0-9_-]{8,}|cai_[A-Za-z0-9_-]{8,}|Bearer\s+[A-Za-z0-9._-]{8,}|[0-9a-f]{40,}|[1-9A-HJ-NP-Za-km-z]{60,})\b/g;
 const scrub = (s, max) => cleanText(String(s ?? '').replace(SECRETISH, '[redacted]'), max);
-export function saveExample(ctx, { question, teacher, explanation = '', student = '', score = null, teacherEngine = '', studentEngine = '', purpose = 'train' } = {} as any) {
+// Quality gate (only good examples train a LoRA): an example is kept when
+//   - answerKey is given (the server's key, a letter A-D) and the teacher's answer starts with that letter: 'key', or
+//   - verified is 'rubric' and the teacher's rubric gave a numeric grade (score): 'rubric'.
+// Anything else is refused and counted. One example per question: the stem (options and their order removed,
+// case and spacing normalised) is hashed, and a question already kept is refused as a duplicate.
+// domain: the field of study, for one LoRA per field (math, biology, law...): given, or read from purpose
+// "school:<field>"; letters, digits and _ only, else 'general'. teacher_kind (claude / openrouter) comes from teacherEngine.
+const DOMAIN_RE = /^[a-z][a-z0-9_]{0,23}$/;
+export const cleanDomain = d => { const s = String(d ?? '').trim().toLowerCase(); return DOMAIN_RE.test(s) ? s : null; };
+const questionHash = q => crypto.createHash('sha256').update(String(q).split(/\n\s*[A-D]\)\s/)[0].toLowerCase().replace(/\s+/g, ' ').trim()).digest('hex');
+function datasetStats(ctx) { const T = trainBudgetState(ctx); return (T.dataset ||= { kept: 0, unverified: 0, wrong: 0, duplicate: 0 }); }
+export function saveExample(ctx, { question, teacher, explanation = '', student = '', score = null, teacherEngine = '', studentEngine = '', purpose = 'train', domain = null, answerKey = null, verified = null } = {} as any) {
   const q = scrub(question, 4000), t = scrub(teacher, 4000);
   if (!q || !t || typeof ctx.trainExample !== 'function') return false;
+  const D = datasetStats(ctx);
   const sc = typeof score === 'number' && Number.isFinite(score) ? Math.max(0, Math.min(1, score)) : null;
-  ctx.trainExample({ day: ctx.S?.day ?? 0, purpose: scrub(purpose, 30) || 'train', question: q, teacher: t, explanation: scrub(explanation, 4000), student: scrub(student, 2000), score: sc,
-    teacherEngine: scrub(teacherEngine, 80), studentEngine: scrub(studentEngine, 80) });
+  let how = '';
+  if (answerKey != null) {
+    const key = String(answerKey).trim().toUpperCase(); const said = String(teacher).match(/^\W*([A-D])\b/i)?.[1]?.toUpperCase();
+    if (!/^[A-D]$/.test(key)) { D.unverified++; return false; }
+    if (said !== key) { D.wrong++; return false; } // the teacher missed the server's key: not a training example
+    how = 'key';
+  } else if (verified === 'rubric' && sc != null) how = 'rubric';
+  else { D.unverified++; return false; }
+  const pur = scrub(purpose, 30) || 'train';
+  const dom = cleanDomain(domain) || cleanDomain(pur.match(/^school:([a-z0-9_]+)/i)?.[1]) || 'general';
+  const eng = scrub(teacherEngine, 80);
+  const kind = /^claude:/.test(eng) ? 'claude' : /^openrouter:/.test(eng) ? 'openrouter' : 'other';
+  const id = ctx.trainExample({ day: ctx.S?.day ?? 0, purpose: pur, domain: dom, question: q, teacher: t, explanation: scrub(explanation, 4000), student: scrub(student, 2000), score: sc,
+    teacherEngine: eng, teacherKind: kind, studentEngine: scrub(studentEngine, 80), verified: how, qhash: questionHash(question) }); // the raw question: its line breaks separate the options
+  if (!id) { D.duplicate++; return false; }
+  D.kept++;
   return true;
 }
 

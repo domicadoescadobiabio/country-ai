@@ -74,8 +74,13 @@ CREATE TABLE IF NOT EXISTS train_examples (
   student         TEXT    NOT NULL DEFAULT '',
   score           REAL,
   teacher_engine  TEXT    NOT NULL DEFAULT '',
-  student_engine  TEXT    NOT NULL DEFAULT ''
+  student_engine  TEXT    NOT NULL DEFAULT '',
+  domain          TEXT    NOT NULL DEFAULT 'general', -- field of study (math, biology, law...): one LoRA per field
+  teacher_kind    TEXT    NOT NULL DEFAULT '',        -- claude / openrouter: which teacher wrote it
+  verified        TEXT    NOT NULL DEFAULT '',        -- key (the server's answer key matched) / rubric (graded by the teacher's rubric)
+  qhash           TEXT                                -- sha256 of the normalised question: one example per question
 );
+-- the indexes on domain and qhash are created in src/db.ts, after older databases get those columns
 CREATE TRIGGER IF NOT EXISTS train_examples_no_update BEFORE UPDATE ON train_examples
 BEGIN SELECT RAISE(ABORT, 'train_examples is append-only'); END;
 

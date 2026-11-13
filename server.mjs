@@ -13,7 +13,7 @@ import { ROLES, ROLE_ORDER } from './src/roles.mjs';
 import { FOUNDERS, makeCitizen, randomTraits } from './src/citizens.mjs';
 import { growPopulation } from './src/population.mjs';
 import { CITIES, assignCity } from './src/cities.ts';
-import { tierOf, budgetState, trainBudgetState, workerPull, workerAnswer, localStatus, localOnline, ladderTick } from './src/brains.ts';
+import { tierOf, budgetState, trainBudgetState, trainPaceView, cleanDomain, workerPull, workerAnswer, localStatus, localOnline, ladderTick } from './src/brains.ts';
 import { freshAcademy, academyTick, totalSeats } from './src/academy.ts';
 import { lifeTick, payday } from './src/life.ts';
 import { INSTITUTIONS } from './src/institutions.ts';
@@ -27,6 +27,7 @@ import { applyAmendments } from './src/constitution.mjs';
 import { requirement, TERMS, goalView } from './src/careers.ts';
 import { reputationOf } from './src/underworld.ts';
 import { poke, moodView, bondsView } from './src/feelings.ts';
+import { schoolView } from './src/school.ts';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 // what is running (commit when known, fingerprint of the engine code, boot time): shown on /api/health
@@ -43,6 +44,8 @@ const CFG = {
   dailyBudgetUsd: Math.max(0, Number(process.env.LLM_DAILY_BUDGET_USD ?? 25)), // Art. 25: what thought may cost per day (0 = no limit)
   // the school's paid teachers (src/brains.ts teach): their own daily budget (0 = none), the provider mix and models
   trainBudgetUsd: Math.max(0, Number(process.env.TRAIN_BUDGET_USD ?? 3)),
+  // the least the OpenRouter teachers should get a day (in dollars, paced); Claude teaches only with what is left
+  trainOrMinUsd: Math.max(0, Number(process.env.TRAIN_OR_MIN_USD ?? 15)),
   trainMix: (process.env.TRAIN_TEACHER_MIX || 'openrouter:70,claude:30').trim(),
   trainOrModel: (process.env.TRAIN_OR_MODEL || 'deepseek/deepseek-v4-pro-0813').trim(),
   trainClaudeModel: (process.env.TRAIN_CLAUDE_MODEL || 'claude-sonnet-5-5').trim(),
@@ -278,13 +281,23 @@ function academyView() {
     current: rooms[0] ? view(rooms[0]) : null, rooms: rooms.map(view),
   };
 }
+// examples kept per field of study (for one LoRA per field), counted at most every 30 s: /api/state is polled often
+let trainCountCache = { at: 0, v: { total: 0, byDomain: {} } };
+function trainCounts() {
+  if (Date.now() - trainCountCache.at < 30000) return trainCountCache.v;
+  trainCountCache = { at: Date.now(), v: { total: store.trainCount(), byDomain: store.trainByDomain() } };
+  return trainCountCache.v;
+}
 function compactState() {
   const B = budgetState(ctx); const T = trainBudgetState(ctx);
   const out = { stats: stats(), seats: S.seats, academy: academyView(), treasury: S.treasury, policy: S.policy, econ: S.econ, day: S.day, tick: S.tick, paused: S.paused, llmUsage: llm.usage,
     localBrain: localStatus(),
     budget: { day: B.day, daily: B.daily, spent: Math.round(B.spent * 10000) / 10000, leader: Math.round(B.leader * 10000) / 10000, official: Math.round(B.official * 10000) / 10000, citizen: Math.round(B.citizen * 10000) / 10000, calls: B.calls, denied: B.denied,
       // the school's paid teachers: their own budget, inside the day's total
-      train: { daily: T.daily, spent: Math.round(T.spent * 10000) / 10000, calls: T.calls, denied: T.denied, examples: store.trainCount() } } };
+      train: { daily: T.daily, spent: Math.round(T.spent * 10000) / 10000, calls: T.calls, denied: T.denied, ...trainPaceView(ctx),
+        spentBy: { openrouter: Math.round(T.spentBy.openrouter * 10000) / 10000, claude: Math.round(T.spentBy.claude * 10000) / 10000 },
+        gifted: { calls: T.gifted.calls, spent: Math.round(T.gifted.spent * 10000) / 10000 }, yesterday: T.last || null,
+        examples: trainCounts().total, byDomain: trainCounts().byDomain, dataset: T.dataset || { kept: 0, unverified: 0, wrong: 0, duplicate: 0 } } } };
   for (const inst of INSTITUTIONS) Object.assign(out, inst.publicState?.(S) || {});
   return out;
 }
@@ -536,7 +549,8 @@ const server = http.createServer(async (req, res) => {
       const a = citizenById(S, cm[1]);
       if (!a) return send(res, 404, { error: 'no such citizen' });
       // one citizen: the full mood, the people they care about, and how often they were poked today
-      return send(res, 200, { citizen: { ...publicCitizen(a), mood: moodView(a), bonds: bondsView(S, a), pokes: a.pokes?.day === S.day ? a.pokes.n : 0 } });
+      // + school: interests, strongest fields, today's field, talent badges (gifted), skills and the last lessons
+      return send(res, 200, { citizen: { ...publicCitizen(a), mood: moodView(a), bonds: bondsView(S, a), pokes: a.pokes?.day === S.day ? a.pokes.n : 0, school: schoolView(a) } });
     }
     const pm = req.method === 'POST' && p.match(/^\/api\/poke\/([a-z0-9-]{1,40})$/);
     if (pm) return await handlePoke(req, res, pm[1]);
@@ -589,7 +603,10 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && p === '/api/admin/train/export') {
       if (!isAdmin(req)) return send(res, 401, { error: 'admin only' });
       const u = new URL(req.url, 'http://x');
-      const rows = store.trainPage(Math.max(0, Math.floor(Number(u.searchParams.get('after'))) || 0), Number(u.searchParams.get('limit')) || 1000);
+      // ?domain=math: one field of study only (the training set for that field's LoRA)
+      const dq = u.searchParams.get('domain'); const domain = dq == null ? null : cleanDomain(dq);
+      if (dq != null && !domain) return send(res, 400, { error: 'domain: lowercase letters, digits and _ only' });
+      const rows = store.trainPage(Math.max(0, Math.floor(Number(u.searchParams.get('after'))) || 0), Number(u.searchParams.get('limit')) || 1000, domain);
       res.setHeader('x-train-total', String(store.trainCount()));
       if (rows.length) res.setHeader('x-train-last-id', String(rows.at(-1).id));
       return send(res, 200, rows.map(r => JSON.stringify(r)).join('\n') + (rows.length ? '\n' : ''), 'application/x-ndjson; charset=utf-8');

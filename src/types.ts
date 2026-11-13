@@ -181,7 +181,8 @@ export interface Ctx {
   /** true when the ledger already holds an entry of this kind whose data has these top-level field values */
   ledgerHas?(kind: string, match: Record<string, string | number | boolean | null | undefined>): boolean;
   /** append one example to the school's distillation set (use saveExample in src/brains.ts, which masks the text) */
-  trainExample?(e: { day: number; purpose: string; question: string; teacher: string; explanation: string; student: string; score: number | null; teacherEngine: string; studentEngine: string }): number;
+  trainExample?(e: { day: number; purpose: string; domain: string; question: string; teacher: string; explanation: string; student: string; score: number | null;
+    teacherEngine: string; teacherKind: string; studentEngine: string; verified: string; qhash: string }): number; // the new id, 0 = duplicate question
   pendingGuest: unknown;
 }
 

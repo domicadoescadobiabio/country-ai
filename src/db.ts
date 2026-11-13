@@ -44,6 +44,14 @@ export function openStore(dataDir: string) {
 
   const db = new sqlite.DatabaseSync(path.join(dataDir, 'country.db'));
   db.exec(fs.readFileSync(SCHEMA, 'utf8')); // db/schema.sql: tables, append-only triggers, audit views
+  // migration: train_examples made before fields of study and the quality gate get the new columns (old rows keep
+  // domain 'general', no teacher kind, no qhash); then the indexes that need them
+  const trainCols = new Set(db.prepare('PRAGMA table_info(train_examples)').all().map(c => c.name));
+  for (const [col, def] of [['domain', "TEXT NOT NULL DEFAULT 'general'"], ['teacher_kind', "TEXT NOT NULL DEFAULT ''"], ['verified', "TEXT NOT NULL DEFAULT ''"], ['qhash', 'TEXT']]) {
+    if (!trainCols.has(col)) db.exec(`ALTER TABLE train_examples ADD COLUMN ${col} ${def}`); // fixed names, no input
+  }
+  db.exec('CREATE INDEX IF NOT EXISTS train_examples_domain ON train_examples (domain, id)');
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS train_examples_qhash ON train_examples (qhash)');
   const q = {
     load: db.prepare('SELECT json FROM state WHERE id = 1'),
     save: db.prepare('INSERT INTO state (id, json, saved_at) VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET json = excluded.json, saved_at = excluded.saved_at'),
@@ -66,10 +74,13 @@ export function openStore(dataDir: string) {
     citCount: db.prepare('SELECT COUNT(*) AS n FROM citizens'),
     ballotsPut: db.prepare('INSERT OR REPLACE INTO election_ballots (election, digest, json) VALUES (?, ?, ?)'),
     ballotsGet: db.prepare('SELECT json FROM election_ballots WHERE election = ?'),
-    trainAdd: db.prepare('INSERT INTO train_examples (ts, day, purpose, question, teacher, explanation, student, score, teacher_engine, student_engine) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'),
+    // OR IGNORE: a question already kept (same qhash) is not stored twice; changes = 0 tells the caller
+    trainAdd: db.prepare('INSERT OR IGNORE INTO train_examples (ts, day, purpose, question, teacher, explanation, student, score, teacher_engine, student_engine, domain, teacher_kind, verified, qhash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'),
     trainRotate: db.prepare('DELETE FROM train_examples WHERE id <= ?'),
     trainCount: db.prepare('SELECT COUNT(*) AS n FROM train_examples'),
+    trainByDomain: db.prepare('SELECT domain, COUNT(*) AS n FROM train_examples GROUP BY domain'),
     trainPage: db.prepare('SELECT * FROM train_examples WHERE id > ? ORDER BY id LIMIT ?'),
+    trainPageDomain: db.prepare('SELECT * FROM train_examples WHERE domain = ? AND id > ? ORDER BY id LIMIT ?'),
   };
   // ledgerHas: one prepared statement per number of fields matched. Field names travel as JSON-path
   // parameters, never inside the SQL text; uses the (kind, seq) index, then checks the data of that kind.
@@ -152,17 +163,23 @@ export function openStore(dataDir: string) {
     archiveDecision(d) { q.dec.run(d.id, d.day, d.agentId || null, d.role || null, d.type || null, JSON.stringify(d)); },
     decisionCount: () => q.decCount.get().n,
     // the school's distillation set (append-only, oldest rows dropped past `max`)
+    // returns the new id, or 0 when the question is already in the set (duplicate)
     trainAdd(e, max = 50000) {
       const r = q.trainAdd.run(Date.now(), e.day ?? 0, String(e.purpose || 'train'), String(e.question), String(e.teacher), String(e.explanation || ''), String(e.student || ''),
-        typeof e.score === 'number' && Number.isFinite(e.score) ? e.score : null, String(e.teacherEngine || ''), String(e.studentEngine || ''));
+        typeof e.score === 'number' && Number.isFinite(e.score) ? e.score : null, String(e.teacherEngine || ''), String(e.studentEngine || ''),
+        String(e.domain || 'general'), String(e.teacherKind || ''), String(e.verified || ''), e.qhash ? String(e.qhash) : null);
+      if (!r.changes) return 0;
       const id = Number(r.lastInsertRowid);
       if (id > max) q.trainRotate.run(id - max);
       return id;
     },
     trainCount: () => q.trainCount.get().n,
-    trainPage(after = 0, limit = 1000) {
-      return q.trainPage.all(after, Math.min(5000, Math.max(1, Math.floor(Number(limit)) || 1000))).map(r => ({
-        id: r.id, ts: r.ts, day: r.day, purpose: r.purpose, question: r.question, teacher: r.teacher, explanation: r.explanation, student: r.student, score: r.score, teacherEngine: r.teacher_engine, studentEngine: r.student_engine }));
+    trainByDomain: () => Object.fromEntries(q.trainByDomain.all().map(r => [r.domain, r.n])),
+    trainPage(after = 0, limit = 1000, domain = null) {
+      const n = Math.min(5000, Math.max(1, Math.floor(Number(limit)) || 1000));
+      return (domain ? q.trainPageDomain.all(String(domain), after, n) : q.trainPage.all(after, n)).map(r => ({
+        id: r.id, ts: r.ts, day: r.day, domain: r.domain, purpose: r.purpose, question: r.question, teacher: r.teacher, explanation: r.explanation, student: r.student, score: r.score,
+        teacherKind: r.teacher_kind, teacherEngine: r.teacher_engine, studentEngine: r.student_engine, verified: r.verified }));
     },
     // read-only: the full decision log, the same records /api/state and #decisions already show live
     decisionsPage({ after = 0, limit = 100, type = null, agent = null } = {}) {
@@ -212,9 +229,13 @@ function jsonStore(file: string) {
     decisionCount: () => 0,
     decisionsPage: null, // no archive without sqlite: the server falls back to the decisions kept in memory
     // without sqlite the distillation set lives in memory only (lost on restart), capped the same way
-    trainAdd(e, max = 50000) { const id = (train.at(-1)?.id || 0) + 1; train.push({ id, ts: Date.now(), ...e }); if (train.length > max) train.splice(0, train.length - max); return id; },
+    trainAdd(e, max = 50000) {
+      if (e.qhash && train.some(r => r.qhash === e.qhash)) return 0;
+      const id = (train.at(-1)?.id || 0) + 1; train.push({ id, ts: Date.now(), domain: 'general', ...e }); if (train.length > max) train.splice(0, train.length - max); return id;
+    },
     trainCount: () => train.length,
-    trainPage(after = 0, limit = 1000) { return train.filter(r => r.id > after).slice(0, Math.min(5000, Math.max(1, Math.floor(Number(limit)) || 1000))); },
+    trainByDomain: () => train.reduce((o, r) => { o[r.domain] = (o[r.domain] || 0) + 1; return o; }, {}),
+    trainPage(after = 0, limit = 1000, domain = null) { return train.filter(r => r.id > after && (!domain || r.domain === domain)).slice(0, Math.min(5000, Math.max(1, Math.floor(Number(limit)) || 1000))); },
     close() {},
   };
   return store;
