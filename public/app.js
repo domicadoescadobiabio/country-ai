@@ -206,24 +206,35 @@ async function searchCitizens() {
   try { st.cres = await (await fetch('/api/citizens?' + p)).json(); } catch { st.cres ||= { total: 0, page: 1, size: 50, citizens: [] }; }
   if (st.tab === 'citizens') renderPanel();
 }
-// The open tab keeps itself fresh. The state stream (SSE 'state') carries the header, the government chart and the
-// small counters; when the server announces section reads (config.stateParts), a tab whose data is not in the
-// stream asks for just its sections. Without that announcement nothing heavy is fetched.
-const TAB_PARTS = { academy: ['academy', 'training', 'gov'], offices: ['applications', 'command', 'cities'], elections: ['elections'], court: ['court', 'audit'], laws: ['bills', 'laws'],
-  police: ['police', 'underworld', 'daily'], border: ['military'], school: ['school'], treasury: ['policy', 'econ', 'treasury', 'orders', 'llmUsage', 'budget'] };
+// The open tab keeps itself fresh. The state stream (SSE 'state', < 30 KB, about every 20 s) always carries the
+// header keys and includes each institution's view only when it is small, so the bigger views (elections, court,
+// police, the school...) may stop arriving. seenAt records when each key last came in. A tab whose keys went stale
+// fetches them: through /api/state?parts= when the server announces it (config.stateParts), otherwise the whole
+// /api/state, but at most once a minute (the Academy tab: every 5 minutes) and only while that tab is open.
+const TAB_PARTS = { academy: ['training', 'gov'], offices: ['applications', 'command', 'cities'], elections: ['elections'], court: ['court', 'audit'], laws: ['bills', 'laws'],
+  police: ['police', 'underworld', 'daily'], border: ['military'], school: ['school'], treasury: ['orders'] };
+const TAB_EVERY = { academy: 300000 };
+const seenAt = {}; let lastFull = 0;
+const markSeen = d => { const now = Date.now(); for (const k of Object.keys(d || {})) seenAt[k] = now; };
 async function refreshTab() {
   if (document.hidden) return;
   if (st.tab === 'citizen') return loadCitizen(st.citizen || (cit((st.seats.president || [])[0]) || st.citizens[0])?.id);
   if (st.tab === 'citizens') return st.cres ? searchCitizens() : undefined;
-  const can = Array.isArray(st.config.stateParts) ? st.config.stateParts : [];
-  const parts = (TAB_PARTS[st.tab] || []).filter(p => can.includes(p));
+  const every = TAB_EVERY[st.tab] || 60000; const now = Date.now();
+  const stale = (TAB_PARTS[st.tab] || []).filter(k => now - (seenAt[k] || 0) > Math.max(45000, every - 5000));
+  if (!stale.length) return;
+  const can = Array.isArray(st.config.stateParts) ? st.config.stateParts : null;
+  const parts = can ? stale.filter(k => can.includes(k)) : stale;
   if (!parts.length) return;
+  if (!can) { if (now - lastFull < every) return; lastFull = now; }
+  const tab = st.tab;
   try {
-    const r = await fetch('/api/state?parts=' + encodeURIComponent(parts.join(',')));
+    const r = await fetch(can ? '/api/state?parts=' + encodeURIComponent(parts.join(',')) : '/api/state');
     const d = r.ok ? await r.json() : null; if (!d) return;
-    for (const p of parts) if (p in d) st[p] = d[p];
-    if (TAB_PARTS[st.tab]?.some(p => parts.includes(p))) renderPanel();
-  } catch { /* offline */ }
+    for (const k of parts) if (k in d) { st[k] = d[k]; seenAt[k] = Date.now(); }
+    if (!can && Array.isArray(d.citizens)) { st.citizens = d.citizens; st.population = d.population || st.population; } // came along anyway
+    if (st.tab === tab) renderPanel();
+  } catch { /* offline: keep the last picture */ }
 }
 function kv(rows) { return h('div', { class: 'kv' }, rows.flatMap(([k, v]) => [h('span', { text: k }), h('b', { text: v })])); }
 
@@ -683,12 +694,12 @@ setInterval(() => { if (st.tab === 'ledger') loadLedger(); }, 15000);
 function renderPanel() { $('#panelBody').replaceChildren(...(PANELS[st.tab]?.() || [])); }
 
 function renderAll() { renderStats(); renderGov(); renderChannels(); renderFeed(); renderTabs(); renderPanel(); }
-function applyCompact(d) { Object.assign(st, d); renderStats(); renderGov(); if (['academy', 'treasury', 'citizen'].includes(st.tab) || TABS.some(t => t[0] === st.tab && t[3])) renderPanel(); }
+function applyCompact(d) { Object.assign(st, d); markSeen(d); renderStats(); renderGov(); if (['academy', 'treasury', 'citizen'].includes(st.tab) || TABS.some(t => t[0] === st.tab && t[3])) renderPanel(); }
 
 // ------------------------------------------------------------ boot + stream
 async function load() {
   const d = await (await fetch('/api/state')).json();
-  Object.assign(st, d);
+  Object.assign(st, d); markSeen(d); lastFull = Date.now();
   if (!st.config.channels.some(c => c.id === st.ch)) st.ch = st.config.channels[0]?.id;
   if (d.config.ca) { $('#cabar').hidden = false; $('#caAddr').textContent = d.config.ca; }
   // shareable tab links: /#treasury opens the Treasury tab
