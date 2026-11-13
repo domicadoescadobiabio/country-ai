@@ -2,6 +2,7 @@
 // Usage: node scripts/smoke-brains.mjs   (no network, no real keys)
 import { spawn } from 'node:child_process';
 import http from 'node:http';
+import net from 'node:net';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -10,7 +11,8 @@ import { smartAnswer } from './smoke-agents.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'country-brains-'));
-const PORT = 3990 + Math.floor(Math.random() * 9);
+// a port the system says is free right now, so two runs at once (from different boxes) never share a server
+const PORT = await new Promise((resolve, reject) => { const s = net.createServer(); s.once('error', reject); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); }); });
 const BROKEN = 'z-ai/glm-5.3'; // a model many native citizens use "does not exist" at the mock: they must think offline, never on Claude
 const seen = { claude: {}, openrouter: {} };
 
