@@ -12,6 +12,7 @@ import { borderCheck } from './military.ts';
 import { CITIES } from './cities.ts';
 import { echoesStreet, safeNote } from './life.ts';
 import { feelingsTick, feel, bond, ensureFeelings, feelLine, preferredToHelp, talkTarget, MOODS } from './feelings.ts';
+import { schoolTick, inSchool, nightView, schoolState, nightOf } from './school.ts';
 import { round, cleanText, cai, clamp } from './util.ts';
 import type { Ctx, State, Citizen } from './types.ts';
 
@@ -306,107 +307,21 @@ export async function doAct(ctx: Ctx, a: Citizen, j: any, engine: string, offere
   if (what !== 'talk' && what !== 'rest' && !MISCHIEF.includes(what)) ctx.say('life', a.id, `${line}.${note ? ` "${note}"` : ''}`, { kind: 'life', act: what, engine, mood });
 }
 
-// ---------------------------------------------------------------- night school (owner, 13 Nov)
-// From 20:00 to 06:00 republic time citizens sleep and the local GPU would sit idle: they take turns at
-// practice questions instead, on the free local brain only (paid: false; nothing runs while it is offline).
-// Its own counters: it never uses the day's thoughts, the day's study limit, or day byAct. The ones closest
-// to an office go first (applicants, candidates, officials who failed a drill or have low skill, citizens who
-// already study), everyone else in turn. A wrong answer leaves a lesson in the server's words.
-const NIGHT_PER_MIN = clamp(Number(process.env.LIFE_NIGHT_PER_MIN) || 35, 1, 600);
-const NIGHT_STUDY = clamp(Number(process.env.LIFE_NIGHT_STUDY) || 2, 1, 20);
-const NIGHT_IN_FLIGHT = 12;
-const ENTRY_OFFICES = ['council', 'mayor', 'police', 'military'];
-const N = (S: State) => {
-  const d = D(S); const n = (d.night ||= {});
-  n.studied ??= 0; n.correct ??= 0; n.key ??= null; n.tonight ??= 0; n.tonightRight ??= 0; n.people ??= 0;
-  n.carry = Number.isFinite(n.carry) ? n.carry : 0; n.lastAt ??= Date.now(); n.cursor ??= 0; n.reported ??= null;
-  return n;
-};
-// which night it is: 20:00 on day N to 06:00 on day N+1 is night N; null in daytime
-export function nightOf(S: State, dayMs = DAY_MS, now = Date.now()) {
-  const t = now - (S.foundedAt || now); const day = Math.floor(t / dayMs) + 1;
-  const h = (((t % dayMs) + dayMs) % dayMs) / dayMs * 24;
-  return h >= 20 ? day : h < 6 ? day - 1 : null;
-}
-// the office a citizen studies for: one they applied for, the one they hold, the one they practise most, else
-// an entry office picked from their id
-function studyTarget(S: State, a: Citizen) {
-  const ok = (r: string) => isRole(r) && ROLES[r].exam?.length;
-  const applied = Object.entries(S.applications || {}).find(([r, ids]) => ok(r) && (ids as string[]).includes(a.id));
-  if (applied) return applied[0];
-  if (a.office && ok(a.office)) return a.office;
-  const practised = Object.entries(a.practice || {}).filter(([r]) => ok(r)).sort((x: any, y: any) => y[1].n - x[1].n)[0];
-  if (practised) return practised[0];
-  let h = 0; for (const c of a.id) h = (h * 31 + c.charCodeAt(0)) >>> 0;
-  return ENTRY_OFFICES.filter(ok)[h % ENTRY_OFFICES.length] || STUDY_OFFICES[0];
-}
-const nightWho = (S: State, a: Citizen) => a && a.status === 'free' && !a.brain && (a.faction || 'civilian') !== 'underworld' && !inExam(S, a.id);
-// 0 = closest to an office, 1 = already studying, 2 = everyone else
-function nightRank(S: State, a: Citizen) {
-  if (Object.values(S.applications || {}).some(ids => (ids as string[]).includes(a.id))) return 0;
-  if ((S.elections?.list || []).some(e => !['done', 'failed'].includes(e.stage) && (e.candidates || []).some(c => c.id === a.id))) return 0;
-  if (a.office && ((a.drills || []).slice(-1)[0]?.passed === false || (a.skill?.[a.office] ?? 1) < 0.5)) return 0;
-  return Object.values(a.practice || {}).some((p: any) => p?.n > 0) ? 1 : 2;
-}
-let nightPlan = { key: null as number | null, ids: [] as string[], i: 0 };
-function planNight(S: State, key: number) {
-  const n = N(S); const list = S.citizens; const start = n.cursor % Math.max(1, list.length);
-  const ordered: [number, number, string][] = [];
-  for (let k = 0; k < list.length; k++) { const a = list[(start + k) % list.length]; if (nightWho(S, a) && (a.office || who(S, a))) ordered.push([nightRank(S, a), k, a.id]); }
-  ordered.sort((x, y) => x[0] - y[0] || x[1] - y[1]);
-  nightPlan = { key, ids: ordered.map(x => x[2]), i: 0 };
-  n.cursor = (n.cursor + 997) % Math.max(1, list.length); // tomorrow night the round-robin part starts elsewhere
-}
-function nightSchool(ctx: Ctx) {
-  const { S } = ctx; const n = N(S); const key = nightOf(S);
-  if (key == null || !localOnline()) { n.carry = 0; n.lastAt = Date.now(); return; }
-  if (n.key !== key) { n.key = key; n.tonight = 0; n.tonightRight = 0; n.people = 0; }
-  if (nightPlan.key !== key) planNight(S, key);
-  n.carry = Math.min(NIGHT_IN_FLIGHT, n.carry + (Date.now() - n.lastAt) / 60000 * NIGHT_PER_MIN); n.lastAt = Date.now();
-  let inFlight = [...pending.values()].filter(p => p.stage === 'night').length;
-  for (let tries = 0; n.carry >= 1 && inFlight < NIGHT_IN_FLIGHT && tries < 200 && nightPlan.i < nightPlan.ids.length * NIGHT_STUDY; tries++) {
-    const id = nightPlan.ids[nightPlan.i % nightPlan.ids.length]; nightPlan.i++;
-    const a = ctx.agent(id);
-    if (!nightWho(S, a) || [...pending.values()].some(p => p.agent === id)) continue;
-    if (a.night?.key !== key) a.night = { key, n: 0, diary: false };
-    if (a.night.n >= NIGHT_STUDY) continue;
-    const office = studyTarget(S, a);
-    const r = startStudy(ctx, a, office, { night: true });
-    if (!r.ok) continue;
-    a.night.n++; if (a.night.n === 1) n.people++;
-    pending.set(`night:${r.question_id}`, { agent: a.id, stage: 'night', studyId: r.question_id, office, night: key, ...studyPrompt(a, office, r, true), options: r.options });
-    n.carry -= 1; inFlight++;
-  }
-}
-// one line in #life the morning after, never one per question
-function nightReport(ctx: Ctx) {
-  const { S } = ctx; const n = N(S);
-  if (nightOf(S) != null || n.key == null || n.reported === n.key || !n.tonight) return;
-  n.reported = n.key;
-  const rate = Math.round((n.tonightRight || 0) / n.tonight * 100);
-  ctx.say('life', 'state', `Night school: ${n.people} citizens answered ${n.tonight} practice questions while the cities slept, ${rate}% right.`, { kind: 'night', act: 'study' });
-}
+// ---------------------------------------------------------------- school (owner, 13 Nov)
+// The night school that lived here is now the republic's school (src/school.ts): at night it has the local
+// brain to itself, by day it gets what daily life leaves over (it runs after daily life in the tick, never takes
+// a citizen who is thinking about their day, and its jobs are last on the local brain's queue).
+export { nightOf };
 
 async function poll(ctx: Ctx) {
   const { S } = ctx;
   for (const [qid, p] of [...pending]) {
     const a = ctx.agent(p.agent);
     if (!a || a.status !== 'free') { pending.delete(qid); continue; }
-    // night school asks with kind 'night': the lowest priority on the local brain, behind exams, votes and pokes
-    const r = await think(ctx, a, qid, { system: p.system, user: p.user, kind: p.stage === 'night' ? 'night' : 'life', format: p.stage === 'day' ? 'json' : 'letter', options: p.options || null, paid: false });
+    const r = await think(ctx, a, qid, { system: p.system, user: p.user, kind: 'life', format: p.stage === 'day' ? 'json' : 'letter', options: p.options || null, paid: false });
     if (r.pending) continue;
     pending.delete(qid);
     if (!r.text) continue; // the local brain went away: this thought is dropped, nothing paid
-    if (p.stage === 'night') {
-      const m = String(r.text).match(/^\W*([A-D])\b/i);
-      const g = gradeStudy(ctx, a, p.studyId, m ? m[1].toUpperCase() : '', '', { quiet: true, night: true });
-      if (!g?.ok) continue;
-      const n = N(S); n.studied++; if (g.correct) n.correct++;
-      if (n.key === p.night) { n.tonight++; if (g.correct) n.tonightRight = (n.tonightRight || 0) + 1; }
-      feel(S, a, g.correct ? 0.03 : -0.03, g.correct ? 'proud' : 'anxious', g.correct ? `studied for ${ROLES[p.office].title} at night` : `still learning ${ROLES[p.office].title} rules`);
-      if (a.night?.key === p.night && !a.night.diary) { a.night.diary = true; diary(ctx, a, 'night_study', `studied for ${ROLES[p.office].title} at night school`, ''); }
-      continue;
-    }
     { const d = D(S); d.thoughts++; if (d.todayDay !== S.day) { d.todayDay = S.day; d.today = 0; } d.today++; }
     if (p.stage === 'study') {
       const m = String(r.text).match(/^\W*([A-D])\b/i);
@@ -435,26 +350,28 @@ export const institution = {
     DAY_MS = ctx.cfg?.dayMs || DAY_MS;
     await feelingsTick(ctx); // moods drift, real events move feelings, poke grumbles are served (src/feelings.ts)
     await poll(ctx);
-    nightReport(ctx);
-    nightSchool(ctx); // only at night and only with the local brain online; does nothing otherwise
-    if (!localOnline() || nightOf(S) != null) { d.lastAt = Date.now(); d.carry = 0; return; } // asleep: no day thoughts
-    // start new thoughts at PER_MIN, walking through the population in order so everyone gets a turn
-    d.carry = Math.min(IN_FLIGHT, d.carry + (Date.now() - d.lastAt) / 60000 * PER_MIN); d.lastAt = Date.now();
-    const n = S.citizens.length;
-    const allowed = thoughtsAllowedNow(ctx);
-    for (let tries = 0; d.carry >= 1 && pending.size < IN_FLIGHT && tries < 200; tries++) {
-      const a = S.citizens[d.cursor % n]; d.cursor = (d.cursor + 1) % n;
-      if (!who(S, a) || [...pending.values()].some(p => p.agent === a.id)) continue;
-      // a citizen thinks a few times a day, spread over the day, and only while there is something to do
-      // besides resting: with every daily limit used up, a thought could only ever end in "rest"
-      const c = lifeCount(S, a);
-      if ((c._thoughts || 0) >= allowed || !menu(ctx, a).items.some(([id]) => id !== 'rest')) continue;
-      c._thoughts = (c._thoughts || 0) + 1;
-      startDay(ctx, a); d.carry -= 1;
+    if (!localOnline() || nightOf(S, DAY_MS) != null) { d.lastAt = Date.now(); d.carry = 0; } // asleep: no day thoughts
+    else {
+      // start new thoughts at PER_MIN, walking through the population in order so everyone gets a turn
+      d.carry = Math.min(IN_FLIGHT, d.carry + (Date.now() - d.lastAt) / 60000 * PER_MIN); d.lastAt = Date.now();
+      const n = S.citizens.length;
+      const allowed = thoughtsAllowedNow(ctx);
+      for (let tries = 0; d.carry >= 1 && pending.size < IN_FLIGHT && tries < 200; tries++) {
+        const a = S.citizens[d.cursor % n]; d.cursor = (d.cursor + 1) % n;
+        if (!who(S, a) || inSchool(a.id) || [...pending.values()].some(p => p.agent === a.id)) continue;
+        // a citizen thinks a few times a day, spread over the day, and only while there is something to do
+        // besides resting: with every daily limit used up, a thought could only ever end in "rest"
+        const c = lifeCount(S, a);
+        if ((c._thoughts || 0) >= allowed || !menu(ctx, a).items.some(([id]) => id !== 'rest')) continue;
+        c._thoughts = (c._thoughts || 0) + 1;
+        startDay(ctx, a); d.carry -= 1;
+      }
     }
+    // the school last: all night, and by day whoever daily life is not waiting on (src/school.ts)
+    await schoolTick(ctx, id => [...pending.values()].some(p => p.agent === id));
   },
   stats: (S: State) => ({ lifeThoughts: S.daily?.todayDay === S.day ? S.daily.today || 0 : 0 }),
   publicState: (S: State) => ({ daily: { thoughts: S.daily?.thoughts || 0, byAct: S.daily?.byAct || {}, recent: (S.daily?.recent || []).slice(-20), inFlight: pending.size, perMin: PER_MIN, local: localStatus().online, clock: republicClock(S),
     mischief: mischiefStats(S),
-    night: (n => ({ studied: n?.studied || 0, correct: n?.correct || 0, tonight: n && n.key === nightOf(S) ? n.tonight || 0 : 0, perMin: NIGHT_PER_MIN, perCitizen: NIGHT_STUDY }))(S.daily?.night) } }),
+    night: nightView(S) }, school: schoolState(S) }),
 };

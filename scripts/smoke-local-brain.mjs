@@ -3,6 +3,7 @@
 // and that the worker endpoints refuse a wrong token.
 import { spawn } from 'node:child_process';
 import http from 'node:http';
+import net from 'node:net';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -11,7 +12,8 @@ import { smartAnswer } from './smoke-agents.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'country-local-'));
-const PORT = 3970 + Math.floor(Math.random() * 9);
+// a free port from the system, so two runs at the same time never collide (same as smoke.mjs / smoke-brains.mjs)
+const PORT = await new Promise((resolve, reject) => { const s = net.createServer(); s.once('error', reject); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); }); });
 const TOKEN = 'local-test-token-' + Math.random().toString(36).slice(2);
 let asked = 0;
 const lifePrompts = [];
@@ -144,52 +146,13 @@ try {
   const spoken = said.filter(m => m.c === 'streets').length;
   check('daily life talk is capped per hour for the whole street', spoken === 30 && !menu(ctx, { ...me, lastSpeak: 0 }).items.some(([id]) => id === 'talk'), String(spoken));
 
-  // night school (owner, 13 Nov): practice questions at night on the free local brain only
+  // night school moved into the republic's school: its checks are in scripts/smoke-school.mjs
   {
-    const { institution: daily, nightOf } = await import('../src/daily.ts');
+    const { institution: daily } = await import('../src/daily.ts');
     const { workerPull, workerAnswer } = await import('../src/brains.ts');
-    let paid = 0;
-    const kids = Array.from({ length: 30 }, (_, i) => ({ id: `n${i}`, name: `Night ${i}`, city: 'neura', status: 'free', wallet: 300, traits, bio: 'Nurse in Neura City. Saves every coin.', diary: [], practice: {}, quals: {}, record: [], lessons: {}, joinedDay: 0, training: [] }));
-    const NS = { day: 3, policy: { wage: 100, taxRate: 0.1, ubi: 20 }, cities: { neura: { health: 70, budget: 0 } }, treasury: 0, citizens: kids, seats: {}, elections: { list: [] }, applications: { mayor: ['n17'] }, police: { incidents: [] }, academy: { rooms: [] }, feed: {} };
-    const at = h => { NS.foundedAt = Date.now() - (2 * 24 + h) * 3600000; };
-    const said = []; const nctx = { S: NS, cfg: { dayMs: 86400000 }, hourMs: () => 3600000, say: (c, id, t, x) => said.push({ c, t, ...x }), agent: id => NS.citizens.find(x => x.id === id), record() {}, log() {},
-      llm: { enabled: true, askDetailed: async () => { paid++; return { text: null }; }, json: t => { try { return JSON.parse(t); } catch { return null; } } } };
-    const give = per => { NS.daily ||= {}; NS.daily.night ||= {}; NS.daily.night.lastAt = Date.now() - per * 60000 / 35 - 50; };
-    const nightJobs = () => workerPull(16, 'ollama/test').filter(j => /^night:/.test(j.id));
-    at(22);
-    give(10); await daily.tick(nctx);
-    check('night school does nothing while the local brain is offline', !(NS.daily.night.studied) && kids.every(k => !k.studyOpen));
-    workerPull(1, 'ollama/test'); // the local brain comes online
-    give(1.05); await daily.tick(nctx); // picks who studies (one, the rate allows one)
-    await daily.tick(nctx);              // hands the question to the local brain
-    const first = nightJobs();
-    check('at night the citizen closest to an office studies first, for that office', first.length === 1 && kids.find(k => k.studyOpen)?.id === 'n17' && /Mayor/.test(first[0].system), JSON.stringify(first.map(j => j.id)));
-    check('a night-school question goes to the local brain as a letter question, not JSON', first[0]?.format === 'letter' && first[0]?.options?.length >= 2, JSON.stringify(first.map(j => j.format)));
-    for (const j of first) workerAnswer(j.id, 'Z - no idea'); // a wrong answer
-    await daily.tick(nctx);
-    const n17 = kids.find(k => k.id === 'n17');
-    check('a wrong answer leaves a lesson in the server\'s words (question and right answer)', (n17.lessons.mayor || []).some(l => /Right answer:/.test(l)) && NS.daily.night.studied === 1 && NS.daily.night.correct === 0, JSON.stringify(n17.lessons));
-    const n17Jobs = [];
-    for (let round = 0; round < 12; round++) { give(12); await daily.tick(nctx); await daily.tick(nctx); for (const j of nightJobs()) { if (/study:n17:/.test(j.id)) n17Jobs.push(j); workerAnswer(j.id, 'A - from the handbook'); } await daily.tick(nctx); }
-    check('the next study prompt carries the lesson written after a mistake', n17Jobs.length === 1 && /Lessons you wrote down before:[\s\S]*Right answer:/.test(n17Jobs[0].system), JSON.stringify(n17Jobs.map(j => j.system.slice(-200))));
-    const studied = NS.daily.night.studied;
-    check('each citizen studies at most LIFE_NIGHT_STUDY (2) questions a night', kids.every(k => (k.night?.n || 0) <= 2) && studied > 20 && studied <= 60, `${studied} ${JSON.stringify(kids.map(k => k.night?.n || 0))}`);
-    check('night school uses no paid call, no day thoughts, no day study limit and no day byAct', paid === 0 && kids.every(k => !k.lifeCount?._thoughts && !k.studyCount) && !Object.keys(NS.daily.byAct || {}).length, JSON.stringify({ paid, byAct: NS.daily.byAct }));
-    check('night school does not flood #academy or #life', !said.some(m => m.c === 'academy') && said.filter(m => m.c === 'life' && m.kind !== 'poke').length === 0, JSON.stringify(said.slice(0, 3)));
-    check('one diary line per citizen per night', kids.every(k => k.diary.filter(x => x.act === 'night_study').length <= 1) && kids.some(k => k.diary.some(x => x.act === 'night_study')));
-    const later = kids.find(k => k.id !== 'n17' && (k.lessons.mayor || k.lessons.council || k.lessons.police || k.lessons.military));
-    check('public state shows the night', daily.publicState(NS).daily.night.tonight === studied && daily.publicState(NS).daily.night.perMin === 35, JSON.stringify(daily.publicState(NS).daily.night));
-    // past midnight it is still the same night
-    at(22); const evening = nightOf(NS); at(26); const pastMidnight = nightOf(NS); at(12); const noon = nightOf(NS);
-    check('20:00 on day N to 06:00 on day N+1 is one night; daytime is none', evening === pastMidnight && evening != null && noon === null, `${evening} ${pastMidnight} ${noon}`);
-    at(22);
-    // morning: no more night school, and one summary line in #life
-    at(7); give(12); await daily.tick(nctx);
-    check('in daytime night school stops', nightJobs().length === 0);
-    check('the morning after, one night-school summary in #life', said.filter(m => m.kind === 'night').length === 1 && /Night school: \d+ citizens answered \d+ practice questions/.test(said.find(m => m.kind === 'night')?.t || ''), JSON.stringify(said.filter(m => m.c === 'life')));
-    await daily.tick(nctx);
-    check('the summary is said once', said.filter(m => m.kind === 'night').length === 1);
-    void later;
+    const nctx = { cfg: { dayMs: 86400000 }, hourMs: () => 3600000, say() {}, record() {}, log() {},
+      llm: { enabled: false, json: t => { try { return JSON.parse(t); } catch { return null; } } } };
+    workerPull(1, 'ollama/test'); // the local brain is online
 
     // a citizen who already rested twice is not offered rest; if the model rests anyway it is asked once more
     const r1 = { id: 'r1', name: 'Rhea Rest', city: 'neura', status: 'free', wallet: 300, traits, bio: 'Cook in Neura City. Saves every coin.', diary: [], practice: {}, quals: {}, record: [], lessons: {}, joinedDay: 0, training: [], origin: 'native' };

@@ -104,12 +104,20 @@ export function goalLine(S: State, a: Citizen) {
   return `Your goal this week: ${goalLabel(g)} (${Math.round((g.progress || 0) * 100)}% done, ${Math.max(0, g.until - S.day)} days left). Choose what brings you closer.`;
 }
 
+// a citizen's school average (src/school.ts keeps a skill per subject; 0.3 before any lesson). Read here from
+// the record itself, so careers.ts and school.ts do not import each other.
+export function schoolScore(a: Citizen) {
+  const sk = Object.values(a?.school?.skill || {}).filter(x => typeof x === 'number' && Number.isFinite(x)) as number[];
+  return sk.length ? clamp(sk.reduce((x, y) => x + y, 0) / sk.length, 0, 1) : 0.3;
+}
+
+// applicants in order: practice accuracy first, then time in the republic, then what they learnt at school
 export function candidatesFor(ctx: Ctx, roleId: string) {
   const { S } = ctx;
   const ids = S.applications?.[roleId] || [];
   return ids.map(id => ctx.agent(id))
     .filter(a => a && examEligible(S, a, roleId) && eligibility(S, a, roleId).ok)
-    .map(a => ({ a, s: (a.practice[roleId].ok / a.practice[roleId].n) * 0.7 + Math.min(1, ageDays(S, a) / (req(roleId).days * 3)) * 0.3 }))
+    .map(a => ({ a, s: (a.practice[roleId].ok / a.practice[roleId].n) * 0.6 + Math.min(1, ageDays(S, a) / (req(roleId).days * 3)) * 0.25 + schoolScore(a) * 0.15 }))
     .sort((x, y) => y.s - x.s).map(x => x.a);
 }
 
