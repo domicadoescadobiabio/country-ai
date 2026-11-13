@@ -13,7 +13,10 @@ import { ROLES, ROLE_ORDER } from './src/roles.mjs';
 import { FOUNDERS, makeCitizen, randomTraits } from './src/citizens.mjs';
 import { growPopulation } from './src/population.mjs';
 import { CITIES, assignCity } from './src/cities.ts';
-import { tierOf, budgetState, trainBudgetState, trainPaceView, cleanDomain, workerPull, workerAnswer, localStatus, localOnline, ladderTick } from './src/brains.ts';
+import { tierOf, budgetState, trainBudgetState, trainPaceView, cleanDomain, workerPull, workerAnswer, localStatus, localOnline, ladderTick, localQueueView } from './src/brains.ts';
+import { borderCheck } from './src/military.ts';
+import { placeView as governmentPlace } from './src/president.ts'; // government buildings (Government box)
+import { placeView as peoplePlace } from './src/daily.ts';         // the people's buildings (People box)
 import { freshAcademy, academyTick, totalSeats } from './src/academy.ts';
 import { lifeTick, payday } from './src/life.ts';
 import { INSTITUTIONS } from './src/institutions.ts';
@@ -363,6 +366,98 @@ function mapState() {
 // the mood a list shows: label and emoji only (the full mood, why and bonds are on /api/citizens/:id)
 const moodLite = a => { const m = moodView(a); return m ? { label: m.label, emoji: m.emoji } : null; };
 const goalLite = a => { const g = goalView(a); return g ? { label: g.label, progress: g.progress } : null; };
+// ---------------------------------------------------------------- building interiors (GET /api/place/<type>)
+// One contract for every box: { type, city, title, updatedAt, occupants: [{ id, name, role, activity, detail, since,
+// field, gifted, mood }], board: {...}, more }. The views come from placeView() of the Government box (src/president.ts)
+// and of the People box (src/daily.ts), each null for a type that is not theirs; the data centre is the Nation box's
+// own. The server checks type and city against fixed
+// lists, cleans every text (control characters out, length capped, the border check: a text that trips it is not
+// shown), keeps at most 60 occupants (the rest counted in `more`) and the whole answer under 40 KB, caches each
+// (type, city, portfolio) for 10 s and limits each IP.
+const PLACE_TYPES = {
+  parliament: 'Parliament', palace: 'Presidential Palace', vp_office: "Vice President's Office", ministry: 'Ministry', const_court: 'Constitutional Court',
+  court: 'Court', prison: 'Prison', jail: 'Jail', academy: 'Academy', police_academy: 'Police Academy', military_academy: 'Military Academy',
+  police_hq: 'Police Headquarters', police_station: 'Police Station', military_hq: 'Military Headquarters', army_base: 'Army Base', border_post: 'Border Post',
+  election_comm: 'Election Commission', central_bank: 'Central Bank', city_hall: 'City Hall', primary_school: 'Primary School', middle_school: 'Middle School',
+  high_school: 'High School', university: 'University', library: 'Library', hospital: 'Hospital', clinic: 'Clinic', data_center: 'Data Centre',
+  market: 'Market', mall: 'Mall', supermarket: 'Supermarket', office: 'Office', factory: 'Factory', community_hall: 'Community Hall',
+};
+const PLACE_CACHE_MS = 10000, PLACE_MAX_BYTES = 40000, PLACE_MAX_OCC = 60;
+const PLACE_PER_MIN = clamp(Number(process.env.PLACE_PER_MIN) || 60, 1, 6000);
+const placeCache = new Map(), placeHits = new Map();
+// views by type: the Nation box's own (the data centre); every other type asks the Government box, then the People box
+const placeViews = {};
+// the data centre: the local brain (answers a minute, queue, model, runner) and the school (lessons a minute)
+const brainSamples = [];
+setInterval(() => { brainSamples.push({ t: Date.now(), answered: localStatus().answered, lessons: Number(S?.school?.stats?.total ?? 0) }); if (brainSamples.length > 12) brainSamples.shift(); }, 15000).unref();
+const perMin = key => { const a = brainSamples[0], b = brainSamples.at(-1); return a && b && b.t > a.t ? Math.round(((b[key] - a[key]) / ((b.t - a.t) / 60000)) * 10) / 10 : null; };
+placeViews.data_center = (Sx) => {
+  const ls = localStatus(), q = localQueueView(PLACE_MAX_OCC), T = trainBudgetState(ctx);
+  const KIND = { exam: 'sitting an exam question', vote: 'deciding a vote', life: 'thinking about the day', train: 'at school', night: 'at night school', poke: 'grumbling about a poke' };
+  return {
+    occupants: q.list.map(j => { const a = citizenById(Sx, j.agent); return a && { id: a.id, name: a.name, role: 'citizen', activity: KIND[j.kind] || 'thinking', detail: j.leased ? 'the local model is answering' : 'waiting in the queue', since: j.since, mood: moodLite(a) }; }).filter(Boolean),
+    board: { online: ls.online, model: ls.model || null, answeredPerMin: perMin('answered'), queued: ls.queued, queuedTrain: ls.queuedTrain, answered: ls.answered, expired: ls.expired, trainExpired: ls.trainExpired,
+      runnerVersion: ls.runner?.version ?? null, lessonsPerMin: perMin('lessons'), lessonsToday: Number(Sx.school?.stats?.today ?? 0),
+      teachersToday: { openrouter: Math.round(T.spentBy.openrouter * 100) / 100, claude: Math.round(T.spentBy.claude * 100) / 100 } },
+    more: Math.max(0, q.total - q.list.length),
+  };
+};
+// fallback for a building whose box has not written its view yet: the shape of the contract, nobody inside
+const placeFallback = () => ({ occupants: [], board: { note: 'This building opens soon.' } });
+const placeText = (v, max) => { const t = cleanText(v, max); return t && !borderCheck({ text: t }, 2) ? t : ''; };
+function placeBoard(v, depth = 0) {
+  if (v == null || typeof v === 'boolean') return v ?? null;
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  if (typeof v === 'string') return placeText(v, 200);
+  if (depth >= 3) return null;
+  if (Array.isArray(v)) return v.slice(0, 30).map(x => placeBoard(x, depth + 1));
+  if (typeof v === 'object') { const o = {}; for (const k of Object.keys(v).slice(0, 40)) if (/^[A-Za-z][A-Za-z0-9_]{0,31}$/.test(k)) o[k] = placeBoard(v[k], depth + 1); return o; }
+  return null;
+}
+function placeOccupant(o) {
+  if (!o || typeof o !== 'object' || !o.id) return null;
+  const mood = o.mood && typeof o.mood === 'object' ? { label: placeText(o.mood.label, 20), emoji: cleanText(o.mood.emoji, 4) } : o.mood ? placeText(o.mood, 20) : null;
+  return { id: cleanText(o.id, 40), name: placeText(o.name, 40) || cleanText(o.id, 40), role: placeText(o.role, 40), activity: placeText(o.activity, 80), detail: placeText(o.detail, 160),
+    // gifted: true, or a badge text such as "gifted in biology" (the Government box writes the text)
+    since: o.since != null && Number.isFinite(Number(o.since)) ? Number(o.since) : null, field: o.field ? placeText(o.field, 40) : null, gifted: o.gifted === true || (typeof o.gifted === 'string' && o.gifted.trim() !== ''), mood };
+}
+function buildPlace(type, city, portfolio) {
+  let v = null;
+  try {
+    v = placeViews[type] ? placeViews[type](S, city, { portfolio }) : governmentPlace(S, type, city, { portfolio }) ?? peoplePlace(S, type, city);
+    v ||= placeFallback();
+  } catch (e) { logActivity('state', `place ${type}: ${String(e?.message || e).slice(0, 80)}`); v = placeFallback(); }
+  const all = (Array.isArray(v.occupants) ? v.occupants : []).map(placeOccupant).filter(Boolean);
+  const out = { type, city, title: placeText(v.title, 80) || PLACE_TYPES[type] + (city ? ` · ${CITIES.find(c => c.id === city)?.name || city}` : ''), updatedAt: Date.now(),
+    occupants: all.slice(0, PLACE_MAX_OCC), board: placeBoard(v.board && typeof v.board === 'object' ? v.board : {}), more: Math.max(0, Number(v.more) || 0) + Math.max(0, all.length - PLACE_MAX_OCC) };
+  // under 40 KB: fewer people first (counted in `more`), then the board itself
+  while (JSON.stringify(out).length > PLACE_MAX_BYTES && out.occupants.length) { out.occupants.pop(); out.more++; }
+  if (JSON.stringify(out).length > PLACE_MAX_BYTES) out.board = { note: 'Too much to show.' };
+  return out;
+}
+function placeLimited(req) {
+  if (isLoopback(req)) return false;
+  const ip = clientIp(req), now = Date.now();
+  let w = placeHits.get(ip); if (!w || now - w.t >= 60000) { w = { t: now, n: 0 }; placeHits.set(ip, w); }
+  return ++w.n > PLACE_PER_MIN;
+}
+setInterval(() => { const now = Date.now(); for (const [k, w] of placeHits) if (now - w.t > 60000) placeHits.delete(k); for (const [k, c] of placeCache) if (now - c.at > PLACE_CACHE_MS) placeCache.delete(k); }, 60000).unref();
+function handlePlace(req, res, type) {
+  if (!Object.hasOwn(PLACE_TYPES, type)) return send(res, 404, { error: 'no such building type' });
+  if (placeLimited(req)) { res.setHeader('retry-after', '60'); return send(res, 429, { error: `slow down: ${PLACE_PER_MIN} building views a minute` }); }
+  const u = new URL(req.url, 'http://x');
+  const cq = u.searchParams.get('city'); const city = cq == null || cq === '' ? null : CITIES.some(c => c.id === cq) ? cq : undefined;
+  if (city === undefined) return send(res, 400, { error: 'unknown city' });
+  const pq = u.searchParams.get('portfolio'); const portfolio = type === 'ministry' && pq ? (/^[a-z][a-z_]{0,23}$/.test(pq) ? pq : undefined) : null;
+  if (portfolio === undefined) return send(res, 400, { error: 'portfolio: lowercase letters and _ only' });
+  const key = `${type}|${city || ''}|${portfolio || ''}`;
+  const hit = placeCache.get(key);
+  if (hit && Date.now() - hit.at < PLACE_CACHE_MS) return send(res, 200, hit.view);
+  const view = buildPlace(type, city, portfolio);
+  // at most 500 cached views (33 types x 6 cities is ~200): odd portfolio names cannot grow the cache
+  if (placeCache.size < 500) placeCache.set(key, { at: Date.now(), view });
+  return send(res, 200, view);
+}
 const liteCitizen = a => ({ id: a.id, name: a.name, city: a.city || null, status: a.status, office: a.office || null, color: a.color, wallet: Math.round(a.wallet || 0), home: a.home || null, mood: moodLite(a), goal: goalLite(a) });
 function fullState() {
   const feed = {};
@@ -608,6 +703,8 @@ const server = http.createServer(async (req, res) => {
       // + school: interests, strongest fields, today's field, talent badges (gifted), skills and the last lessons
       return send(res, 200, { citizen: { ...publicCitizen(a), mood: moodView(a), bonds: bondsView(S, a), pokes: a.pokes?.day === S.day ? a.pokes.n : 0, school: schoolView(a) } });
     }
+    const plm = req.method === 'GET' && p.match(/^\/api\/place\/([^/]{1,40})$/);
+    if (plm) return handlePlace(req, res, plm[1]);
     const pm = req.method === 'POST' && p.match(/^\/api\/poke\/([a-z0-9-]{1,40})$/);
     if (pm) return await handlePoke(req, res, pm[1]);
     if (req.method === 'GET' && p === '/api/census') return send(res, 200, { foundedAt: S.foundedAt, dayMs: CFG.dayMs, hours: S.census || [], stepErrors: S.counters.stepErrors || 0, lastStepError: S.counters.lastStepError || null });

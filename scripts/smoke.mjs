@@ -273,6 +273,30 @@ try {
   // every section the page might need is on the fixed list (a key the list misses could never be refreshed by a tab)
   const notListed = Object.keys(full).filter(k => !['config', 'citizens', 'population', 'feed', 'activity', 'decisions'].includes(k) && !sp.includes(k));
   check('config.stateParts covers every section of the compact state', notListed.length === 0, JSON.stringify(notListed));
+  // --- building interiors: GET /api/place/<type>?city=  (one contract for every box)
+  const PTYPES = ['parliament', 'palace', 'vp_office', 'ministry', 'const_court', 'court', 'prison', 'jail', 'academy', 'police_academy', 'military_academy', 'police_hq', 'police_station',
+    'military_hq', 'army_base', 'border_post', 'election_comm', 'central_bank', 'city_hall', 'primary_school', 'middle_school', 'high_school', 'university', 'library', 'hospital', 'clinic',
+    'data_center', 'market', 'mall', 'supermarket', 'office', 'factory', 'community_hall'];
+  const city0 = full.cities?.[0]?.id || 'neura';
+  const placeBad = [], placeFallbacks = [];
+  for (const t of PTYPES) {
+    const r = await fetch(`${BASE}/api/place/${t}?city=${city0}${t === 'ministry' ? '&portfolio=finance' : ''}`); const txt = await r.text(); let v = null; try { v = JSON.parse(txt); } catch { /* bad json */ }
+    const ok = r.status === 200 && v && v.type === t && v.city === city0 && typeof v.title === 'string' && v.title && typeof v.updatedAt === 'number' && Array.isArray(v.occupants) && v.occupants.length <= 60
+      && v.board && typeof v.board === 'object' && !Array.isArray(v.board) && typeof v.more === 'number' && Buffer.byteLength(txt) < 40000
+      && v.occupants.every(o => o.id && typeof o.name === 'string' && typeof o.gifted === 'boolean' && ['role', 'activity', 'detail', 'since', 'field', 'mood'].every(k => k in o));
+    if (!ok) placeBad.push([t, r.status, txt.slice(0, 120)]);
+    if (v?.board?.note === 'This building opens soon.') placeFallbacks.push(t);
+  }
+  check('place: every building type answers the contract (type, city, title, updatedAt, occupants <= 60, board, more) under 40 KB', placeBad.length === 0, JSON.stringify(placeBad.slice(0, 4)));
+  check('place: every type is served by its own box (Government, People, or the data centre), none by the fallback', placeFallbacks.length === 0, JSON.stringify(placeFallbacks));
+  const pUnknown = await fetch(BASE + '/api/place/spaceport'), pProto = await fetch(BASE + '/api/place/__proto__'), pCity = await fetch(BASE + '/api/place/hospital?city=atlantis'), pPort = await fetch(BASE + '/api/place/ministry?portfolio=../x');
+  check('place: an unknown type (or __proto__) is 404, an unknown city or bad portfolio is 400', pUnknown.status === 404 && pProto.status === 404 && pCity.status === 400 && pPort.status === 400, `${pUnknown.status} ${pProto.status} ${pCity.status} ${pPort.status}`);
+  const dc = await get(`/api/place/data_center?city=${city0}`);
+  check('place: the data centre shows the local brain and the school (answers a minute, queue, model, lessons a minute)', ['online', 'model', 'answeredPerMin', 'queued', 'queuedTrain', 'trainExpired', 'lessonsPerMin', 'lessonsToday', 'teachersToday'].every(k => k in dc.board), JSON.stringify(dc.board));
+  const c1 = await get('/api/place/parliament'), c2 = await get('/api/place/parliament');
+  check('place: views are cached for 10 s per (type, city) and the city is optional', c1.updatedAt === c2.updatedAt && c1.city === null, JSON.stringify([c1.updatedAt, c2.updatedAt, c1.city]));
+  const pl = []; for (let i = 0; i < 61; i++) pl.push((await fetch(BASE + '/api/place/market', { headers: { 'x-forwarded-for': '203.0.113.50' } })).status);
+  check('place: an IP gets 60 building views a minute, the 61st is 429', pl.slice(0, 60).every(s => s === 200) && pl[60] === 429, JSON.stringify(pl.slice(-3)));
   // archive reads are rate limited per IP (60/min by default); local callers without a proxy header are not counted
   const viaProxy = ip => fetch(BASE + '/api/ledger?limit=1', { headers: { 'x-forwarded-for': ip } });
   const burst = []; for (let i = 0; i < 61; i++) burst.push((await viaProxy('203.0.113.9')).status);

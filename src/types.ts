@@ -196,3 +196,9 @@ export interface Institution {
   stats?: (S: State) => Record<string, number>;
   publicState?: (S: State) => Record<string, unknown>;
 }
+
+/** building interiors (GET /api/place/<type>): placeView() in src/president.ts and src/daily.ts return this, or null
+ *  for a type that is not theirs; server.mjs checks type and city, caches, trims to 60 occupants and 40 KB and cleans
+ *  every text before serving it. One person inside: only public facts, texts written by the server or border-checked. */
+export interface PlaceOccupant { id: string; name: string; role?: string; activity?: string; detail?: string; since?: number | null; field?: string | null; gifted?: boolean | string | null; mood?: { label: string; emoji: string } | string | null }
+export interface PlaceView { type?: string; city?: string | null; title?: string; updatedAt?: number; occupants?: PlaceOccupant[]; board?: Record<string, unknown>; more?: number }

@@ -187,6 +187,17 @@ const envNum = (k, d, lo, hi) => { const v = Number(process.env[k]); return Numb
 export const LOCAL_TRAIN_SHARE = envNum('LOCAL_TRAIN_SHARE', 0.4, 0, 1);
 const LOCAL_TRAIN_WAIT_MS = envNum('LOCAL_TRAIN_WAIT_MS', 900000, 60000, 3600000);
 export const localOnline = () => Date.now() - LOCAL.lastPull < 20000;
+// who is waiting on the local brain right now (the data centre's occupants): agent id, the kind of question, since
+// when and whether the runner has it; never the prompt itself
+export function localQueueView(limit = 60) {
+  const out = [];
+  for (const j of LOCAL.jobs.values()) {
+    if (j.answer != null || !j.agent) continue;
+    out.push({ agent: j.agent, kind: j.kind || 'question', since: j.createdAt, leased: !!j.leasedAt });
+  }
+  out.sort((x, y) => x.since - y.since);
+  return { total: out.length, list: out.slice(0, Math.max(0, limit)) };
+}
 export function localStatus() { return { online: localOnline(), model: LOCAL.model, queued: [...LOCAL.jobs.values()].filter(j => j.answer == null).length, answered: LOCAL.answered, expired: LOCAL.expired, trainExpired: LOCAL.trainExpired, trainShare: LOCAL_TRAIN_SHARE,
   queuedTrain: [...LOCAL.jobs.values()].filter(j => j.answer == null && j.priority >= TRAIN_PRIORITY).length, runner: LOCAL.runner }; }
 // What the runner says it is (scripts/local-brain.mjs sends it with every pull). Shown on /api/state, so only
