@@ -1,5 +1,7 @@
 // The opening: a scroll-driven flight through the neon megacity (the same city as the 3D map), with a short
-// lore hook on each beat, ending on live numbers from the republic and then fading into the dashboard.
+// lore hook on each beat, ending on live numbers from the republic. The end holds still (the city keeps living
+// behind it) until the visitor picks "Enter the republic" (dashboard) or "Walk the city" (/map.html);
+// Skip and Esc still leave at once.
 // Server text never goes into innerHTML: every number is set with textContent.
 import * as THREE from './vendor/three/three.module.js';
 import { EffectComposer } from './vendor/three/EffectComposer.js';
@@ -14,7 +16,9 @@ const $ = s => document.querySelector(s);
 const intro = $('#intro');
 const SEEN = 'country-ai.intro.seen';
 const store = { get() { try { return sessionStorage.getItem(SEEN); } catch { return null; } }, set() { try { sessionStorage.setItem(SEEN, '1'); } catch { /* private mode */ } } };
-const force = new URLSearchParams(location.search).has('intro');
+const params = new URLSearchParams(location.search);
+const force = params.has('intro');
+const jumpEnd = params.get('intro') === 'end'; // /?intro=end opens straight on the last beat (checks and sharing)
 
 function leave(instant) {
   if (!intro || intro.hidden) return;
@@ -93,15 +97,17 @@ function start() {
   // scroll: the overlay scrolls on its own; the flight follows with a little inertia
   const beats = [...document.querySelectorAll('#beats .beat')];
   const bar = $('#introBar'); let want = 0, at = 0;
+  // scrolling to the very end only parks the camera on the last shot; nothing leaves on its own
   const onScroll = () => {
     const max = intro.scrollHeight - intro.clientHeight;
-    want = max > 0 ? intro.scrollTop / max : 0;
-    if (want > 0.995) leave();
+    want = max > 0 ? Math.min(1, intro.scrollTop / max) : 0;
   };
   const off = new AbortController(); const signal = off.signal;
   intro.addEventListener('scroll', onScroll, { passive: true, signal });
   $('#introSkip')?.addEventListener('click', () => leave(), { signal });
   for (const b of document.querySelectorAll('[data-enter]')) b.addEventListener('click', () => leave(), { signal });
+  // "Walk the city": remember the opening was seen, then let the link open /map.html
+  for (const a of document.querySelectorAll('[data-walk]')) a.addEventListener('click', () => store.set(), { signal });
   addEventListener('keydown', e => { if (e.key === 'Escape' && running) leave(); }, { signal });
   addEventListener('resize', () => { if (!running) return; camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); composer.setSize(innerWidth, innerHeight); }, { signal });
   cleanup = () => {
@@ -114,16 +120,21 @@ function start() {
     renderer.dispose(); renderer.forceContextLoss(); renderer = null; cleanup = null;
   };
 
-  // each beat is shown around its own point of the scroll and fades either side
+  // each beat is shown around its own point of the scroll and fades either side; the last one (.end) fades in
+  // and then stays put, fully visible and clickable, from its point to the end of the scroll
+  let atEnd = false;
   const showBeats = p => {
     for (const el of beats) {
       const c = Number(el.dataset.at); const w = Number(el.dataset.w || 0.075);
-      const o = Math.max(0, 1 - Math.abs(p - c) / w);
+      const hold = el.classList.contains('end') && p >= c;
+      const o = hold ? 1 : Math.max(0, 1 - Math.abs(p - c) / w);
       el.style.opacity = o.toFixed(3);
-      el.style.transform = `translateY(${((c - p) * 220).toFixed(1)}px)`;
+      el.style.transform = `translateY(${(hold ? 0 : (c - p) * 220).toFixed(1)}px)`;
       el.classList.toggle('on', o > 0.5);
     }
-    if (bar) bar.style.transform = `scaleX(${p.toFixed(4)})`;
+    const end = want >= 0.995;
+    if (end !== atEnd) { atEnd = end; intro.classList.toggle('at-end', end); } // hides the SCROLL hint
+    if (bar) bar.style.transform = `scaleX(${(end ? 1 : p).toFixed(4)})`;
   };
 
   // live numbers for the last beat
@@ -153,6 +164,7 @@ function start() {
   };
   showBeats(0);
   requestAnimationFrame(frame);
+  if (jumpEnd) requestAnimationFrame(() => { intro.scrollTop = intro.scrollHeight; onScroll(); });
   // the stage shows as soon as the first frame is drawn
   requestAnimationFrame(() => requestAnimationFrame(() => intro.classList.add('ready')));
 }

@@ -53,6 +53,8 @@ body.intro-on { overflow: hidden; }
 .intro-hud .skip { background: rgba(10, 6, 34, .6); color: #c7d2fe; border: 1px solid rgba(167, 139, 250, .4); border-radius: 999px; padding: 7px 14px; font: 600 12px var(--mono); letter-spacing: .08em; cursor: pointer; }
 .intro-hud .skip:hover { color: #fff; border-color: #22d3ee; }
 @keyframes hint { 50% { opacity: .35; transform: translateY(3px); } }
+/* at the end of the scroll there is nothing left to scroll: the hint goes, the bar stays full */
+.intro.at-end .intro-hud .hint { display: none; }
 
 @media (max-width: 760px) {
   .counters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
