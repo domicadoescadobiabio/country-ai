@@ -32,7 +32,7 @@ await new Promise(r => mock.listen(0, '127.0.0.1', r));
 const child = spawn(process.execPath, ['server.mjs'], {
   cwd: ROOT,
   env: { ...process.env, PORT: String(PORT), DATA_DIR: DATA, TICK_SECONDS: '0.05', DAY_SECONDS: '0.5', POPULATION: '400', OPENROUTER_API_KEY: '', ANTHROPIC_API_KEY: '', ADMIN_TOKEN: TOKEN, IMMIGRANTS_PER_HOUR: '50',
-    BRAIN_SECRET: 'smoke-brain-secret', ANTHROPIC_BASE_URL: `http://127.0.0.1:${mock.address().port}`, REGISTER_COOLDOWN_MS: '0', CAREER_DAYS_SCALE: '0.3', ELECTION_MIN_VOTING_MS: '5000' },
+    BRAIN_SECRET: 'smoke-brain-secret', SSE_STATE_MS: '1500', ANTHROPIC_BASE_URL: `http://127.0.0.1:${mock.address().port}`, REGISTER_COOLDOWN_MS: '0', CAREER_DAYS_SCALE: '0.3', ELECTION_MIN_VOTING_MS: '5000' },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 let stderr = '';
@@ -181,7 +181,7 @@ try {
   check('/api/map is much smaller than /api/state', JSON.stringify(mj).length * 3 < JSON.stringify(gzBody).length, `${JSON.stringify(mj).length} vs ${JSON.stringify(gzBody).length}`);
   const one = (await get('/api/citizens?size=1')).citizens[0];
   const lc = await get('/api/citizens?lite=1&size=5');
-  check('citizens carry their home address; ?lite=1 lists id, name, city, status, office, home and mood only', 'home' in one && lc.citizens.length === 5 && lc.citizens.every(a => Object.keys(a).sort().join() === 'city,color,goal,home,id,mood,name,office,status' && (a.mood === null || Object.keys(a.mood).sort().join() === 'emoji,label')), JSON.stringify({ home: one.home, lite: lc.citizens[0] }));
+  check('citizens carry their home address; ?lite=1 lists id, name, city, status, office, home and mood only', 'home' in one && lc.citizens.length === 5 && lc.citizens.every(a => Object.keys(a).sort().join() === 'city,color,goal,home,id,mood,name,office,status,wallet' && (a.mood === null || Object.keys(a.mood).sort().join() === 'emoji,label')), JSON.stringify({ home: one.home, lite: lc.citizens[0] }));
 
   // --- poke (POST /api/poke/:id): no login, no text from the human, rate limited, this site only
   const pool = (await get('/api/citizens?lite=1&size=40&status=free')).citizens.map(a => a.id);
@@ -237,6 +237,42 @@ try {
   check('/api/state budget.train shows the teachers\' budget, calls, denials, pacing, examples per field and the quality gate', stT && typeof stT.daily === 'number' && typeof stT.examples === 'number' && stT.calls && 'claude' in stT.calls
     && typeof stT.allowedNow === 'number' && typeof stT.inFlight === 'number' && typeof stT.spentBy?.openrouter === 'number' && typeof stT.spentBy?.claude === 'number'
     && typeof stT.orShortUsd === 'number' && typeof stT.orMinUsd === 'number' && typeof stT.claudeCapNow === 'number' && typeof stT.gifted?.calls === 'number' && 'yesterday' in stT && stT.byDomain && typeof stT.byDomain === 'object' && ['kept', 'unverified', 'wrong', 'duplicate'].every(k => typeof stT.dataset?.[k] === 'number'), JSON.stringify(stT));
+  // --- the live stream: `state` is small (< 30 KB) and rare (here SSE_STATE_MS 1.5 s; the ticks run every 50 ms),
+  // while messages and decisions keep streaming as they happen; the page merges `state` over /api/state
+  const sse = await new Promise(resolve => {
+    const ev = { state: [], other: 0, bytes: 0 }; let buf = '';
+    const r = http.get(BASE + '/api/stream', res => {
+      res.setEncoding('utf8');
+      res.on('data', chunk => {
+        ev.bytes += Buffer.byteLength(chunk); buf += chunk;
+        let i; while ((i = buf.indexOf('\n\n')) >= 0) {
+          const block = buf.slice(0, i); buf = buf.slice(i + 2);
+          const type = block.match(/^event: (.+)$/m)?.[1]; const data = block.match(/^data: (.*)$/m)?.[1];
+          if (type === 'state') ev.state.push(data); else if (type && type !== 'hello') ev.other++;
+        }
+      });
+    });
+    setTimeout(() => { r.destroy(); resolve(ev); }, 6500);
+  });
+  const sizes = sse.state.map(d => Buffer.byteLength(d)), full = await get('/api/state');
+  const shapes = sse.state.length ? Object.entries(JSON.parse(sse.state.at(-1))) : [];
+  check('SSE: state is sent at most every SSE_STATE_MS (not every tick)', sse.state.length >= 1 && sse.state.length <= 5, JSON.stringify({ states: sse.state.length }));
+  check('SSE: each state event is under 30 KB and carries the header numbers', sizes.every(n => n < 30000) && shapes.some(([k]) => k === 'stats') && shapes.some(([k]) => k === 'seats') && shapes.some(([k]) => k === 'day'), JSON.stringify({ sizes, keys: shapes.map(([k]) => k) }));
+  check('SSE: state keys are whole /api/state keys of the same shape (the page can merge them)', shapes.every(([k, v]) => k in full && Array.isArray(v) === Array.isArray(full[k]) && typeof v === typeof full[k]) && !shapes.some(([k]) => ['citizens', 'feed', 'decisions', 'activity'].includes(k)), JSON.stringify(shapes.map(([k]) => k)));
+  check('SSE: messages, decisions and other small events still stream as they happen', sse.other >= 5, JSON.stringify({ other: sse.other, bytes: sse.bytes }));
+  const lastLive = sse.state.length ? JSON.parse(sse.state.at(-1)) : {};
+  check('SSE: state keeps what the header and the government chart draw (stats, seats, academy, command, paused, day, cities with mayors)', ['stats', 'seats', 'academy', 'command', 'paused', 'day'].every(k => k in lastLive)
+    && Array.isArray(lastLive.cities) && lastLive.cities.length > 0 && lastLive.cities.every(c => c.id && c.name && 'mayor' in c && !('blocks' in c)), JSON.stringify({ keys: Object.keys(lastLive), city: lastLive.cities?.[0] }));
+  // section reads for an open tab: /api/state?parts= returns only the asked compact sections, announced in config.stateParts
+  const sp = full.config?.stateParts || [];
+  const pr = await get('/api/state?parts=elections,court,police,nonsense,__proto__,constructor,toString,config,citizens');
+  check('/api/state announces its sections (config.stateParts) and ?parts= returns only fixed-list names (no __proto__, constructor, config, citizens)', Array.isArray(sp) && sp.includes('elections') && sp.includes('stats') && !sp.includes('citizens') && !sp.includes('config')
+    && Object.keys(pr).sort().join() === ['court', 'elections', 'police'].filter(k => sp.includes(k)).sort().join() && Array.isArray(pr.elections) && Object.getPrototypeOf(pr) === Object.prototype, JSON.stringify({ keys: Object.keys(pr), sp }));
+  const tooMany = await fetch(BASE + '/api/state?parts=' + Array.from({ length: 17 }, (_, i) => 'p' + i).join(','));
+  check('/api/state?parts= refuses more than 16 sections (400)', tooMany.status === 400, String(tooMany.status));
+  // every section the page might need is on the fixed list (a key the list misses could never be refreshed by a tab)
+  const notListed = Object.keys(full).filter(k => !['config', 'citizens', 'population', 'feed', 'activity', 'decisions'].includes(k) && !sp.includes(k));
+  check('config.stateParts covers every section of the compact state', notListed.length === 0, JSON.stringify(notListed));
   // archive reads are rate limited per IP (60/min by default); local callers without a proxy header are not counted
   const viaProxy = ip => fetch(BASE + '/api/ledger?limit=1', { headers: { 'x-forwarded-for': ip } });
   const burst = []; for (let i = 0; i < 61; i++) burst.push((await viaProxy('203.0.113.9')).status);

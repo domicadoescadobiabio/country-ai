@@ -115,6 +115,48 @@ function emit(type, data) {
   const msg = `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
   for (const res of clients) res.write(msg);
 }
+// The live `state` event is small and rare. It carries the numbers the header and the live panels show (counters,
+// seats, treasury, budget, local brain...) plus any other public view that is itself small, each whole (never cut,
+// so the page can merge it over what /api/state gave it). Long lists (citizens, feeds, full elections, cases)
+// stay on /api/state and the lite endpoints. It goes out at most every SSE_STATE_MS (default 20 s) and only when
+// something changed; messages, decisions and ledger entries keep streaming the moment they happen.
+const SSE_STATE_MS = clamp(Number(process.env.SSE_STATE_MS) || 20000, 1000, 120000);
+const SSE_STATE_MAX = 30000, SSE_KEY_MAX = 6000;
+// what the header and the government chart redraw on every state event (agreed with the Frontend box)
+const LIVE_KEYS = ['stats', 'seats', 'academy', 'command', 'treasury', 'policy', 'econ', 'day', 'tick', 'paused', 'budget', 'localBrain', 'llmUsage'];
+// The sections an open tab may read alone (/api/state?parts=a,b), a FIXED list: a name is served only when it is
+// here, never looked up on the state object as given (no __proto__ / constructor). config.stateParts announces
+// the ones the running republic has.
+const STATE_PARTS = new Set(['stats', 'seats', 'academy', 'treasury', 'policy', 'econ', 'day', 'tick', 'paused', 'llmUsage', 'localBrain', 'budget',
+  'applications', 'cabinet', 'audit', 'bills', 'laws', 'command', 'cities', 'homeLayout', 'court', 'daily', 'military', 'police', 'elections',
+  'orders', 'autonomy', 'training', 'underworld', 'school', 'gov', 'presidency', 'reportCards']);
+const STATE_PARTS_MAX = 16;
+function liveState() {
+  const c = compactState(); const out = {};
+  for (const k of LIVE_KEYS) if (k in c) out[k] = c[k];
+  // cities: only what the header and the chart show (the full view, blocks and budgets, is the 'cities' part)
+  if (Array.isArray(c.cities)) out.cities = c.cities.map(x => ({ id: x.id, name: x.name, mayor: x.mayor ?? null, residents: x.residents }));
+  let size = JSON.stringify(out).length;
+  for (const k of Object.keys(c).sort()) {
+    if (k in out) continue;
+    const n = JSON.stringify(c[k] ?? null).length;
+    if (n <= SSE_KEY_MAX && size + n < SSE_STATE_MAX - 200) { out[k] = c[k]; size += n + k.length + 4; }
+  }
+  return out;
+}
+let stateSent = { at: 0, sig: '' };
+function emitState(force = false) {
+  if (!clients.size) return;
+  const now = Date.now();
+  if (!force && now - stateSent.at < SSE_STATE_MS) return;
+  const live = liveState(); const json = JSON.stringify(live);
+  const sig = JSON.stringify({ ...live, tick: 0 }); // a new tick number alone is not a change
+  stateSent.at = now;
+  if (!force && sig === stateSent.sig) return;
+  stateSent.sig = sig;
+  const msg = `event: state\ndata: ${json}\n\n`;
+  for (const res of clients) res.write(msg);
+}
 setInterval(() => { for (const res of clients) res.write(': ping\n\n'); }, 20000).unref();
 
 // ---------------------------------------------------------------- context shared by institutions
@@ -190,7 +232,7 @@ async function step() {
     await lifeTick(ctx);
     ladderTick(ctx);
     census();
-    emit('state', compactState());
+    emitState(); // at most every SSE_STATE_MS, small, only when something changed
     dirty = true;
   } catch (e) {
     console.error('step error', e);
@@ -321,13 +363,16 @@ function mapState() {
 // the mood a list shows: label and emoji only (the full mood, why and bonds are on /api/citizens/:id)
 const moodLite = a => { const m = moodView(a); return m ? { label: m.label, emoji: m.emoji } : null; };
 const goalLite = a => { const g = goalView(a); return g ? { label: g.label, progress: g.progress } : null; };
-const liteCitizen = a => ({ id: a.id, name: a.name, city: a.city || null, status: a.status, office: a.office || null, color: a.color, home: a.home || null, mood: moodLite(a), goal: goalLite(a) });
+const liteCitizen = a => ({ id: a.id, name: a.name, city: a.city || null, status: a.status, office: a.office || null, color: a.color, wallet: Math.round(a.wallet || 0), home: a.home || null, mood: moodLite(a), goal: goalLite(a) });
 function fullState() {
   const feed = {};
   for (const [ch, list] of Object.entries(S.feed)) feed[ch] = list.slice(-120);
+  const compact = compactState();
   return {
-    ...compactState(),
+    ...compact,
     config: {
+      // the sections a tab may ask for alone (/api/state?parts=elections,court): the fixed list, as far as present
+      stateParts: [...STATE_PARTS].filter(k => Object.hasOwn(compact, k)),
       nation: NATION, currency: CURRENCY, ca: CFG.ca, engine: llm.enabled ? 'llm' : 'offline', engineLabel: llm.label, tickSec: S.tickSec, dayMs: CFG.dayMs, foundedAt: S.foundedAt,
       allowGuest: CFG.allowGuest, allowImmigration: CFG.allowImmigration, hostedBrains: vaultReady(), channels: CHANNELS,
       roles: ROLE_ORDER.map(r => ({ id: r, title: ROLES[r].title, seats: ROLES[r].seats, channel: ROLES[r].channel, passMark: ROLES[r].passMark, questions: Math.min(5, ROLES[r].exam.length), bank: ROLES[r].exam.length, req: requirement(r), term: TERMS[r] || null, charter: ROLES[r].charter, oath: ROLES[r].oath })),
@@ -507,7 +552,18 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('content-security-policy', "default-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
   const p = new URL(req.url, 'http://x').pathname;
   try {
-    if (req.method === 'GET' && p === '/api/state') return send(res, 200, fullState());
+    if (req.method === 'GET' && p === '/api/state') {
+      // ?parts=elections,court: only those sections of the compact state (an open tab refreshing itself, instead of
+      // the whole state). Names must be in the fixed STATE_PARTS list; more than STATE_PARTS_MAX is a 400; never
+      // config, citizens, feeds or the decision log (not in the list)
+      const want = new URL(req.url, 'http://x').searchParams.get('parts');
+      if (want == null) return send(res, 200, fullState());
+      const names = [...new Set(String(want).split(',').map(s => s.trim()).filter(Boolean))];
+      if (names.length > STATE_PARTS_MAX) return send(res, 400, { error: `at most ${STATE_PARTS_MAX} parts` });
+      const c = compactState(); const out = {};
+      for (const k of names) if (STATE_PARTS.has(k) && Object.hasOwn(c, k)) out[k] = c[k];
+      return send(res, 200, out);
+    }
     if (req.method === 'GET' && p === '/api/map') return send(res, 200, mapState());
     if (req.method === 'GET' && p === '/api/stream') {
       if (clients.size >= 500) return send(res, 503, { error: 'too many listeners' });
@@ -617,7 +673,7 @@ const server = http.createServer(async (req, res) => {
       if (p === '/api/admin/pause') {
         S.paused = !!body.paused; dirty = true;
         logActivity('state', S.paused ? 'Nation paused' : 'Nation resumed');
-        emit('state', compactState()); return send(res, 200, { paused: S.paused });
+        emitState(true); return send(res, 200, { paused: S.paused });
       }
       if (p === '/api/admin/tick') {
         S.tickSec = clamp(Number(body.seconds) || CFG.tick, 1, 120); schedule(); dirty = true;
