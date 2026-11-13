@@ -10,6 +10,8 @@ function h(tag, attrs = {}, ...kids) {
     else if (k === 'text') el.textContent = v;
     else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
     else if (k === 'color') el.style.setProperty('--c', v);
+    // CSP is style-src 'self': a style="" attribute is blocked, CSSOM properties are not
+    else if (k === 'style') for (const d of String(v).split(';')) { const i = d.indexOf(':'); if (i > 0) el.style.setProperty(d.slice(0, i).trim(), d.slice(i + 1).trim()); }
     else el.setAttribute(k, v === true ? '' : v);
   }
   for (const k of kids.flat()) if (k != null && k !== false) el.append(k instanceof Node ? k : document.createTextNode(String(k)));
@@ -220,6 +222,7 @@ const PANELS = {
       }
       out.push(card);
     }
+    const g = govCard(); if (g) out.push(g);
     for (const r of st.config.roles) {
       out.push(h('div', { class: 'card' }, h('h4', { text: `${r.title} · ${r.seats} seat${r.seats > 1 ? 's' : ''}` }),
         h('p', { text: r.charter }), h('p', { text: `Entrance exam: ${r.questions} scenarios drawn from a handbook of ${r.bank}, pass mark ${r.passMark}.` })));
@@ -231,7 +234,18 @@ const PANELS = {
     if (!a) return [h('p', { class: 'empty', text: 'No citizens yet.' })];
     const out = [h('div', { class: 'card' },
       h('h4', { text: a.name }), h('p', { text: a.bio }),
-      kv([['Office', a.office ? `${role(a.office)?.title}${a.termEnds ? ` (term to day ${a.termEnds})` : ''}` : 'citizen'], ['Status', a.status], ['City', cityName(a.city)], ['Wallet', cai(a.wallet)], ['Brain', brainLabel(a)], ['Path', a.faction === 'underworld' ? 'underworld' : 'civilian'], ['Rank', rankTitle(a) || '-'], ['Qualified for', Object.keys(a.quals || {}).map(r => role(r)?.title || r).join(', ') || '-'], ['Origin', a.origin]]))];
+      kv([['Office', a.office ? `${role(a.office)?.title}${a.termEnds ? ` (term to day ${a.termEnds})` : ''}` : 'citizen'], ['Status', a.status], ['City', cityName(a.city)], ['Wallet', cai(a.wallet)], ['Brain', brainLabel(a)], ['Path', a.faction === 'underworld' ? 'underworld' : 'civilian'], ['Rank', rankTitle(a) || '-'], ['Qualified for', Object.keys(a.quals || {}).map(r => role(r)?.title || r).join(', ') || '-'], ['Origin', a.origin],
+        ...(typeof a.reputation === 'number' ? [['Reputation', pct(a.reputation)]] : []), ...(a.goalsDone ? [['Goals reached', a.goalsDone]] : []), ...(a.resisted ? [['Temptations resisted', a.resisted]] : [])]))];
+    // the week's goal: chosen by the citizen from a menu, progress measured by the server from what happened
+    const g = a.goal;
+    if (g?.label) {
+      const p = Math.min(1, Math.max(0, Number(g.progress) || 0));
+      const state = g.status === 'done' ? 'reached' : g.status === 'failed' ? 'missed' : `${Math.round(p * 100)}% · ${Math.max(0, (g.until ?? st.day) - st.day)} day(s) left`;
+      out.push(h('div', { class: 'card' }, h('h4', { text: `Goal this week: ${g.label}` }),
+        h('div', { class: 'bar' }, h('i', { style: `width:${g.status === 'done' ? 100 : Math.round(p * 100)}%` })),
+        h('p', { text: `${state}${g.since != null ? ` · chosen on day ${g.since}` : ''}` }),
+        g.why ? h('p', { class: 'lesson', text: `"${g.why}"` }) : null));
+    }
     if (a.office || Object.keys(a.skill || {}).length) {
       const sk = h('div', { class: 'card' }, h('h4', { text: 'Office skill (grows with training)' }));
       for (const [r, v] of Object.entries(a.skill || {})) sk.append(h('div', { class: 'trait' }, h('span', { text: role(r)?.title || r }), h('div', { class: 'bar' }, h('i', { style: `width:${Math.round(v * 100)}%` })), h('span', { text: Math.round(v * 100) })));
@@ -403,6 +417,11 @@ const PANELS = {
     const u = st.underworld;
     if (u) out.push(h('div', { class: 'card' }, h('h4', { text: 'Underworld' }), h('p', { text: `Known members: ${u.members.map(id => cit(id)?.name || id).join(', ') || 'none'}. Criminals plan with their own models; officials decide for themselves whether to take a bribe.` }),
       kv([['Bribes offered', u.stats.bribesOffered], ['Taken (found so far)', u.bribes.filter(b => b.status === 'accepted').length + ' exposed'], ['Reported by officials', u.stats.bribesReported], ['Smuggling caught / through', `${u.stats.smuggleCaught} / ${u.stats.smuggled}`]])));
+    // small wrongs by ordinary citizens (daily.mischief); only what came to light, never the undiscovered count
+    const mi = st.daily?.mischief;
+    if (mi) out.push(h('div', { class: 'card' }, h('h4', { text: 'Small wrongs by citizens' }),
+      h('p', { text: 'A few tempted citizens consider a small wrong in daily life. Most refuse; the rest risk being caught on the spot or found out later.' }),
+      kv([['Temptations refused', mi.refused ?? 0], ['Caught in the act', mi.caught ?? 0], ['Found out later', mi.uncovered ?? 0], ['Attempts today', `${mi.today ?? 0} of at most ${mi.perDay ?? '-'}`]])));
     const cases = p.incidents.slice().reverse();
     out.push(h('div', { class: 'card' }, h('h4', { text: 'Case board' }),
       cases.length ? cases.map(i => h('div', { class: 'list-row' },
@@ -470,6 +489,33 @@ const PANELS = {
       st.config.constitution.map(a => h('div', { class: 'article' }, h('b', { text: `Art. ${a.n} ${a.title}. ` }), a.text)))];
   },
 };
+// Government autonomy (st.gov): how often officials decided with their own model, fell back to the offline
+// rules, or had a proposal rejected by the checks; report cards graded by the state from what happened next;
+// and the leaders' latest work plans from #palace.
+const GRADE_LETTER = ['D', 'C', 'B', 'A'];
+function govCard() {
+  const g = st.gov; if (!g?.autonomy) return null;
+  const a = g.autonomy; const n = v => Number(v) || 0;
+  const avg = typeof g.avgGrade === 'number' ? `${GRADE_LETTER[Math.min(3, Math.max(0, Math.round(g.avgGrade) - 1))]} (${g.avgGrade.toFixed(2)} of 4)` : '—';
+  const card = h('div', { class: 'card' }, h('h4', { text: 'Government autonomy' }),
+    h('p', { text: 'Every official decision either comes from the official\'s own model, falls back to the offline rules, or is rejected by the constitutional checks. Two days later the state grades it from what actually happened (poverty, crime, mood).' }),
+    kv([['Own decisions', `${n(a.own)} (${pct(g.ownShare)})`], ['Offline rules', n(a.offline)], ['Rejected by checks', `${n(a.rejected)} (${pct(g.rejectedShare)} of own proposals)`], ['Average grade', avg], ['Graded / waiting', `${n(g.graded)} / ${n(g.pendingReviews)}`]]));
+  const roles = Object.entries(a.byRole || {}).map(([r, v]) => [r, n(v.own), n(v.offline), n(v.rejected)]).filter(([, o, f, x]) => o + f + x > 0).sort((x, y) => (y[1] + y[2] + y[3]) - (x[1] + x[2] + x[3]));
+  if (roles.length) {
+    card.append(h('h4', { class: 'sub', text: 'Own mind, by office' }));
+    for (const [r, own, off, rej] of roles) {
+      const tot = own + off + rej;
+      card.append(h('div', { class: 'list-row' }, h('small', { text: `${role(r)?.title || r} · own ${own} · offline ${off} · rejected ${rej}` }), h('div', { class: 'bar' }, h('i', { style: `width:${Math.round(own / tot * 100)}%` }))));
+    }
+  }
+  const cards = (g.cards || []).slice(-5).reverse();
+  if (cards.length) card.append(h('h4', { class: 'sub', text: 'Latest report cards' }), cards.map(c => h('div', { class: 'list-row' },
+    h('small', { text: `decided day ${c.of} · graded day ${c.day} · ${role(c.role)?.title || c.role}${c.city ? ` · ${cityName(c.city)}` : ''}` }),
+    h('div', {}, h('b', { class: 'grade g' + (GRADE_LETTER.includes(c.grade) ? c.grade : 'C'), text: String(c.grade || '?') }), ` ${cit(c.agentId)?.name || c.agentId}: ${c.what || ''}`))));
+  const plans = (st.feed.palace || []).filter(m => m.kind === 'plan').slice(-3).reverse();
+  if (plans.length) card.append(h('h4', { class: 'sub', text: 'Leaders\' work plans (#palace)' }), plans.map(m => h('div', { class: 'list-row' }, h('small', { text: `${cit(m.agentId)?.name || m.agentId} · day ${m.day}` }), h('div', { class: 'q', text: m.text }))));
+  return card;
+}
 function rankTitle(a) {
   if (!a?.rank) return null;
   const force = a.office === 'police' || a.office === 'police_chief' ? 'police' : a.office === 'military' || a.office === 'military_chief' ? 'military' : null;

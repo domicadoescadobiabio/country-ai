@@ -27,7 +27,9 @@ function leave(instant) {
 // disposed, and the WebGL context given back (the dashboard does not need the city)
 let running = false, renderer = null, cleanup = null;
 
-if (intro && (force || !store.get())) start();
+// a shared deep link (/#treasury, /#academy) opens the tab directly instead of playing the opening first
+const deepLink = location.hash.length > 1;
+if (intro && (force || (!store.get() && !deepLink))) start();
 else if (intro) leave(true);
 
 function start() {

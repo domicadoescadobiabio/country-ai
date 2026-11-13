@@ -18,7 +18,10 @@ function h(tag, attrs = {}, ...kids) {
     if (v == null || v === false) continue;
     if (k === 'class') el.className = v; else if (k === 'text') el.textContent = v;
     else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
-    else if (k === 'color') el.style.setProperty('--c', v); else el.setAttribute(k, v === true ? '' : v);
+    else if (k === 'color') el.style.setProperty('--c', v);
+    // CSP is style-src 'self': a style="" attribute is blocked, CSSOM properties are not
+    else if (k === 'style') for (const d of String(v).split(';')) { const i = d.indexOf(':'); if (i > 0) el.style.setProperty(d.slice(0, i).trim(), d.slice(i + 1).trim()); }
+    else el.setAttribute(k, v === true ? '' : v);
   }
   for (const k of kids.flat()) if (k != null && k !== false) el.append(k instanceof Node ? k : document.createTextNode(String(k)));
   return el;
@@ -349,7 +352,16 @@ function showAgent(a, keepBonds) {
   const rows = a.scene ? [['City', data.cities[a.city]?.name || a.city], ['Where', a.b?.name || ''], ['Doing', a.what || a.act]]
     : [['City', data.cities[a.city]?.name || a.city], ['Doing', a.state === 'walk' ? `walking to ${a.dest ? a.dest.name : 'home'}` : a.act], ['Home', a.address ? `${a.address} (${a.home?.name || ''})` : (a.home?.name || '')]];
   const pk = rec?.pokes?.n ?? a.pokesToday; if (pk) rows.push(['Poked today', `${pk}×`]);
+  const info = isReal(a) ? (rec || citizen(a.id)) : null; // goal and reputation from the citizen record
+  if (typeof info?.reputation === 'number') rows.push(['Reputation', `${Math.round(info.reputation * 100)}%`]);
   body.append(h('div', { class: 'kv' }, rows.flatMap(([k, v]) => [h('span', { text: k }), h('b', { text: v })])));
+  const goal = info?.goal;
+  if (goal?.label) {
+    const p = Math.round(Math.min(1, Math.max(0, Number(goal.progress) || 0)) * 100);
+    const state = goal.status === 'done' ? 'reached' : goal.status === 'failed' ? 'missed' : `${p}%`;
+    body.append(h('h4', { text: 'Goal this week' }), h('div', { class: 'goal' }, h('div', { class: 'goal-head' }, h('b', { text: goal.label }), h('span', { text: state })),
+      h('div', { class: 'goal-bar' }, h('i', { style: `width:${goal.status === 'done' ? 100 : p}%` }))));
+  }
   body.append(h('div', { class: 'poke' }, h('button', { type: 'button', class: 'poke-btn', onclick: () => pokeAgent(a) }, '👉 Poke'),
     h('small', { text: 'You can only poke. They feel it and grumble, and that is all a human can do here.' })));
   if (isReal(a)) {
