@@ -174,6 +174,7 @@ const TABS = [
   ['laws', 'Laws', () => st.laws !== undefined, true],
   ['police', 'Police', () => st.police !== undefined, true],
   ['border', 'Border', () => st.military !== undefined, true],
+  ['school', 'School', () => st.school !== undefined, true],
   ['treasury', 'Treasury', () => true],
   ['ledger', 'Ledger', () => true],
   ['constitution', 'Constitution', () => true],
@@ -185,6 +186,7 @@ function renderTabs() {
 }
 async function openCitizen(id) {
   if (!cit(id)) { try { const r = await (await fetch(`/api/citizens/${encodeURIComponent(id)}`)).json(); if (r.citizen) (st.found ||= {})[id] = r.citizen; } catch { /* offline */ } }
+  if (st.sch) delete st.sch[id]; // fresh school record each time a profile is opened
   st.citizen = id; st.tab = 'citizen'; renderTabs(); renderPanel();
 }
 // search the whole population (10,000 citizens) page by page
@@ -246,6 +248,27 @@ const PANELS = {
         h('p', { text: `${state}${g.since != null ? ` · chosen on day ${g.since}` : ''}` }),
         g.why ? h('p', { class: 'lesson', text: `"${g.why}"` }) : null));
     }
+    // night school: talent badges, interests, best fields (from /api/citizens/:id, loaded once per opening)
+    const sc = schoolFor(a.id);
+    if (sc) {
+      const card = h('div', { class: 'card' }, h('h4', { text: 'Night school' }));
+      if (sc.gifted?.length) card.append(h('div', { class: 'badges' }, sc.gifted.map(x => h('span', { class: 'badge gifted', title: x.since ? `in the talent programme since day ${x.since}` : null, text: `gifted in ${x.name}` }))));
+      card.append(kv([['Interests', (sc.interests || []).join(', ') || '-'], ['Studying today', sc.today || '-'], ['Lessons done', sc.lessons ?? 0]]));
+      if (sc.top?.length) {
+        card.append(h('h4', { class: 'sub', text: 'Best fields' }));
+        for (const f of sc.top) card.append(h('div', { class: 'trait' }, h('span', { text: f.name }), h('div', { class: 'bar' }, h('i', { style: `width:${Math.round(Math.min(5, Math.max(0, Number(f.level) || 0)) / 5 * 100)}%` })), h('span', { text: `L${Number(f.level) || 0}` })));
+      }
+      // core skills (0..1 each), the average and the weakest subject
+      const skills = Object.entries(sc.skill || {}).filter(([, v]) => typeof v === 'number');
+      if (skills.length) {
+        card.append(h('h4', { class: 'sub', text: `Core skills · average ${pct(sc.average)}${sc.weakest ? ` · weakest: ${sc.weakest}` : ''}` }));
+        for (const [k, v] of skills) card.append(h('div', { class: 'trait' }, h('span', { text: k }), h('div', { class: 'bar' }, h('i', { style: `width:${Math.round(Math.min(1, Math.max(0, v)) * 100)}%` })), h('span', { text: Math.round(Math.min(1, Math.max(0, v)) * 100) })));
+      }
+      // the last lesson notes (server text: missed questions with the right answer, or the teacher's advice)
+      const notes = (sc.notes || []).filter(x => typeof x === 'string' && x);
+      if (notes.length) card.append(h('h4', { class: 'sub', text: 'Last lesson notes' }), notes.map(x => h('div', { class: 'lesson', text: x })));
+      out.push(card);
+    } else if (sc === null) out.push(h('div', { class: 'card' }, h('h4', { text: 'Night school' }), h('p', { text: 'Loading…' })));
     if (a.office || Object.keys(a.skill || {}).length) {
       const sk = h('div', { class: 'card' }, h('h4', { text: 'Office skill (grows with training)' }));
       for (const [r, v] of Object.entries(a.skill || {})) sk.append(h('div', { class: 'trait' }, h('span', { text: role(r)?.title || r }), h('div', { class: 'bar' }, h('i', { style: `width:${Math.round(v * 100)}%` })), h('span', { text: Math.round(v * 100) })));
@@ -445,6 +468,7 @@ const PANELS = {
         h('div', { class: 'a ' + (l.verdict === 'blocked' ? 'bad' : 'ok'), text: `${l.verdict}${l.rule ? ` (${l.rule})` : ''}: ${l.sample}` }))) : h('p', { text: 'Quiet at the gate.' })));
     return out;
   },
+  school: () => schoolPanel(),
   treasury() {
     const p = st.policy || {}, e = st.econ || {};
     const out = [h('div', { class: 'card' }, h('h4', { text: 'Treasury' }), kv([
@@ -515,6 +539,40 @@ function govCard() {
   const plans = (st.feed.palace || []).filter(m => m.kind === 'plan').slice(-3).reverse();
   if (plans.length) card.append(h('h4', { class: 'sub', text: 'Leaders\' work plans (#palace)' }), plans.map(m => h('div', { class: 'list-row' }, h('small', { text: `${cit(m.agentId)?.name || m.agentId} · day ${m.day}` }), h('div', { class: 'q', text: m.text }))));
   return card;
+}
+// a citizen's school record: undefined = not asked yet (asks now), null = loading, false = none
+function schoolFor(id) {
+  st.sch ||= {};
+  if (id in st.sch) return st.sch[id];
+  st.sch[id] = null;
+  fetch(`/api/citizens/${encodeURIComponent(id)}`).then(r => (r.ok ? r.json() : null)).then(j => { st.sch[id] = j?.citizen?.school || false; })
+    .catch(() => { st.sch[id] = false; })
+    .finally(() => { if (st.tab === 'citizen') renderPanel(); });
+  return null;
+}
+// the night school in public: fields studied, the talent programme and where the teachers' time goes
+function schoolPanel() {
+  const s = st.school; const n = v => Number(v) || 0; const out = [];
+  out.push(h('div', { class: 'card' }, h('h4', { text: 'Night school' }),
+    h('p', { text: 'Citizens study after work with the local brain; a paid teacher explains some lessons. Each citizen picks a field from their interests, work and goal; a share of lessons stays on the core: civics, law and ethics.' }),
+    kv([['Lessons today', n(s.lessonsToday)], ['Lessons (all time)', n(s.lessons)], ['Answered right', s.lessons ? pct(n(s.correct) / n(s.lessons)) : '-'], ['Students', n(s.students)], ['Fields chosen by the student', n(s.choices)], ['Core lessons (civics, law, ethics)', pct(s.coreShare)], ['Teacher calls (all time)', n(s.teacherCalls)]])));
+  const fields = Array.isArray(s.fields) ? s.fields : [];
+  out.push(h('div', { class: 'card' }, h('h4', { text: `Fields studied (${fields.length})` }), fields.length ? fields.map(f => h('div', { class: 'trait wide' },
+    h('span', { text: f.name }), h('div', { class: 'bar' }, h('i', { style: `width:${Math.round(Math.min(5, n(f.avgLevel)) / 5 * 100)}%` })), h('span', { text: `${n(f.students)} · L${n(f.avgLevel).toFixed(1)}` }))) : h('p', { text: 'No one has studied a field yet.' })));
+  const g = s.gifted;
+  if (g) {
+    const t = g.teacherToday || {}; const by = Array.isArray(g.byField) ? g.byField : [];
+    const card = h('div', { class: 'card' }, h('h4', { text: 'Talent programme' }),
+      h('p', { text: `Each republic day the most promising students of every field (about ${pct(g.share)}, at most ${n(g.maxPerField)} per field) are marked gifted: harder questions, twice the lessons and most of the teacher's time.` }),
+      kv([['Gifted now', n(g.total)], ['Chosen on', g.day != null ? `day ${g.day}` : '-'], ['Joined / left at the last selection', `${n(g.joined)} / ${n(g.left)}`], ['Teacher calls today: gifted / everyone else', `${n(t.gifted)} / ${n(t.others)}`]]));
+    if (by.length) card.append(h('h4', { class: 'sub', text: 'By field' }), by.map(f => h('div', { class: 'list-row' },
+      h('small', { text: `${f.name} · ${n(f.gifted)} gifted` }),
+      f.top ? h('div', {}, 'Best student: ', h('b', { class: 'link', text: f.top.name || f.top.id, onclick: () => openCitizen(f.top.id) })) : null)));
+    out.push(card);
+  }
+  const top = Array.isArray(s.topStudents) ? s.topStudents : [];
+  if (top.length) out.push(h('div', { class: 'card' }, h('h4', { text: 'Top students (core subjects)' }), top.map(x => h('div', { class: 'list-row' }, h('b', { class: 'link', text: x.name || x.id, onclick: () => openCitizen(x.id) }), ` · average ${pct(x.average)}`))));
+  return out;
 }
 function rankTitle(a) {
   if (!a?.rank) return null;
