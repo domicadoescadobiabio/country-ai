@@ -6,7 +6,8 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
-import { loadDotEnv, clamp, uid, slug, cleanText, pick, citizenById, buildInfo, validTz, alignClock, tzInfo, tzMidnight, tzParts } from './src/util.ts';
+import { loadDotEnv, clamp, uid, slug, cleanText, pick, citizenById, buildInfo, validTz, alignClock, tzInfo, tzMidnight, tzParts, cleanWhereabouts } from './src/util.ts';
+import * as dailyMod from './src/daily.ts'; // whereabouts(S, city) when the People box has it (checked at call time)
 import { makeLLM } from './src/llm.ts';
 import { NATION, CURRENCY, CONSTITUTION } from './src/constitution.mjs';
 import { ROLES, ROLE_ORDER } from './src/roles.mjs';
@@ -221,7 +222,17 @@ function stats() {
   const seated = ROLE_ORDER.reduce((n, r) => n + (S.seats[r]?.length || 0), 0);
   const out = { day: S.day, citizens: S.citizens.length, treasury: Math.round(S.treasury), seated, seats: totalSeats(), messages: S.counters.messages };
   for (const inst of INSTITUTIONS) Object.assign(out, inst.stats?.(S) || {});
+  out.students = populationSummary().students; // university students (no work), for the header
   return out;
+}
+// What a citizen does (owner, 15 Nov: every citizen is an adult): 'student' at the university (no work), 'official'
+// in an office, else 'citizen'. The People box's occupationOf (src/daily.ts) is the one answer; only those three
+// words go out, and until it exists the office alone decides.
+const OCCUPATIONS = new Set(['student', 'official', 'citizen']);
+function occupationOf(a) {
+  let o = null;
+  try { o = typeof dailyMod.occupationOf === 'function' ? dailyMod.occupationOf(S, a) : null; } catch { o = null; }
+  return OCCUPATIONS.has(o) ? o : a?.office ? 'official' : 'citizen';
 }
 
 // ---------------------------------------------------------------- engine
@@ -342,7 +353,7 @@ function publicCitizen(a) {
   return { id: a.id, name: a.name, model: thinksWith(a), tier: tierOf(S, a), color: a.color, bio: a.bio, origin: a.origin, office: a.office, status: a.status, jailUntil: a.jailUntil, detainedDay: a.detainedDay ?? null, wallet: Math.round(a.wallet), traits: a.traits, joined: a.joined, training: a.training.slice(-8), lessons: a.lessons, record: a.record || [], skill: a.skill || {}, brain: publicBrain(a.brain), city: a.city || null, faction: a.faction || 'civilian', debt: Math.round(a.debt || 0), rank: a.rank || null, rankSince: a.rankSince ?? null, quals: a.quals || {}, termEnds: a.termEnds || null, practice: a.practice || {}, joinedDay: a.joinedDay ?? 0, drills: (a.drills || []).slice(-6), reviews: (a.reviews || []).slice(-6), stats: a.stats || {}, diary: (a.diary || []).slice(-6), home: a.home || null,
     // the week's goal, reputation and how often they resisted a temptation; never the private side
     // (a.mischief, a.lifeLessons, a.skipVoteDay stay out: this list names every public field)
-    goal: goalView(a), reputation: reputationOf(a), resisted: a.resisted || 0, goalsDone: a.goalsDone || 0 };
+    goal: goalView(a), reputation: reputationOf(a), resisted: a.resisted || 0, goalsDone: a.goalsDone || 0, occupation: occupationOf(a) };
 }
 function notableCitizens() {
   const running = new Set((S.elections?.list || []).filter(e => !['done', 'failed'].includes(e.stage)).flatMap(e => e.candidates.map(c => c.id)));
@@ -357,7 +368,9 @@ function populationSummary() {
   const count = (f) => { const o = {}; for (const a of S.citizens) { const k = f(a); o[k] = (o[k] || 0) + 1; } return o; };
   const family = a => String(a.brain ? a.brain.provider || 'own' : a.model).split('/')[0];
   const wallets = S.citizens.map(a => a.wallet).sort((x, y) => x - y);
-  const v = { total: S.citizens.length, byCity: count(a => a.city || 'none'), byStatus: count(a => a.status), byFaction: count(a => a.faction || 'civilian'), byOrigin: count(a => a.origin), byFamily: count(family),
+  const byOccupation = { student: 0, official: 0, citizen: 0 };
+  for (const a of S.citizens) byOccupation[occupationOf(a)]++;
+  const v = { total: S.citizens.length, students: byOccupation.student, byOccupation, byCity: count(a => a.city || 'none'), byStatus: count(a => a.status), byFaction: count(a => a.faction || 'civilian'), byOrigin: count(a => a.origin), byFamily: count(family),
     wallets: { min: Math.round(wallets[0] ?? 0), median: Math.round(wallets[Math.floor(wallets.length / 2)] ?? 0), max: Math.round(wallets[wallets.length - 1] ?? 0) }, minWallet: Math.round(wallets[0] ?? 0) };
   popCache = { at: Date.now(), v };
   return v;
@@ -424,7 +437,7 @@ function mapState() {
     police: { incidents: (c.police?.incidents || []).filter(i => Array.isArray(i.perps) && i.perps.length) },
     court: { cases: (c.court?.cases || []).filter(x => x.status === 'open') },
     elections: (c.elections || []).filter(e => e.stage === 'voting').map(e => ({ id: e.id, title: e.title, city: e.city || null, voted: e.voted, electorate: e.electorate })),
-    population: { byStatus: populationSummary().byStatus },
+    population: { byStatus: populationSummary().byStatus, students: populationSummary().students },
     held: S.citizens.filter(a => a.status === 'jailed' || a.status === 'detained').slice(0, 500).map(lite),
   };
 }
@@ -536,7 +549,43 @@ function nowCard(id) {
   return { act: placeText(n.act, 30) || null, place: placeText(n.place, 30) || null, city: CITIES.some(c => c.id === n.city) ? n.city : null,
     since: n.since != null && Number.isFinite(Number(n.since)) ? Number(n.since) : null, detail: placeText(n.detail, 160), field: n.field ? placeText(n.field, 40) : null, gifted: n.gifted === true, mood: mood || null };
 }
-const liteCitizen = a => ({ id: a.id, name: a.name, city: a.city || null, status: a.status, office: a.office || null, color: a.color, wallet: Math.round(a.wallet || 0), home: a.home || null, mood: moodLite(a), goal: goalLite(a) });
+// ---------------------------------------------------------------- where everyone is (GET /api/whereabouts?city=)
+// Every citizen of one city, as [id, where, act]: the map draws those outside as robots and lists those inside a
+// building, at home or asleep on the building's card. From the People box's whereabouts(S, city) in src/daily.ts;
+// until it exists, a stand-in from each citizen's status. Cleaned by cleanWhereabouts (src/util.ts), cached 30 s per
+// city, at most WHEREABOUTS_PER_MIN reads a minute per IP, at most 150 KB per city before gzip.
+// asleep: a citizen at night (20:00-06:00 republic time), as the People box's whereabouts() reports it
+const WHERE_PLACES = new Set([...Object.keys(PLACE_TYPES), 'home', 'asleep', 'street', 'outside', 'unknown']);
+const WHEREABOUTS_PER_MIN = clamp(Number(process.env.WHEREABOUTS_PER_MIN) || 30, 1, 6000);
+const whereCache = new Map(), whereHits = new Map();
+function whereaboutsRaw(city) {
+  if (typeof dailyMod.whereabouts === 'function') return dailyMod.whereabouts(S, city);
+  return { at: Date.now(), hour: null, night: false, people: S.citizens.filter(a => a.city === city).map(a => [a.id, a.status === 'jailed' ? 'prison' : a.status === 'detained' ? 'jail' : 'unknown', null]) };
+}
+function whereaboutsLimited(req) {
+  if (isLoopback(req)) return 0;
+  const ip = clientIp(req), now = Date.now();
+  let w = whereHits.get(ip); if (!w || now - w.t >= 60000) { w = { t: now, n: 0 }; whereHits.set(ip, w); }
+  return ++w.n > WHEREABOUTS_PER_MIN ? Math.max(1, Math.ceil((w.t + 60000 - now) / 1000)) : 0;
+}
+function handleWhereabouts(req, res) {
+  const city = new URL(req.url, 'http://x').searchParams.get('city');
+  if (!city || !CITIES.some(c => c.id === city)) return send(res, 400, { error: 'city: one of ' + CITIES.map(c => c.id).join(', ') });
+  const wait = whereaboutsLimited(req);
+  if (wait) { res.setHeader('retry-after', String(wait)); return send(res, 429, { error: `slow down: ${WHEREABOUTS_PER_MIN} reads a minute`, retryAfter: wait }); }
+  const hit = whereCache.get(city);
+  if (hit && Date.now() - hit.at < 30000) return send(res, 200, hit.view);
+  let raw = null;
+  try { raw = whereaboutsRaw(city); } catch (e) { logActivity('state', `whereabouts ${city}: ${String(e?.message || e).slice(0, 80)}`); raw = { people: [] }; }
+  const view = cleanWhereabouts(raw, { city, places: WHERE_PLACES, text: placeText, maxBytes: 150000 });
+  whereCache.set(city, { at: Date.now(), view });
+  return send(res, 200, view);
+}
+// GET /api/citizens?lite=1 for the map: the same page of a city is asked by every visitor, so it is kept 60 s (only
+// plain listings: no search text, no office filter; at most 300 pages kept)
+const liteCache = new Map();
+setInterval(() => { const now = Date.now(); for (const [k, w] of whereHits) if (now - w.t > 60000) whereHits.delete(k); for (const [k, c] of liteCache) if (now - c.at > 60000) liteCache.delete(k); }, 60000).unref();
+const liteCitizen = a => ({ id: a.id, name: a.name, city: a.city || null, status: a.status, office: a.office || null, color: a.color, wallet: Math.round(a.wallet || 0), home: a.home || null, mood: moodLite(a), goal: goalLite(a), occupation: occupationOf(a) });
 function fullState() {
   const feed = {};
   for (const [ch, list] of Object.entries(S.feed)) feed[ch] = list.slice(-120);
@@ -777,10 +826,20 @@ const server = http.createServer(async (req, res) => {
       if (city) list = list.filter(a => a.city === city);
       if (status) list = list.filter(a => a.status === status);
       if (office) list = list.filter(a => (office === 'none' ? !a.office : a.office === office));
-      // ?lite=1: id, name, city, status, office, color and home only (for the map), up to 2,000 per page
+      // ?occupation=student|official|citizen (anything else is 400)
+      const occupation = u.searchParams.get('occupation');
+      if (occupation && !OCCUPATIONS.has(occupation)) return send(res, 400, { error: 'occupation: student, official or citizen' });
+      if (occupation) list = list.filter(a => occupationOf(a) === occupation);
+      // ?lite=1: id, name, city, status, office, color, home, mood, goal and occupation only (for the map), up to 2,000 per page
       if (u.searchParams.get('lite') === '1') {
         const lsize = clamp(Number(u.searchParams.get('size')) || 500, 1, 2000);
-        return send(res, 200, { total: list.length, page, size: lsize, citizens: list.slice((page - 1) * lsize, page * lsize).map(liteCitizen) });
+        const cacheable = !q && !office && (!city || CITIES.some(c => c.id === city)) && (!status || /^[a-z]{1,20}$/.test(status));
+        const key = `${city || ''}|${status || ''}|${occupation || ''}|${page}|${lsize}`;
+        const hit = cacheable && liteCache.get(key);
+        if (hit && Date.now() - hit.at < 60000) return send(res, 200, hit.body);
+        const body = { total: list.length, page, size: lsize, citizens: list.slice((page - 1) * lsize, page * lsize).map(liteCitizen) };
+        if (cacheable && liteCache.size < 300) liteCache.set(key, { at: Date.now(), body });
+        return send(res, 200, body);
       }
       return send(res, 200, { total: list.length, page, size, citizens: list.slice((page - 1) * size, page * size).map(publicCitizen) });
     }
@@ -792,6 +851,7 @@ const server = http.createServer(async (req, res) => {
       // + school: interests, strongest fields, today's field, talent badges (gifted), skills and the last lessons
       return send(res, 200, { citizen: { ...publicCitizen(a), mood: moodView(a), bonds: bondsView(S, a), pokes: a.pokes?.day === S.day ? a.pokes.n : 0, school: schoolView(a), now: nowCard(a.id) } });
     }
+    if (req.method === 'GET' && p === '/api/whereabouts') return handleWhereabouts(req, res);
     const plm = req.method === 'GET' && p.match(/^\/api\/place\/([^/]{1,40})$/);
     if (plm) return handlePlace(req, res, plm[1]);
     const pm = req.method === 'POST' && p.match(/^\/api\/poke\/([a-z0-9-]{1,40})$/);

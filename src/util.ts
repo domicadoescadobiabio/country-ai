@@ -97,6 +97,27 @@ export function alignClock(c: { foundedAt: number; day: number; hourShift?: numb
   return { foundedAt: target, hourShift: (c.hourShift || 0) + Math.ceil(delta / 3600000), deltaMin: Math.round(delta / 60000) };
 }
 
+// ---------------------------------------------------------------- where everyone is (GET /api/whereabouts)
+// The People box's whereabouts(S, city) gives { at, hour, night, people: [[id, where, act], ...] } for one city. This
+// cleans it for the public: ids must look like citizen ids, `where` must be a known place (anything else reads as
+// 'unknown'), `act` goes through the caller's text cleaner (length cap, border check), and the answer stays under
+// maxBytes: first the acts go, then the tail of the list (counted in `more`).
+export function cleanWhereabouts(raw: any, opts: { city: string; places: Set<string>; text: (v: unknown, max: number) => string; maxBytes?: number }) {
+  const maxBytes = opts.maxBytes ?? 150000;
+  const people: [string, string, string | null][] = [];
+  for (const p of Array.isArray(raw?.people) ? raw.people : []) {
+    if (!Array.isArray(p) || typeof p[0] !== 'string' || !/^[a-z0-9-]{1,40}$/.test(p[0])) continue;
+    const where = typeof p[1] === 'string' && opts.places.has(p[1]) ? p[1] : 'unknown';
+    const act = p[2] == null ? null : opts.text(p[2], 40) || null;
+    people.push([p[0], where, act]);
+  }
+  const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+  const out: any = { city: opts.city, at: num(raw?.at) ?? Date.now(), hour: num(raw?.hour), night: raw?.night === true, people, more: 0 };
+  if (JSON.stringify(out).length > maxBytes) for (const p of out.people) p[2] = null;
+  while (out.people.length && JSON.stringify(out).length > maxBytes) { const cut = Math.max(1, Math.ceil(out.people.length * 0.05)); out.people.length -= cut; out.more += cut; }
+  return out;
+}
+
 export const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 export const pick = a => a[Math.floor(Math.random() * a.length)];
 export const chance = p => Math.random() < p;
