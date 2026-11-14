@@ -331,7 +331,7 @@ function migrate(ctx: Ctx) {
 //   Civil staff (clerks, tellers): appointed by the President
 // An acting head cannot appoint (Art. 10): the President signs for a vacant head; with no President either, the
 // state fills the post by the same published rule. Chosen from ordinary citizens of the building's city: free, an
-// adult, no office, no own brain, not the underworld, no unpardoned conviction, no civil post of the people's
+// adult, not a university student, no office, no own brain, not the underworld, no unpardoned conviction, no civil post of the people's
 // (src/daily.ts); the best level in the post's fields first (security and sport for a guard), then a fixed draw.
 // One AI citizen stands for 25 people (map catalog REP), so one desk officer by day is a desk of 25. No new money:
 // a post holder keeps the wage they already earn. Posts are kept day to day; a holder who is arrested, jailed,
@@ -384,8 +384,10 @@ export function dutyShift(S: State, now = Date.now()): 'day' | 'night' {
   return h >= 20 || h < 6 ? 'night' : 'day';
 }
 const convicted = (a: Citizen) => (a.record || []).some(r => /convicted of/.test(r) && !/PARDONED/.test(r));
-export const canGuard = (a: Citizen) => !!a && a.status === 'free' && !a.office && !a.brain && (a.faction || 'civilian') !== 'underworld' && !(Number(a.age) < 18) && !convicted(a);
-const unfitWhy = (a: Citizen) => !a ? 'left the republic' : a.status !== 'free' ? a.status : a.office ? 'took an office' : a.brain ? 'has an own brain' : (a.faction || 'civilian') === 'underworld' ? 'joined the underworld' : convicted(a) ? 'convicted' : 'unfit';
+// university students do not work (owner; same rule as the people's civil roster, isStudent in src/school.ts)
+const student = (a: Citizen) => a.occupation === 'student';
+export const canGuard = (a: Citizen) => !!a && a.status === 'free' && !a.office && !a.brain && !student(a) && (a.faction || 'civilian') !== 'underworld' && !(Number(a.age) < 18) && !convicted(a);
+const unfitWhy = (a: Citizen) => !a ? 'left the republic' : a.status !== 'free' ? a.status : a.office ? 'took an office' : a.brain ? 'has an own brain' : student(a) ? 'a university student' : (a.faction || 'civilian') === 'underworld' ? 'joined the underworld' : convicted(a) ? 'convicted' : 'unfit';
 const hashOf = (s: string) => { let h = 2166136261; for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619); return h >>> 0; };
 const D = (S: State) => { const cmd = C(S); cmd.duty ||= { posts: {}, hired: 0, dismissed: 0 }; cmd.duty.posts ||= {}; cmd.postings ||= {}; return cmd.duty; };
 const unitsOf = (type: string) => (type === 'ministry' ? Object.keys(PORTFOLIO_FIELDS) : ['']);
