@@ -6,7 +6,10 @@
 //   topFields(a, n)           { id, name, level 0-100 }[]   a citizen's n strongest fields, best first
 //   fieldLevel(a, id)         number 0-100     a citizen's level in one field (0 for an unknown field)
 //   fieldQuestion(id, level?) { q, right, wrong, lesson, tests } | null   an exam question from that field
-import { EXPERTISE_API } from './school.ts';
+//   occupationOf(S, a)        'student' | 'official' | 'citizen'   (owner, 15 Nov: every citizen is an adult;
+//                             students attend the university and do not work)
+import { EXPERTISE_API, occupationOf, isStudent } from './school.ts';
+export { occupationOf, isStudent };
 
 export const FIELDS = EXPERTISE_API.FIELDS;
 export const topFields = EXPERTISE_API.topFields;

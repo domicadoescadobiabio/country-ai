@@ -12,9 +12,9 @@ import { borderCheck } from './military.ts';
 import { CITIES } from './cities.ts';
 import { echoesStreet, safeNote } from './life.ts';
 import { feelingsTick, feel, bond, ensureFeelings, feelLine, preferredToHelp, talkTarget, MOODS } from './feelings.ts';
-import { schoolTick, inSchool, nightView, schoolState, nightOf, schoolNow, giftedFields } from './school.ts';
+import { schoolTick, inSchool, nightView, schoolState, nightOf, schoolNow, giftedFields, isStudent, occupationOf, CHILDREN_SCHOOLS, setWorkplaceLookup } from './school.ts';
 import { topFields, talentsOf, fieldName, fieldSkill } from './population.mjs';
-import { dutyPostOf } from './command.ts';
+import { dutyPostOf, canGuard, siteFor } from './command.ts';
 import { round, cleanText, cai, clamp } from './util.ts';
 import type { Ctx, State, Citizen } from './types.ts';
 
@@ -119,9 +119,10 @@ export function menu(ctx: Ctx, a: Citizen) {
   const m: [string, string][] = [];
   // work in a field you are good at pays more (up to +50% at full skill): the citizen's own best fields are offered
   const best = topFields(a, 3, Date.now(), DAY_MS);
-  if (a.workedDay !== S.day) m.push(['work', `work: an extra shift (+${cai(S.policy.wage * 0.5)} before tax, once a day; more in a field you are good at, field: ${best.map(f => f.id).join('|')})`]);
+  // a student does not work (owner, 15 Nov): lectures, the library and talks instead of shifts
+  if (a.workedDay !== S.day && !isStudent(a)) m.push(['work', `work: an extra shift (+${cai(S.policy.wage * 0.5)} before tax, once a day; more in a field you are good at, field: ${best.map(f => f.id).join('|')})`]);
   if (a.wallet >= 60 && ok('shop')) m.push(['shop', 'shop: spend 10-40 CAI at shops in your city (amount)']);
-  if (ok('study')) m.push(['study', `study: practise for an office (office: ${STUDY_OFFICES.join('|')})`]);
+  if (ok('study')) m.push(['study', `study: ${isStudent(a) ? 'a lecture at the university, ' : ''}practise for an office (office: ${STUDY_OFFICES.join('|')})`]);
   const canApply = STUDY_OFFICES.filter(r => !a.quals?.[r] && !(S.applications?.[r] || []).includes(a.id) && eligibility(S, a, r).ok);
   if (canApply.length) m.push(['apply', `apply: ask the Academy to examine you (office: ${canApply.join('|')})`]);
   const canRun = Object.keys(a.quals || {}).filter(r => isRole(r) && (S.elections?.list || []).some(e => e.stage === 'nomination' && e.office === r && (!e.city || e.city === a.city)));
@@ -225,6 +226,8 @@ export async function doAct(ctx: Ctx, a: Citizen, j: any, engine: string, offere
     const r = await doMischief(ctx, a, what, j, engine);
     if (!r.ok) { what = 'rest'; line = 'thought about doing something wrong, but did not'; }
     else { line = 'had a day they would rather not talk about'; feel(S, a, 0.04, 'excited', 'a risky day'); }
+  } else if (what === 'work' && isStudent(a)) {
+    what = 'rest'; line = 'is a student: lectures, not shifts, so rested';
   } else if (what === 'work') {
     // only a field the menu offered (their own best fields); anything else is plain work
     const f = cleanText(j?.field, 20).toLowerCase();
@@ -350,9 +353,8 @@ export const STAFF_PLAN: Record<string, Post[]> = {
   police_academy: [{ role: 'instructor', fields: ['law', 'security'], day: 2, night: 0 }, { role: 'night guard', fields: ['security'], day: 0, night: 1 }],
   military_academy: [{ role: 'instructor', fields: ['security', 'sport'], day: 2, night: 0 }, { role: 'night guard', fields: ['security', 'sport'], day: 0, night: 1 }],
   university: [{ role: 'lecturer', fields: 'teach', day: 3, night: 0 }, { role: 'caretaker', fields: null, day: 0, night: 1 }],
-  high_school: [{ role: 'teacher', fields: 'teach', day: 2, night: 0 }, { role: 'caretaker', fields: null, day: 0, night: 1 }],
-  middle_school: [{ role: 'teacher', fields: 'teach', day: 2, night: 0 }, { role: 'caretaker', fields: null, day: 0, night: 1 }],
-  primary_school: [{ role: 'teacher', fields: 'teach', day: 2, night: 0 }, { role: 'caretaker', fields: null, day: 0, night: 1 }],
+  // primary, middle and high school: no staff (owner, 15 Nov). Every citizen is an adult; the buildings stand empty,
+  // kept for the republic's children in a later update.
   library: [{ role: 'librarian', fields: ['language', 'history'], day: 1, night: 0 }, { role: 'night guard', fields: ['security'], day: 0, night: 1 }],
   office: [{ role: 'clerk', fields: ['accounting', 'management', 'economics'], day: 3, night: 0 }, { role: 'security guard', fields: ['security'], day: 0, night: 1 }],
   factory: [{ role: 'worker', fields: ['engineering', 'chemistry', 'logistics'], day: 3, night: 1 }],
@@ -365,12 +367,13 @@ export const STAFFED_PLACES = Object.keys(STAFF_PLAN);
 const hashOf = (s: string) => { let h = 2166136261; for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619); return h >>> 0; };
 // one job each: a citizen who holds a government duty post (guard, auxiliary, civil staff of a ministry: src/command.ts,
 // ticket #471) is never also civil staff here; the Government skips our post-holders the same way (workplaceOf)
-const canStaff = (a: Citizen, S?: State) => !!a && a.status === 'free' && !a.brain && !a.office && (a.faction || 'civilian') !== 'underworld' && !(S && dutyPostOf(S, a).length);
+// students study, they hold no post (owner, 15 Nov): the posts go to the other adults of the city
+const canStaff = (a: Citizen, S?: State) => !!a && a.status === 'free' && !a.brain && !a.office && !isStudent(a) && (a.faction || 'civilian') !== 'underworld' && !(S && dutyPostOf(S, a).length);
 const dutySig = (S: State) => { const ps = Object.values<any>(S.command?.duty?.posts || {}); let h = ps.length; for (const p of ps) h = (h * 31 + hashOf(String(p?.id))) >>> 0; return h; };
 let rosterCache = { key: '', byCity: new Map<string, Map<string, any[]>>(), byId: new Map<string, any>() };
 // the day's posts: per city, per building, the people and their shift (scarce skills first, one post each)
 function roster(S: State) {
-  const key = `${S.day}|${(S.citizens || []).length}|${dutySig(S)}`;
+  const key = `${S.day}|${(S.citizens || []).length}|${dutySig(S)}|${S.school?.occupations?.at || 0}`; // (students chosen: again)
   if (rosterCache.key === key) return rosterCache;
   const byCity = new Map<string, Map<string, any[]>>(); const byId = new Map<string, any>(); const now = Date.now();
   const people = new Map<string, Citizen[]>();
@@ -411,6 +414,8 @@ const shiftNow = (S: State, now = Date.now()) => (nightOf(S, DAY_MS, now) != nul
 export function workplaceOf(S: State, a: Citizen | string) {
   const id = typeof a === 'string' ? a : a?.id; return (id && roster(S).byId.get(id)) || null;
 }
+setWorkplaceLookup(workplaceOf); // the school puts an adult's lessons at their workplace (no import cycle)
+export { occupationOf, isStudent }; // one answer for the server and the map: 'student' | 'official' | 'citizen'
 // who is on duty now in one building of one city (for any box's interior: hospital, school, academies, data centre...)
 export function staffOnDuty(S: State, type: string, city: string, now = Date.now()) {
   if (!Object.hasOwn(STAFF_PLAN, type) || !city) return [];
@@ -447,7 +452,7 @@ export function placeOf(what: string, a: Citizen, shopAmt = 0, workField: string
   // a citizen with a post works their extra shift at their own workplace
   if (what === 'work') return (S && workplaceOf(S, a)?.type) || workPlace(workField || talentsOf(a).job[0] || null);
   if (what === 'volunteer' || what === 'talk' || what === 'help') return 'community_hall';
-  if (what === 'study') return 'library';
+  if (what === 'study') return isStudent(a) ? 'university' : 'library';
   if (what === 'apply') return 'academy';
   if (what === 'run') return 'election_comm';
   if (what === 'gossip') return 'street';
@@ -461,20 +466,29 @@ function noteNow(a: Citizen, e: any) {
 const windowMs = () => Math.max(60000, DAY_MS / 12); // "now": within the last two republic hours
 const occupant = (a: Citizen, role: string, activity: string, detail: string, since: number, field: string | null, gifted: boolean) =>
   ({ id: a.id, name: a.name, role, activity, detail: cleanText(detail, 120), since, field, gifted, mood: a.mood?.label || null });
+// The one rule for "what is this citizen doing now", shared by the robot card (nowDoing) and the map's whereabouts:
+// the newer of the last act and the last lesson; on their shift with nothing newer (no act in the last two republic
+// hours), at work.
+function nowSource(act: any, lesson: any, post: any, onShift: boolean, now = Date.now()): 'lesson' | 'post' | 'act' | null {
+  if (lesson && (!act || lesson.ts >= act.ts)) return 'lesson';
+  if (post && onShift && (!act || now - act.ts > windowMs())) return 'post';
+  return act ? 'act' : null;
+}
 // what a citizen is doing now (the robot card): the newer of their last act and their last lesson
 export function nowDoing(S: State, id: string) {
   const a = (S.citizens || []).find((x: Citizen) => x.id === id); if (!a) return null;
   const act = nowBy.get(id) || null; const sn = schoolNow();
   const lesson = sn.pending.find(L => L.agent === id) || sn.lastBy(id);
-  const pickLesson = lesson && (!act || lesson.ts >= act.ts);
-  if (pickLesson) {
+  const post0 = workplaceOf(S, a);
+  const src = nowSource(act, lesson, post0, !!post0 && post0.shift === shiftNow(S) && canStaff(a, S));
+  if (src === 'lesson') {
     const what = lesson.field ? `${fieldName(lesson.field)}, level ${lesson.level}` : lessonTitle(lesson.subject);
     return { id, name: a.name, act: lesson.right == null ? 'studying' : 'studied', place: lesson.place, city: a.city, since: lesson.ts,
       detail: lesson.right == null ? `answering a ${what} question` : `${what}: ${lesson.right ? 'right' : 'wrong'}`, field: lesson.field, gifted: lesson.gifted, mood: a.mood?.label || null };
   }
   // on their shift, with nothing newer to tell: at work
-  const post = workplaceOf(S, a);
-  if (post && post.shift === shiftNow(S) && canStaff(a, S) &&(!act || Date.now() - act.ts > windowMs())) {
+  const post = post0;
+  if (src === 'post') {
     return { id, name: a.name, act: 'on duty', place: post.type, city: a.city, since: shiftStart(S), detail: `${post.role}, ${post.shift} shift${post.field ? `, ${fieldName(post.field)}` : ''}`, field: post.field, gifted: !!(post.field && giftedFields(S, id).includes(post.field)), mood: a.mood?.label || null, post };
   }
   if (!act) return { id, name: a.name, act: null, place: null, city: a.city, since: null, detail: '', field: null, gifted: false, mood: a.mood?.label || null, post };
@@ -487,11 +501,13 @@ export function placeView(S: State, type: string, city: string | null = null) {
   if (!PEOPLE_PLACES.includes(type)) return null;
   const cityId = city && Object.hasOwn(S.cities || {}, city) ? city : null;
   if (city && !cityId) return { type, city: null, title: PLACE_TITLES[type], updatedAt: Date.now(), occupants: [], board: { error: 'unknown city' }, more: 0 };
+  // the children's schools stand empty for now (owner, 15 Nov): every citizen is an adult
+  if (CHILDREN_SCHOOLS.includes(type)) return { type, city: cityId, title: `${cityId ? `${cityName(cityId)} ` : ''}${PLACE_TITLES[type]}`, updatedAt: Date.now(), occupants: [], board: { note: 'Reserved for the republic\'s children (coming in a later update).' }, more: 0 };
   const now = Date.now(); const W = windowMs();
   const byId = new Map<string, Citizen>((S.citizens || []).map((a: Citizen) => [a.id, a]));
   const here = (a?: Citizen) => !!a && (!cityId || a.city === cityId);
   const out: any[] = []; let board: any = {};
-  if (['primary_school', 'middle_school', 'high_school', 'university', 'library'].includes(type)) {
+  if (['university', 'library'].includes(type)) {
     const sn = schoolNow(); const seen = new Set<string>(); const classes: Record<string, { students: number; levels: Set<number> }> = {};
     const add = (e: any, activity: string, detail: string) => {
       const a = byId.get(e.agent); if (!here(a) || seen.has(e.agent)) return; seen.add(e.agent);
@@ -508,8 +524,15 @@ export function placeView(S: State, type: string, city: string | null = null) {
   } else {
     // everyone whose last act happened here, newest first
     const rows = [...nowBy.entries()].filter(([id, e]) => e.place === type && now - e.ts <= W && here(byId.get(id))).sort((x, y) => y[1].ts - x[1].ts);
+    // adults learn from their habits at their workplace (owner, 15 Nov): their lessons there, being answered or just graded
+    const sn = schoolNow(); const learning = new Set<string>();
+    for (const e of [...sn.pending, ...sn.recent.filter(x => now - x.ts <= W)].filter(x => x.place === type).sort((x, y) => y.ts - x.ts)) {
+      const a = byId.get(e.agent); if (!here(a) || learning.has(e.agent)) continue; learning.add(e.agent);
+      const what = e.field ? `${fieldName(e.field)} level ${e.level}` : lessonTitle(e.subject);
+      out.push(occupant(a!, 'learning on the job', e.right == null ? 'studying' : 'studied', e.right == null ? `practising ${what}` : `${what}: ${e.right ? 'right' : 'wrong'}`, e.ts, e.field, e.gifted));
+    }
     for (const [id, e] of rows) {
-      const a = byId.get(id)!;
+      const a = byId.get(id)!; if (learning.has(id)) continue;
       const role = type === 'community_hall' ? (e.act === 'volunteer' ? 'volunteer' : 'neighbour') : ['market', 'mall', 'supermarket'].includes(type) ? 'shopper' : type === 'hospital' ? 'staff' : 'worker';
       const activity = e.act === 'talk' ? 'talking' : e.act === 'shop' ? 'shopping' : e.act === 'work' ? 'working' : e.act === 'volunteer' ? 'volunteering' : e.act === 'help' ? 'helping a neighbour' : e.act;
       out.push(occupant(a, role, activity, e.act === 'talk' && e.say ? e.say : e.line, e.ts, e.field || null, !!(e.field && giftedFields(S, id).includes(e.field))));
@@ -534,6 +557,57 @@ export function placeView(S: State, type: string, city: string | null = null) {
   return { type, city: cityId, title: `${name ? `${name} ` : ''}${PLACE_TITLES[type]}`, updatedAt: now, occupants: all.slice(0, MAX_OCCUPANTS), board, more: Math.max(0, all.length - MAX_OCCUPANTS) };
 }
 export const _resetNow = () => nowBy.clear(); // tests
+
+// ---------------------------------------------------------------- whereabouts (owner, 15 Nov)
+// "Real citizens, really 10,000": where EVERY citizen is right now, for the 3D map (GET /api/whereabouts?city=, made
+// by server.mjs). Outside they are robots; inside a building, at home or asleep they are counted on the building's
+// card. Honest, from the state only, with the same rule as the robot card (nowSource): a lesson being answered or
+// just graded, their shift at work (civil staff here, duty posts of the Government in src/command.ts), their last act
+// of the last two republic hours; officials at their seat by day; otherwise at home by day and asleep at night
+// (20:00-06:00, the hours when no citizen is asked to think). Held citizens are in prison (convicted) or jail (remand).
+// A secret wrong shows nothing (that citizen is where they would be anyway). People are listed in the city where
+// they are: a minister from Port Token sits in the capital's ministry. One pass, Maps built once: O(n).
+const OFFICE_SEAT: Record<string, string> = { president: 'palace', vice_president: 'vp_office', minister: 'ministry', council: 'parliament', judge: 'const_court',
+  commissioner: 'election_comm', mayor: 'city_hall', police_chief: 'police_hq', military_chief: 'military_hq', police: 'police_station', military: 'army_base' };
+const ACT_CODE: Record<string, string> = { work: 'working', shop: 'shopping', study: 'studying', apply: 'applying', run: 'campaigning', talk: 'talking', help: 'helping',
+  volunteer: 'volunteering', rest: 'resting', gossip: 'chatting' };
+export function whereabouts(S: State, cityId: string, now = Date.now()) {
+  const night = nightOf(S, DAY_MS, now) != null; const shift = night ? 'night' : 'day'; const W = windowMs();
+  const h = ((((now - (S.foundedAt || now)) % DAY_MS) + DAY_MS) % DAY_MS) / DAY_MS * 24;
+  const out = { at: now, hour: round(h, 1), night, people: [] as [string, string, string][] };
+  if (!cityId || !Object.hasOwn(S.cities || {}, cityId)) return out;
+  // built once: lessons by student, the Government's duty posts by holder, the day's civil roster
+  const sn = schoolNow(); const lessonBy = new Map<string, any>();
+  for (const e of sn.pending) { const o = lessonBy.get(e.agent); if (!o || e.ts > o.ts) lessonBy.set(e.agent, e); }
+  const duty = new Map<string, any[]>();
+  for (const p of Object.values<any>(S.command?.duty?.posts || {})) if (p?.id) (duty.get(p.id) || duty.set(p.id, []).get(p.id)!).push(p);
+  const R = roster(S); const postings = S.command?.postings || {};
+  const site = (type: string, home: string) => { try { return siteFor(S, type, home) || home; } catch { return home; } };
+  for (const a of S.citizens || []) {
+    if (!a?.id) continue;
+    let where = 'home', what = 'at home', at = a.city;
+    if (a.status === 'jailed') { where = 'prison'; what = 'serving a sentence'; at = site('prison', a.city); }
+    else if (a.status === 'detained') { where = 'jail'; what = 'held'; at = site('jail', a.city); }
+    else {
+      // inputs to the shared rule, each only if it is about now
+      let lesson = lessonBy.get(a.id) || null;
+      if (!lesson) { const l = sn.lastBy(a.id); if (l && now - l.ts <= W) lesson = l; }
+      const e = nowBy.get(a.id); const act = !night && e && e.act !== 'private' && e.place && now - e.ts <= W ? e : null; // no daily acts at night
+      const civil = R.byId.get(a.id) || null;
+      const fit = a.status === 'free' && !a.brain && !a.office && (a.faction || 'civilian') !== 'underworld';
+      const gov = (duty.get(a.id) || []).find(p => p.shift === shift) || null;
+      const post = civil && fit && !duty.has(a.id) ? civil : gov && fit && canGuard(a) ? gov : null;
+      const src = nowSource(act, lesson, post, !!post && post.shift === shift, now);
+      if (src === 'lesson') { where = CHILDREN_SCHOOLS.includes(lesson.place) ? (isStudent(a) ? 'university' : 'library') : lesson.place; what = lesson.right == null ? 'studying' : 'studied'; }
+      else if (src === 'post') { where = post.type; what = 'on duty'; at = post.city || a.city; }
+      else if (src === 'act') { where = act.place; what = ACT_CODE[act.act] || String(act.act).slice(0, 20); }
+      else if (a.office && !night) { const seat = OFFICE_SEAT[a.office]; where = seat || 'office'; what = 'in office'; at = seat ? site(seat, postings[a.id] || a.city) : a.city; }
+      else if (night) { where = 'asleep'; what = 'sleeping'; }
+    }
+    if (at === cityId) out.people.push([a.id, where, what.slice(0, 20)]);
+  }
+  return out;
+}
 
 // ---------------------------------------------------------------- school (owner, 13 Nov)
 // The night school that lived here is now the republic's school (src/school.ts): at night it has the local

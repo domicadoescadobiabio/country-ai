@@ -574,6 +574,15 @@ export function studyPrompt(a: Citizen, office: string, r: any, night = false) {
   };
 }
 const titleOf = (sub: string) => TITLES[sub] || fieldName(sub);
+// how a lesson is framed (owner, 15 Nov): a student at the university; every other adult learns from their habits,
+// practising what their own work and daily life ask of them. Only the framing differs: the question, the grading
+// and the saved training pairs are the same for everyone.
+function learnerFrame(S: State, a: Citizen) {
+  if (isStudent(a)) return 'a student at the republic\'s university';
+  const job = String(a.bio || '').split(' in ')[0].trim().toLowerCase();
+  const post = workplaceLookup ? workplaceLookup(S, a) : null;
+  return `an adult citizen of Country AI${job ? ` (${cleanText(job, 40)})` : ''}, learning from your own habits: practice drawn from your ${post ? `work as ${post.role}` : 'work and daily life'}`;
+}
 // examples are kept per subject, and per field under "f:<field>" (the law field and the law subject stay apart)
 const exKey = (L: any) => (L.field ? `f:${L.field}` : L.subject);
 function lessonPrompt(S: State, a: Citizen, sub: string, field: string | null = null, level = 0) {
@@ -581,7 +590,7 @@ function lessonPrompt(S: State, a: Citizen, sub: string, field: string | null = 
   const ex = examplesFor(S, field ? `f:${field}` : sub);
   const notes = field ? fieldNotes(a, field) : '';
   const what = field ? `${fieldName(field)}, level ${level}` : titleOf(sub);
-  return `You are ${a.name}, a citizen of Country AI at the republic's school, lesson: ${what}. Think for yourself, use the facts given${field ? ' and what you know of the subject' : ' and the republic\'s rules'}.${notes ? `\nYour notes on ${fieldName(field!)}:\n${notes}` : ''}${mine ? `\nYour notes from earlier mistakes:\n${mine}` : ''}${ex ? `\nWorked examples from earlier lessons:\n${ex}` : ''}`;
+  return `You are ${a.name}, ${learnerFrame(S, a)}, lesson: ${what}. Think for yourself, use the facts given${field ? ' and what you know of the subject' : ' and the republic\'s rules'}.${notes ? `\nYour notes on ${fieldName(field!)}:\n${notes}` : ''}${mine ? `\nYour notes from earlier mistakes:\n${mine}` : ''}${ex ? `\nWorked examples from earlier lessons:\n${ex}` : ''}`;
 }
 
 // ---------------------------------------------------------------- fields: skill, notes, choosing what to learn
@@ -726,7 +735,7 @@ function chooseLesson(S: State, a: Citizen, base: any) {
   const p = profile(a); p.focus = { day: S.day, field: talentsOf(a).interests[0], chosen: false }; // until they answer
   const options = menu.map((m, i) => `${LETTERS[i] || String.fromCharCode(65 + i)}) ${fieldName(m.id)} (${m.why}; your level ${fieldLevel(fieldSkill(a, m.id, Date.now(), DAY_MS))})`);
   return { ...base, subject: 'choose', kind: 'choose', teach: false, fields: menu.map(m => m.id), options, format: 'letter',
-    system: `You are ${a.name}, a citizen of Country AI. ${a.bio} It is your free study time at the republic's school: choose what YOU want to learn today, as yourself.`,
+    system: `You are ${a.name}, a citizen of Country AI. ${a.bio} ${isStudent(a) ? 'You are a student at the republic\'s university' : 'You are an adult who keeps learning from your own habits'}: choose what YOU want to learn today, as yourself.`,
     user: `What do you want to study today?\n${options.join('\n')}\n\nReply with only the letter of your choice, then " - " and why in a few words.` };
 }
 function applyChoice(S: State, a: Citizen, L: any, text: string) {
@@ -856,7 +865,7 @@ function grade(ctx: Ctx, a: Citizen, L: any, text: string) {
   feel(S, a, score >= 0.5 ? 0.03 : -0.03, score >= 0.5 ? 'proud' : 'anxious', score >= 0.5 ? `a good ${titleOf(sub)} lesson` : `still learning ${titleOf(sub)}`);
   if (a.schoolSession && !a.schoolSession.diary) {
     a.schoolSession.diary = true;
-    const where = L.night != null ? 'night school' : 'school';
+    const where = placeWords(schoolBuildingOf(L)) + (L.night != null ? ' in the evening' : '');
     a.diary = [...(a.diary || []), { day: S.day, when: L.night != null ? 'night' : 'day', act: L.night != null ? 'night_study' : 'school', line: L.kind === 'office' ? `studied for ${ROLES[L.office].title} at ${where}` : `studied ${titleOf(sub)} at ${where}`, note: '' }].slice(-6);
   }
   return score;
@@ -1081,6 +1090,7 @@ export async function schoolTick(ctx: Ctx, busy: (id: string) => boolean = () =>
   // pass over 10,000 citizens never runs every tick
   if (s.gifted?.day !== S.day) selectGifted(S, now);
   else if (now - (s.gifted.at || 0) >= GIFTED_RESELECT_MS && giftedGap(S)) selectGifted(S, now, { addOnly: true });
+  assignStudents(ctx); // once (after the first gifted selection, so the gifted go first); then only office-takers leave
   // answers from the local brain (students), then the teachers who have replied
   for (const [qid, L] of [...pending]) {
     const a = citizen(ctx, L.agent);
@@ -1114,8 +1124,10 @@ export async function schoolTick(ctx: Ctx, busy: (id: string) => boolean = () =>
     const a = citizen(ctx, id);
     if (!who(S, a) || busy(id) || [...pending.values()].some(p => p.agent === id)) continue;
     if (a.schoolSession?.key !== key) a.schoolSession = { key, night, n: 0, diary: false };
-    if (a.schoolSession.n >= (giftedFields(S, id).length ? cap * 2 : cap)) continue;
+    // the gifted and students (studying is their whole day) may have twice the lessons of a session
+    if (a.schoolSession.n >= (giftedFields(S, id).length || isStudent(a) ? cap * 2 : cap)) continue;
     const L = startLesson(ctx, a, night, now); if (!L) continue;
+    L.place = lessonPlaceFor(S, a, L); L.student = isStudent(a);
     // choosing what to study is not a lesson: it does not use up the citizen's lessons for the session
     if (L.kind !== 'choose') { a.schoolSession.n++; if (night != null && a.schoolSession.n === 1) s.night.people++; }
     pending.set(L.id, L); s.carry -= 1;
@@ -1200,16 +1212,66 @@ export const inSchool = (id: string) => [...pending.values()].some(p => p.agent 
 // Which school building a lesson happens in: field lessons by their level (1 primary, 2 middle, 3 high school,
 // 4-5 university), the common core at high school, office handbooks and choosing what to study at the library.
 // Kept in memory only (the last lessons and each citizen's last lesson), never in the saved state.
-export function schoolBuildingOf(L: any) {
+// Where a lesson happens (owner, 15 Nov): every citizen is an adult, so nobody is in the primary, middle or high
+// school (kept empty for the republic's children, a later update). Students attend the university; everyone else
+// learns from their own habits: at their workplace when they hold a post, else in the library by day and at home at
+// night. Choosing a field and an office handbook are read in the library. The place is fixed when the lesson starts.
+export const CHILDREN_SCHOOLS = ['primary_school', 'middle_school', 'high_school'];
+let workplaceLookup: ((S: State, a: Citizen) => any) | null = null;
+export const setWorkplaceLookup = (f: (S: State, a: Citizen) => any) => { workplaceLookup = f; }; // src/daily.ts (no import cycle)
+export function lessonPlaceFor(S: State, a: Citizen, L: any) {
   if (L.kind === 'choose' || L.kind === 'office') return 'library';
-  if (!L.field) return 'high_school';
-  const lv = Number(L.level) || 1;
-  return lv <= 1 ? 'primary_school' : lv === 2 ? 'middle_school' : lv === 3 ? 'high_school' : 'university';
+  if (isStudent(a)) return 'university';
+  const post = workplaceLookup ? workplaceLookup(S, a) : null;
+  if (post?.type && !CHILDREN_SCHOOLS.includes(post.type)) return post.type;
+  return L.night != null ? 'home' : 'library';
+}
+export function schoolBuildingOf(L: any) {
+  if (L.place && !CHILDREN_SCHOOLS.includes(L.place)) return L.place;
+  if (L.kind === 'choose' || L.kind === 'office') return 'library';
+  return L.student ? 'university' : 'library';
+}
+const PLACE_WORDS: Record<string, string> = { university: 'the university', library: 'the library', home: 'home' };
+const placeWords = (p: string) => PLACE_WORDS[p] || 'work';
+
+// ---------------------------------------------------------------- students and adults (owner, 15 Nov)
+// "All citizens are adults. Those at university are simply students, they do not need to work." a.occupation is kept
+// on the citizen: 'student' (at the university) or 'adult'. About SCHOOL_STUDENT_SHARE (13.5%) of the free citizens
+// without an office or an own brain are chosen once: the talent programme's gifted first, then those who have studied
+// most, then a fixed draw from the id (fair and repeatable). A student who takes an office stops being one. No
+// graduation yet (a later update). occupationOf() is the one answer for the server, the map and the other boxes.
+export const STUDENT_SHARE = env('SCHOOL_STUDENT_SHARE', 0.135, 0.05, 0.3);
+export const isStudent = (a: Citizen | null | undefined) => !!a && a.occupation === 'student' && !a.office;
+export function occupationOf(S: State, a: Citizen | null | undefined): 'student' | 'official' | 'citizen' {
+  if (!a) return 'citizen';
+  if (a.office) return 'official';
+  return a.occupation === 'student' ? 'student' : 'citizen';
+}
+const fnv = (s: string) => { let h = 2166136261; for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619); return h >>> 0; };
+const studiedMost = (a: Citizen) => { const p = a.school || {}; let n = 0; for (const r of Object.values<any>(p.fields || {})) n += Number(r?.n) || 0; for (const v of Object.values<any>(p.n || {})) n += Number(v) || 0; return n; };
+// once (crash-safe: the choice is a pure function of the state, so a restart before the state is saved chooses the
+// same students again, and the one ledger entry is written only if the ledger does not already hold it); every call
+// also lets a student who took an office go
+export function assignStudents(ctx: Ctx) {
+  const { S } = ctx; const s = SC(S);
+  for (const a of S.citizens || []) if (a.occupation === 'student' && a.office) a.occupation = 'adult';
+  if (s.occupations?.v === 1) return null;
+  const pool = (S.citizens || []).filter((a: Citizen) => a && a.status === 'free' && !a.office && !a.brain);
+  const want = Math.round(pool.length * STUDENT_SHARE);
+  const order = pool.map((a: Citizen) => ({ a, g: giftedFields(S, a.id).length ? 1 : 0, l: studiedMost(a), h: fnv(`student|${a.id}`) }))
+    .sort((x, y) => y.g - x.g || y.l - x.l || x.h - y.h);
+  const chosen = new Set(order.slice(0, want).map(x => x.a.id));
+  for (const a of S.citizens || []) if (a.occupation !== 'student' && a.occupation !== 'adult') a.occupation = chosen.has(a.id) ? 'student' : 'adult';
+  const gifted = order.slice(0, want).filter(x => x.g).length;
+  s.occupations = { v: 1, day: S.day, at: Date.now(), students: chosen.size, eligible: pool.length, share: STUDENT_SHARE, gifted };
+  if (!ctx.ledgerHas?.('occupations', { v: 1 })) ctx.record?.('occupations', 'state', { v: 1, day: S.day, students: chosen.size, eligible: pool.length, share: STUDENT_SHARE, gifted, rule: 'gifted first, then most lessons, then a fixed draw from the id' });
+  return s.occupations;
 }
 const RECENT_LESSONS = 400;
 const recentLessons: any[] = [];
 const lastLessonBy = new Map<string, any>();
 function lessonEntry(id: string, L: any, right: boolean | null, ts: number) {
+  // (L.place is set when the lesson starts; schoolBuildingOf never answers a children's school)
   return { agent: id, place: schoolBuildingOf(L), subject: L.field || L.subject, field: L.field || null, level: L.field ? L.level || 1 : null,
     kind: L.kind, right, gifted: !!L.gifted, night: L.night != null, ts };
 }
