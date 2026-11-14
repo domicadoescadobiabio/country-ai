@@ -15,7 +15,7 @@
 //   This replaces the night school that lived in src/daily.ts (its office practice is the 'office' subject).
 import { ROLES, ROLE_ORDER, RULE_GENERATORS } from './roles.mjs';
 import { think, teach, saveExample, localOnline, trainPaceView, trainBudgetState } from './brains.ts';
-import * as brains from './brains.ts'; // trainPlan() (ticket #512) when brains.ts has it; the school paces itself until then
+import * as brains from './brains.ts'; // teachRoomNow() (teacher calls left this minute) when brains.ts has it
 import { startStudy, gradeStudy, isRole } from './careers.ts';
 import { buildItem, inExam, LETTERS } from './academy.ts';
 import { borderCheck } from './military.ts';
@@ -878,21 +878,17 @@ export function teacherShareFor(base: number, short: number, minNow: number) {
   if (!(short > 0)) return base;
   return round(base + (1 - base) * clamp(short / Math.max(0.05, minNow * 0.05), 0, 1), 3);
 }
-// the plan comes from brains.ts (ticket #512): trainPlan() gives the share of lessons with a teacher and how many
-// teacher-only lessons to start now, inside the per-minute and the paced budget; the school only carries it out
+// The school is the one place that paces the teachers (ticket #521: brains.ts dropped trainPlan): from
+// trainPaceView it sets the share of lessons with a teacher and how many teacher-only lessons to start (enough to
+// catch up, at most a batch); brains.ts still enforces every limit in teach() (budget, Claude's cap, TRAIN_PER_MIN)
 function updatePace(ctx: Ctx) {
   if (!ctx.llm?.enabled) { Object.assign(pace, { behind: false, short: 0, share: TEACHER_SHARE, teacherOnly: 0 }); return; }
-  let pv: any = null, plan: any = null;
-  try { pv = trainPaceView(ctx); } catch { pv = null; }
+  let pv: any = null; try { pv = trainPaceView(ctx); } catch { pv = null; }
   const batch = Math.max(0, Math.min(TEACHER_ONLY_PER_TICK, maxTeachingWhenBehind() - teaching.size));
-  const tp = (brains as any).trainPlan;
-  try { plan = typeof tp === 'function' ? tp(ctx, TEACHER_SHARE, batch) : null; } catch { plan = null; }
-  const short = Number(plan?.behindUsd ?? pv?.orShortUsd) || 0, minNow = Number(pv?.orMinNow) || 0;
+  const short = Number(pv?.orShortUsd) || 0, minNow = Number(pv?.orMinNow) || 0;
   const est = Number(pv?.estPerCall?.openrouter) || 0.0011;
-  // without trainPlan: the same idea from trainPaceView (enough lessons to catch up, at most a batch)
-  const teacherOnly = plan ? Math.floor(Number(plan.teacherOnly) || 0) : short > 0 ? Math.min(batch, Math.ceil(short / Math.max(1e-4, est))) : 0;
-  Object.assign(pace, { behind: short > 0, short, minNow, share: plan ? clamp(Number(plan.share) || 0, 0, 1) : teacherShareFor(TEACHER_SHARE, short, minNow),
-    teacherOnly: Math.max(0, teacherOnly), est, allowedNow: Number(pv?.allowedNow) || 0, planned: !!plan });
+  const teacherOnly = short > 0 ? Math.min(batch, Math.ceil(short / Math.max(1e-4, est))) : 0;
+  Object.assign(pace, { behind: short > 0, short, minNow, share: teacherShareFor(TEACHER_SHARE, short, minNow), teacherOnly, est, allowedNow: Number(pv?.allowedNow) || 0 });
 }
 const maxTeachingWhenBehind = () => Math.max(MAX_TEACHING, TEACHER_CONCURRENCY_MAX);
 const maxTeaching = () => (pace.behind ? Math.max(MAX_TEACHING, TEACHER_CONCURRENCY_MAX) : MAX_TEACHING);
@@ -986,8 +982,8 @@ function callTeacher(ctx: Ctx, L: any, studentText: string, score: number) {
     : 'You are a patient teacher at the school of Country AI, a simulated nation of AI citizens. Answer the question with the letter of the right option, then explain in at most two sentences, citing the rule or the arithmetic.';
   const user = teacherUser(L);
   // gifted: true gets them the OpenRouter teacher when it can take them, counted apart (brains.ts, budget.train.gifted)
-  // teacherOnly: true marks a lesson with no local student (brains.ts counts it in budget.train.teacherOnly)
-  Promise.resolve().then(() => teach(ctx, L.gifted ? { system, user, maxTokens: free ? 700 : 500, purpose: `gifted:${L.field}`, gifted: true, teacherOnly: !!L.teacherOnly } : { system, user, maxTokens: free ? 500 : 300, purpose: `school:${L.field || L.subject}`, teacherOnly: !!L.teacherOnly }))
+  // (teacher-only lessons are counted by the school itself, stats.tday.teacherOnly; brains.ts reads teacherPace())
+  Promise.resolve().then(() => teach(ctx, L.gifted ? { system, user, maxTokens: free ? 700 : 500, purpose: `gifted:${L.field}`, gifted: true } : { system, user, maxTokens: free ? 500 : 300, purpose: `school:${L.field || L.subject}` }))
     .then(r => { entry.result = r; entry.done = true; }, () => { entry.done = true; });
 }
 // the faculty a training pair belongs to, for a LoRA per faculty later: the field, else the core subject
@@ -1152,7 +1148,7 @@ export function schoolState(S: State) {
   return { lessonsToday: s.stats.today, lessons: s.stats.total, correct: s.stats.correct, teacherCalls: s.stats.teacherCalls, teacherAnswers: s.stats.teacherAnswers, localCalls: s.stats.localCalls,
     choices: s.stats.choices || 0, fieldLessons: s.stats.fieldLessons || 0, coreShare: CORE_SHARE,
     // the teachers' pacing for budget.train: the share of lessons with a teacher now, teacher-only lessons, data kept
-    teacher: { shareNow: pace.share, shareBase: TEACHER_SHARE, behind: pace.behind, planned: !!(pace as any).planned, // planned: brains.ts trainPlan() in use orShortUsd: round(pace.short, 4), concurrency: maxTeaching(),
+    teacher: { shareNow: pace.share, shareBase: TEACHER_SHARE, behind: pace.behind, orShortUsd: round(pace.short, 4), concurrency: maxTeaching(),
       teacherOnly: s.stats.teacherOnly || 0, teacherOnlyToday: s.stats.tday?.day === S.day ? s.stats.tday.teacherOnly || 0 : 0, teacherOnlyKept: s.stats.teacherOnlyKept || 0,
       keptByField: Object.fromEntries(Object.entries(s.keptByField || {}).filter(([k]) => /^[a-z][a-z0-9_]{0,23}$/.test(k))) }, inFlight: pending.size, gifted: giftedView(S), perMin: { day: DAY_PER_MIN, night: NIGHT_PER_MIN }, teacherShare: TEACHER_SHARE, cards: s.cards.length, examples: Object.fromEntries(Object.entries(s.examples).map(([k, v]: any) => [k, v.length])), ...summary.view };
 }

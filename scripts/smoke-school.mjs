@@ -616,6 +616,8 @@ for (const phase of ['night', 'day']) {
   check('behind the OpenRouter minimum: the teacher share rises to 100% and more teachers may work at once', p0.behind && p0.share === 1 && p0.concurrency === 16 && trainPaceView(tctx).orShortUsd > 0, JSON.stringify(p0));
   for (let r = 0; r < 6; r++) { await new Promise(res => setTimeout(res, 5)); await school.schoolTick(tctx); }
   const st = school.schoolState(TS).teacher;
+  // every field of school.teacher is really there (14 Nov: a comment once swallowed orShortUsd and concurrency)
+  check('school.teacher carries every pacing number', ['shareNow', 'shareBase', 'behind', 'orShortUsd', 'concurrency', 'teacherOnly', 'teacherOnlyToday', 'teacherOnlyKept', 'keptByField'].every(k => k in school.schoolState(TS).teacher) && school.schoolState(TS).teacher.orShortUsd > 0 && school.schoolState(TS).teacher.concurrency === 16, JSON.stringify(school.schoolState(TS).teacher));
   check('with the local brain offline, teacher-only lessons still run and count in the public numbers', calls.length > 0 && st.teacherOnly > 0 && st.teacherOnlyToday === st.teacherOnly && school._pending().length === 0, JSON.stringify(st));
   const fieldsAsked = calls.map(q => pop.FIELD_IDS.find(f => q.purpose === undefined && false) || null); void fieldsAsked;
   const domains = savedT.map(e => e.domain);
