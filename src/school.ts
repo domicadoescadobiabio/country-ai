@@ -167,7 +167,11 @@ type Fact = [number, string, string, string[], string];
 type Bank = { calc: Calc[]; facts: Fact[]; case: [string, string[]] };
 const C = (min: number, max: number, lesson: string, make: Calc['make']): Calc => ({ min, max, lesson, make });
 const n$ = (x: number, unit = '') => `${fmt(x)}${unit}`;
-const HISTORY_EVENTS: [string, number][] = [['the printing press in Europe', 1440], ['the French Revolution', 1789], ['the first powered flight', 1903], ['the end of the Second World War', 1945], ['the first moon landing', 1969], ['the fall of the Berlin Wall', 1989], ['the start of the World Wide Web', 1991]];
+const SYLLO: [string, string][] = [['judges', 'sworn to the constitution'], ['couriers', 'registered at city hall'], ['nurses', 'trained in first aid'], ['councillors', 'elected by the people'], ['merchants', 'required to keep receipts'], ['soldiers', 'under the Commander'], ['librarians', 'readers'], ['bridge operators', 'licensed'], ['poets', 'members of the guild'], ['miners', 'paid weekly']];
+const PEOPLE = ['Ada', 'Bram', 'Cyra', 'Dax', 'Elio', 'Fenn', 'Hiro', 'Ines', 'Kael', 'Lira', 'Milo', 'Nova', 'Orin', 'Rhea', 'Soren', 'Tala', 'Vale', 'Wyn', 'Yara', 'Zed'];
+const PLACES = ['Neura City', 'Port Token', 'Datahaven', 'Kernel Falls', 'Lumen Bay'];
+const CONDS: [string, string][] = [['it rains', 'the streets are wet'], ['the market is open', 'the square is busy'], ['the Council meets', 'the hall lights are on'], ['the river floods', 'the bridge is closed'], ['the local brain is offline', 'the school is quiet'], ['taxes rise', 'shops raise their prices'], ['a festival is held', 'the trains are full']];
+const HISTORY_EVENTS: [string, number][] =[['the printing press in Europe', 1440], ['the French Revolution', 1789], ['the first powered flight', 1903], ['the end of the Second World War', 1945], ['the first moon landing', 1969], ['the fall of the Berlin Wall', 1989], ['the start of the World Wide Web', 1991]];
 export const BANKS: Record<string, Bank> = {
   math: { calc: [
     C(1, 2, 'Add or multiply step by step, then check that the size of the answer makes sense.', L => { const a = ri(12, 90 * L), b = ri(7, 60 * L); return L === 1 ? [`What is ${a} + ${b}?`, n$(a + b), [n$(a + b + 10), n$(a + b - 1), n$(a + b + 100)]] : [`What is ${a} × ${b % 40 + 3}?`, n$(a * (b % 40 + 3)), [n$(a * (b % 40 + 4)), n$(a + b % 40 + 3), n$(a * (b % 40 + 3) + 10)]]; }),
@@ -355,13 +359,20 @@ export const BANKS: Record<string, Bank> = {
   ], case: ['A friend has felt sad and lonely for a week and stopped talking in the street. What do you do and why?', ['listen', 'talk', 'visit', 'help', 'friend', 'support']] },
   philosophy: { calc: [
     C(2, 4, 'A truth table for n statements has 2^n rows.', () => { const n = ri(2, 6); return [`How many rows does a truth table for ${n} statements have?`, String(2 ** n), [String(n * 2), String(n * n), String(2 ** n - 1), String(2 ** (n + 1))]]; }),
+    // many different syllogisms and fallacies from names and categories (thin fields need fresh questions, 14 Nov)
+    C(1, 5, 'All A are B, and x is an A, so x is B: a valid syllogism.', () => { const [a, b] = pick(SYLLO); const x = pick(PEOPLE); return [`All ${a} are ${b}. ${x} is one of the ${a}. What follows?`, `${x} is ${b}`, [`${x} is not ${b}`, `All ${b} are ${a}`, 'Nothing follows']]; }),
+    C(2, 5, 'If P then Q, and Q is true, proves nothing about P: affirming the consequent is a fallacy.', () => { const [p, q] = pick(CONDS); const c = pick(PLACES); return [`If ${p} in ${c}, ${q}. In ${c}, ${q}. What follows?`, 'Nothing certain: something else may explain it', [`${p[0].toUpperCase()}${p.slice(1)} in ${c}`, `It is false that ${p} in ${c}`, 'The rule must be wrong']]; }),
+    C(3, 5, 'If P then Q, and Q is false, then P is false (modus tollens).', () => { const [p, q] = pick(CONDS); const c = pick(PLACES); return [`If ${p} in ${c}, ${q}. In ${c}, it is not true that ${q}. What follows?`, `It is not the case that ${p} in ${c}`, [`${p[0].toUpperCase()}${p.slice(1)} in ${c}`, 'Nothing follows', 'The rule must be wrong']]; }),
   ], facts: [
     [1, '"All citizens vote. Mira is a citizen." What follows?', 'Mira votes', ['Mira does not vote', 'All voters are Mira', 'Nothing follows'], 'All A are B, x is A, so x is B.'],
     [2, '"Some merchants are honest" means...', 'At least one merchant is honest', ['All merchants are honest', 'No merchant is honest', 'Honesty is illegal'], '"Some" means at least one, not all.'],
     [3, 'What is an ad hominem argument?', 'Attacking the person instead of the argument', ['A strong proof', 'A kind of poem', 'Agreeing politely'], 'Answer the argument, not the person.'],
     [4, 'The golden rule says...', 'Treat others as you want to be treated', ['Gold is the best money', 'The strongest rules', 'Always obey orders'], 'Treat others as you would be treated.'],
   ], case: ['You find 100 CAI on the street with no name on it. Nobody saw you. What do you do and why?', ['return', 'police', 'honest', 'owner', 'report', 'right']] },
-  civics: { calc: [], facts: [
+  civics: { calc: [
+    C(1, 4, 'Turnout = votes cast ÷ citizens who may vote × 100.', L => { const n = ri(4, 40 * L) * 100, pct = pick([40, 55, 62, 75, 80, 88, 94]); const v = n * pct / 100; return [`${fmt(n)} citizens of ${pick(PLACES)} may vote and ${fmt(v)} voted. What was the turnout?`, `${pct}%`, [`${100 - pct}%`, `${Math.round(pct / 2)}%`, `${Math.min(99, pct + 10)}%`]]; }),
+    C(2, 5, 'A majority of the seats is more than half of all seats, present or not.', () => { const s = pick([5, 9, 15, 21, 30, 45]); return [`A council has ${s} seats. How many votes make a majority of the seats?`, String(Math.floor(s / 2) + 1), [String(Math.ceil(s / 2)), String(Math.floor(s / 2)), String(Math.ceil(s * 2 / 3))]]; }),
+  ], facts: [
     [1, 'Why does every citizen\'s vote matter?', 'Leaders are chosen by the sum of all votes', ['Only the rich vote', 'Votes are decoration', 'The President picks anyway'], 'In a republic, leaders come from the citizens\' votes.'],
     [2, 'What should you look at when judging a candidate?', 'Their record and their plans', ['Who shouts loudest', 'Who pays you', 'Their name only'], 'Judge the record and the manifesto, not promises of money.'],
   ], case: ['A candidate promises every voter 100 CAI if they win, paid from the treasury. How do you judge that promise and vote?', ['treasury', 'law', 'record', 'promise', 'budget', 'vote']] },
@@ -482,10 +493,16 @@ const SOLVERS: [RegExp, (m: RegExpMatchArray) => string][] = [
   [new RegExp(`^How many passwords of ${N} characters can be made from ${N} possible characters\\?$`), m => n$(num(m[2]) ** num(m[1]))],
   [new RegExp(`^An attacker tries ${N} guesses a second on a ${N}-digit PIN\\.`), m => n$(10 ** num(m[2]) / num(m[1]))],
   [new RegExp(`^Two candidates for Mayor: one passed the Academy with ${N}%`), m => `The one with ${m[1]}% and a positive budget: judge the record, not the promise.`],
+  [/^All (.+) are (.+)\. (\w+) is one of the \1\. What follows\?$/, m => `${m[3]} is ${m[2]}`],
+  [/^If (.+) in (.+), (.+)\. In \2, it is not true that \3\. What follows\?$/, m => `It is not the case that ${m[1]} in ${m[2]}`],
+  [/^If (.+) in (.+), (.+)\. In \2, \3\. What follows\?$/, () => 'Nothing certain: something else may explain it'],
+  [new RegExp(`^${N} citizens of .+ may vote and ${N} voted\\. What was the turnout\\?$`), m => `${Math.round(num(m[2]) / num(m[1]) * 100)}%`],
+  [new RegExp(`^A council has ${N} seats\\. How many votes make a majority of the seats\\?$`), m => String(Math.floor(num(m[1]) / 2) + 1)],
 ];
 let FACT_KEY: Map<string, string> | null = null;
 export function solveFieldQuestion(text: string): string | null {
   const q = String(text || '').trim();
+  if (q.length > 600) return null; // field questions are short; a long text never reaches the back-referencing patterns
   if (!FACT_KEY) {
     FACT_KEY = new Map();
     for (const b of Object.values(BANKS)) for (const f of b.facts) FACT_KEY.set(f[1], f[2]);
@@ -871,7 +888,9 @@ export function teacherUser(L: any) {
 const TEACHER_CONCURRENCY_MAX = Math.round(env('SCHOOL_TEACHER_CONCURRENCY_MAX', 16, 1, 64));
 const TEACHER_ONLY_PER_TICK = 6;
 const STUDENT_TEACHER_SLOTS = 4; // teacher places teacher-only lessons never take: kept for students, the gifted first
-const pace = { behind: false, short: 0, minNow: 0, share: TEACHER_SHARE, teacherOnly: 0, est: 0.0011, allowedNow: 0 };
+// pacedAt: when the pace was last worked out (null after a restart until the first school tick, so a monitor can
+// tell numbers that are not fresh yet; ticket #538)
+const pace = { behind: false, short: 0, minNow: 0, share: TEACHER_SHARE, teacherOnly: 0, est: 0.0011, allowedNow: 0, pacedAt: null as number | null };
 // the share of lessons that get a teacher: the base when on schedule, up to all of them when behind by 5% of the
 // minimum so far (or 5 cents)
 export function teacherShareFor(base: number, short: number, minNow: number) {
@@ -882,13 +901,13 @@ export function teacherShareFor(base: number, short: number, minNow: number) {
 // trainPaceView it sets the share of lessons with a teacher and how many teacher-only lessons to start (enough to
 // catch up, at most a batch); brains.ts still enforces every limit in teach() (budget, Claude's cap, TRAIN_PER_MIN)
 function updatePace(ctx: Ctx) {
-  if (!ctx.llm?.enabled) { Object.assign(pace, { behind: false, short: 0, share: TEACHER_SHARE, teacherOnly: 0 }); return; }
+  if (!ctx.llm?.enabled) { Object.assign(pace, { behind: false, short: 0, share: TEACHER_SHARE, teacherOnly: 0, pacedAt: Date.now() }); return; }
   let pv: any = null; try { pv = trainPaceView(ctx); } catch { pv = null; }
   const batch = Math.max(0, Math.min(TEACHER_ONLY_PER_TICK, maxTeachingWhenBehind() - teaching.size));
   const short = Number(pv?.orShortUsd) || 0, minNow = Number(pv?.orMinNow) || 0;
   const est = Number(pv?.estPerCall?.openrouter) || 0.0011;
   const teacherOnly = short > 0 ? Math.min(batch, Math.ceil(short / Math.max(1e-4, est))) : 0;
-  Object.assign(pace, { behind: short > 0, short, minNow, share: teacherShareFor(TEACHER_SHARE, short, minNow), teacherOnly, est, allowedNow: Number(pv?.allowedNow) || 0 });
+  Object.assign(pace, { behind: short > 0, short, minNow, share: teacherShareFor(TEACHER_SHARE, short, minNow), teacherOnly, est, allowedNow: Number(pv?.allowedNow) || 0, pacedAt: Date.now() });
 }
 const maxTeachingWhenBehind = () => Math.max(MAX_TEACHING, TEACHER_CONCURRENCY_MAX);
 const maxTeaching = () => (pace.behind ? Math.max(MAX_TEACHING, TEACHER_CONCURRENCY_MAX) : MAX_TEACHING);
@@ -922,6 +941,12 @@ function readerFor(ctx: Ctx, f: string) {
   }
   return any ? { a: any, gifted: false } : null;
 }
+// questions already put to a teacher (normalised like brains.ts's duplicate check), kept in memory and bounded
+const stemOf = (q: string) => String(q || '').toLowerCase().replace(/\s+/g, ' ').trim();
+let askedStems = new Set<string>();
+const rememberStem = (s: string) => { if (askedStems.size >= 50000) askedStems = new Set([...askedStems].slice(-25000)); askedStems.add(s); };
+const saturated = { day: -1 as number, fields: new Set<string>() };
+export const _teacherOnlyMemory = () => ({ asked: askedStems.size, saturated: [...saturated.fields] }); // tests
 // called every tick, local brain or not: while OpenRouter is behind its minimum, start teacher-only lessons in the
 // fields that need data most (one of the three thinnest each time), never over the paced allowance
 function teacherOnlyTick(ctx: Ctx, now: number) {
@@ -936,11 +961,23 @@ function teacherOnlyTick(ctx: Ctx, now: number) {
   const roomFn = (brains as any).teachRoomNow; let room = Infinity; try { if (typeof roomFn === 'function') room = Number(roomFn(ctx)); } catch { room = Infinity; }
   const perMinute = Number.isFinite(room) ? Math.floor(Math.max(0, room) / 2) : Infinity;
   const want = Math.min(slots, pace.teacherOnly, TEACHER_ONLY_PER_TICK, perMinute);
-  const needs = fieldNeeds(ctx).slice(0, 3);
+  // never pay a teacher for a question already asked: the dataset refuses a repeated question as a duplicate (on
+  // 14 Nov 330 of 396 pairs were, from the thinnest fields' few questions). A field with no new question left in a
+  // few draws rests for the day, and the next thinnest field is taught instead.
+  if (saturated.day !== ctx.S.day) { saturated.day = ctx.S.day; saturated.fields.clear(); }
   for (let i = 0; i < want; i++) {
+    const needs = fieldNeeds(ctx).filter(x => !saturated.fields.has(x.f)).slice(0, 3); if (!needs.length) return;
     const f = needs[Math.floor(Math.random() * needs.length)].f;
     const r = readerFor(ctx, f); if (!r) return;
-    const L = teacherOnlyLesson(ctx.S, r.a, f, r.gifted, now); if (!L) continue;
+    let L: any = null;
+    // new to this run (askedStems) and, when the server can tell (ctx.trainKnown, the dataset's qhash index), new to the dataset too
+    for (let k = 0; k < 8 && !L; k++) {
+      const c = teacherOnlyLesson(ctx.S, r.a, f, r.gifted, now); if (!c || askedStems.has(stemOf(c.item.q))) continue;
+      if (typeof (ctx as any).trainKnown === 'function' && (ctx as any).trainKnown(c.user)) { rememberStem(stemOf(c.item.q)); continue; }
+      L = c;
+    }
+    if (!L) { saturated.fields.add(f); continue; }
+    rememberStem(stemOf(L.item.q));
     const before = teaching.size; callTeacher(ctx, L, '', null as any);
     if (teaching.size > before) {
       s.stats.teacherOnly = (s.stats.teacherOnly || 0) + 1;
@@ -1048,7 +1085,7 @@ export async function schoolTick(ctx: Ctx, busy: (id: string) => boolean = () =>
   for (const [qid, L] of [...pending]) {
     const a = citizen(ctx, L.agent);
     if (!a || a.status !== 'free') { pending.delete(qid); continue; }
-    const r = await think(ctx, a, qid, { system: L.system, user: L.user, kind: L.night != null ? 'night' : 'train', format: L.format, options: L.options || null, paid: false });
+    const r = await think(ctx, a, qid, { system: L.system, user: L.user, kind: L.night != null ? 'night' : 'train', format: L.format, options: L.options || null, paid: false, domain: L.field || null }); // domain: the runner's adapter for this field, once brains.ts hands it on
     if (r.pending) continue;
     pending.delete(qid);
     if (!r.text) { if (L.kind === 'choose') serveSoon(L.agent); continue; } // lapsed: nothing paid (a lapsed choice keeps today's default field)
@@ -1148,7 +1185,7 @@ export function schoolState(S: State) {
   return { lessonsToday: s.stats.today, lessons: s.stats.total, correct: s.stats.correct, teacherCalls: s.stats.teacherCalls, teacherAnswers: s.stats.teacherAnswers, localCalls: s.stats.localCalls,
     choices: s.stats.choices || 0, fieldLessons: s.stats.fieldLessons || 0, coreShare: CORE_SHARE,
     // the teachers' pacing for budget.train: the share of lessons with a teacher now, teacher-only lessons, data kept
-    teacher: { shareNow: pace.share, shareBase: TEACHER_SHARE, behind: pace.behind, orShortUsd: round(pace.short, 4), concurrency: maxTeaching(),
+    teacher: { shareNow: pace.share, shareBase: TEACHER_SHARE, behind: pace.behind, orShortUsd: round(pace.short, 4), concurrency: maxTeaching(), pacedAt: pace.pacedAt,
       teacherOnly: s.stats.teacherOnly || 0, teacherOnlyToday: s.stats.tday?.day === S.day ? s.stats.tday.teacherOnly || 0 : 0, teacherOnlyKept: s.stats.teacherOnlyKept || 0,
       keptByField: Object.fromEntries(Object.entries(s.keptByField || {}).filter(([k]) => /^[a-z][a-z0-9_]{0,23}$/.test(k))) }, inFlight: pending.size, gifted: giftedView(S), perMin: { day: DAY_PER_MIN, night: NIGHT_PER_MIN }, teacherShare: TEACHER_SHARE, cards: s.cards.length, examples: Object.fromEntries(Object.entries(s.examples).map(([k, v]: any) => [k, v.length])), ...summary.view };
 }
@@ -1189,7 +1226,7 @@ export function schoolNow() {
 }
 // for tests: forget module state (a test may build several republics in one process)
 export const teacherPace = () => ({ ...pace, concurrency: maxTeaching() }); // budget.train and tests
-export function _resetSchool() { pending.clear(); teaching.clear(); soon.length = 0; Object.assign(pace, { behind: false, short: 0, minNow: 0, share: TEACHER_SHARE, teacherOnly: 0, allowedNow: 0 }); recentLessons.length = 0; lastLessonBy.clear(); plan = { key: null, ids: [], i: 0 }; summary = { at: 0, n: -1, view: null }; giftedCache = { ref: null, map: new Map() }; }
+export function _resetSchool() { pending.clear(); teaching.clear(); soon.length = 0; askedStems = new Set(); saturated.day = -1; saturated.fields.clear(); Object.assign(pace, { behind: false, short: 0, minNow: 0, share: TEACHER_SHARE, teacherOnly: 0, allowedNow: 0, pacedAt: null }); recentLessons.length = 0; lastLessonBy.clear(); plan = { key: null, ids: [], i: 0 }; summary = { at: 0, n: -1, view: null }; giftedCache = { ref: null, map: new Map() }; }
 export const _teacherPending = () => [...teaching.values()].filter(e => !e.done).length;
 export const _pending = () => [...pending.values()];
 export const promptFor = lessonPrompt; // the lesson's system prompt (tests: notes and worked examples in it)

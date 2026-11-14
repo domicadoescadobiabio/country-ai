@@ -236,6 +236,10 @@ check('the morning after, one night-school summary in #life', said.filter(m => m
   }
   check('every field question can be solved from its own text (facts and calculations)', !unsolved.length, unsolved.slice(0, 4).join(' / '));
   check('the solver says nothing for a question it does not know', school.solveFieldQuestion('What is the meaning of life?') === null);
+  // the thinnest fields need many different questions (14 Nov: 330 of 396 teacher pairs were duplicates)
+  const thin = ['philosophy', 'civics', 'law'].map(f => [f, [1, 2, 3, 4, 5].map(lv => new Set(Array.from({ length: 300 }, () => school.fieldItem(f, lv).q)).size)]);
+  console.log(`  (distinct questions in 300 draws, levels 1-5: ${JSON.stringify(thin)})`);
+  check('the thin fields (philosophy, civics, law) have many different questions at every level', thin.every(([, ns]) => ns.every(n => n >= 40)), JSON.stringify(thin));
   const qs = new Set(Array.from({ length: 12 }, () => school.fieldItem('physics', 3).q));
   check('calculations use fresh random numbers (cannot be memorised)', qs.size >= 5, String(qs.size));
   // levels follow skill; talent speeds learning; unused fields fade slowly
@@ -597,7 +601,7 @@ for (const phase of ['night', 'day']) {
   school._resetSchool(); _resetLocal();
   const kidsT = Array.from({ length: 120 }, (_, i) => ({ id: `t${i}`, name: `T ${i}`, city: 'neura', status: 'free', wallet: 300, traits, bio: ['Poet', 'Judge', 'Nurse', 'Code reviewer'][i % 4] + ' in Neura City.', diary: [], practice: {}, quals: {}, record: [], lessons: {}, joinedDay: 0, training: [] }));
   const TS = { day: 6, foundedAt: Date.now() - (5 * 24 + 12) * 3600000, policy: { wage: 100, taxRate: 0.1, ubi: 20 }, cities: { neura: { health: 70, budget: 0 } }, treasury: 0, citizens: kidsT, seats: {}, elections: { list: [] }, applications: {}, police: { incidents: [] }, academy: { rooms: [] }, feed: {} };
-  const calls = []; const savedT = [];
+  const calls = []; const savedT = []; const knownAsked = { n: 0, set: new Set() };
   const tllm = { enabled: true, hasOR: true, hasClaude: false, json: llm.json,
     askDetailed: async q => { calls.push(q); const qline = (String(q.user).match(/Question: (.*)/) || [])[1] || ''; const key = school.solveFieldQuestion(qline);
       const L = [...school._pending()].find(() => false); void L;
@@ -605,8 +609,12 @@ for (const phase of ['night', 'day']) {
   // the teacher answers with the right letter: the option whose text is the solver's answer
   function keyLetter(user, key) { const m = [...String(user).matchAll(/^([A-D])\) (.+)$/gm)].find(x => x[2].trim() === key); return m ? m[1] : null; }
   const counts = { byDomain: Object.fromEntries(pop.FIELD_IDS.map(f => [f, 50])) }; counts.byDomain.philosophy = 9; counts.byDomain.civics = 12; counts.byDomain.law = 14; counts.byDomain.programming = 72;
-  const tctx = { S: TS, cfg: { dayMs: 86400000, trainBudgetUsd: 20, trainOrMinUsd: 15, dailyBudgetUsd: 100, trainMix: 'openrouter:100' }, hourMs: () => 3600000, say() {}, agent: id => TS.citizens.find(x => x.id === id), record() {}, log() {}, llm: tllm, trainExample: e => savedT.push(e), trainCounts: () => counts };
+  const tctx = { S: TS, cfg: { dayMs: 86400000, trainBudgetUsd: 20, trainOrMinUsd: 15, dailyBudgetUsd: 100, trainMix: 'openrouter:100' }, hourMs: () => 3600000, say() {}, agent: id => TS.citizens.find(x => x.id === id), record() {}, log() {}, llm: tllm, trainExample: e => savedT.push(e), trainCounts: () => counts,
+    // ticket #540: the dataset already holds some questions (here every third by length); those are never sent to a teacher
+    trainKnown: u => { knownAsked.n++; const k = String(u).length % 3 === 0; if (k) knownAsked.set.add((String(u).match(/Question: (.*)/) || [])[1]); return k; } };
   const { trainPaceView } = await import('../src/brains.ts');
+  // after a restart the pace is not worked out yet: pacedAt is null until the first school tick (ticket #538)
+  check('after a restart school.teacher says its pace is not fresh yet (pacedAt null)', school.schoolState(TS).teacher.pacedAt === null && school.teacherPace().pacedAt === null);
   // the share: up to 100% when behind, the base when ahead
   check('teacher share: the base when on schedule, up to every lesson when behind', school.teacherShareFor(0.3, 0, 7) === 0.3 && school.teacherShareFor(0.3, 2.56, 2.59) === 1 && school.teacherShareFor(0.3, 0.05, 7) > 0.3 && school.teacherShareFor(0.3, 0.05, 7) < 1);
   // behind at noon with nothing spent, and the local brain OFFLINE: teacher-only lessons still run
@@ -617,12 +625,19 @@ for (const phase of ['night', 'day']) {
   for (let r = 0; r < 6; r++) { await new Promise(res => setTimeout(res, 5)); await school.schoolTick(tctx); }
   const st = school.schoolState(TS).teacher;
   // every field of school.teacher is really there (14 Nov: a comment once swallowed orShortUsd and concurrency)
-  check('school.teacher carries every pacing number', ['shareNow', 'shareBase', 'behind', 'orShortUsd', 'concurrency', 'teacherOnly', 'teacherOnlyToday', 'teacherOnlyKept', 'keptByField'].every(k => k in school.schoolState(TS).teacher) && school.schoolState(TS).teacher.orShortUsd > 0 && school.schoolState(TS).teacher.concurrency === 16, JSON.stringify(school.schoolState(TS).teacher));
+  check('after the first tick the pace carries the time it was worked out', typeof school.schoolState(TS).teacher.pacedAt === 'number' && Date.now() - school.schoolState(TS).teacher.pacedAt < 60000);
+  check('school.teacher carries every pacing number', ['shareNow', 'shareBase', 'behind', 'orShortUsd', 'concurrency', 'pacedAt', 'teacherOnly', 'teacherOnlyToday', 'teacherOnlyKept', 'keptByField'].every(k => k in school.schoolState(TS).teacher) && school.schoolState(TS).teacher.orShortUsd > 0 && school.schoolState(TS).teacher.concurrency === 16, JSON.stringify(school.schoolState(TS).teacher));
   check('with the local brain offline, teacher-only lessons still run and count in the public numbers', calls.length > 0 && st.teacherOnly > 0 && st.teacherOnlyToday === st.teacherOnly && school._pending().length === 0, JSON.stringify(st));
   const fieldsAsked = calls.map(q => pop.FIELD_IDS.find(f => q.purpose === undefined && false) || null); void fieldsAsked;
   const domains = savedT.map(e => e.domain);
-  check('teacher-only lessons go to the fields with the least training data (philosophy 9, civics 12, law 14)', domains.length > 0 && domains.every(d => ['philosophy', 'civics', 'law'].includes(d)), JSON.stringify([...new Set(domains)]));
-  check('every teacher-only pair is checked against the server key before it counts as kept', savedT.every(e => e.verified === 'key') && st.teacherOnlyKept === savedT.length && st.keptByField.philosophy + (st.keptByField.civics || 0) + (st.keptByField.law || 0) === savedT.length, JSON.stringify(st.keptByField));
+  const thinShare = domains.filter(d => ['philosophy', 'civics', 'law'].includes(d)).length / Math.max(1, domains.length);
+  const memT = school._teacherOnlyMemory();
+  console.log(`  (teacher-only pairs: ${JSON.stringify(Object.fromEntries([...new Set(domains)].map(d => [d, domains.filter(x => x === d).length])))}, saturated today: ${JSON.stringify(memT.saturated)})`);
+  check('teacher-only lessons go to the fields with the least training data (philosophy 9, civics 12, law 14); another field only once one has run out of new questions', domains.length > 0 && thinShare >= 0.6 && (thinShare === 1 || memT.saturated.length > 0), JSON.stringify({ thinShare, saturated: memT.saturated }));
+  const asked = calls.map(q => (String(q.user).match(/Question: (.*)/) || [])[1]).filter(Boolean);
+  check('a teacher is never paid twice for the same question (the dataset would refuse it as a duplicate)', asked.length > 0 && new Set(asked).size === asked.length, `${asked.length} asked, ${new Set(asked).size} distinct`);
+  check('a question the dataset already holds (ctx.trainKnown) is never sent to a teacher (ticket #540)', knownAsked.n > 0 && knownAsked.set.size > 0 && !asked.some(q => knownAsked.set.has(q)),`${knownAsked.n} looked up, ${knownAsked.set.size} known`);
+  check('every teacher-only pair is checked against the server key before it counts as kept', savedT.every(e => e.verified === 'key') && st.teacherOnlyKept === savedT.length && Object.values(st.keptByField).reduce((a, b) => a + b, 0) === savedT.length, JSON.stringify(st.keptByField));
   check('a teacher-only lesson leaves the teacher\'s explanation in the reader\'s notebook', kidsT.some(a => Object.values(a.school?.notes || {}).flat().some(n => /method, step by step/.test(n))));
   // a wrong teacher answer is not kept
   tllm.askDetailed = async q => { calls.push(q); return { text: 'Z - nonsense', via: 'openrouter:teacher', cost: 0.0011 }; };
