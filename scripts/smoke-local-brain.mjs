@@ -236,7 +236,7 @@ try {
   const none = await fetch(`http://127.0.0.1:${PORT}/api/worker/pull`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
   check('worker endpoints refuse a missing token', none.status === 401);
 
-  worker = spawn(process.execPath, ['scripts/local-brain.mjs'], { cwd: ROOT, env: { ...process.env, COUNTRY_URL: `http://127.0.0.1:${PORT}`, WORKER_TOKEN: TOKEN, OLLAMA_URL: OLLAMA, OLLAMA_MODEL: 'qwen3:8b', PARALLEL: '3' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  worker = spawn(process.execPath, ['scripts/local-brain.mjs'], { cwd: ROOT, env: { ...process.env, COUNTRY_URL: `http://127.0.0.1:${PORT}`, WORKER_TOKEN: TOKEN, LOCAL_BACKEND: 'ollama', OLLAMA_URL: OLLAMA, OLLAMA_MODEL: 'qwen3:8b', PARALLEL: '3' }, stdio: ['ignore', 'pipe', 'pipe'] });
   let wlog = ''; worker.stdout.on('data', d => { wlog += d; }); worker.stderr.on('data', d => { wlog += d; });
 
   let s = null;
@@ -277,11 +277,79 @@ try {
   check('nobody is counted as working a refused second shift', diaries.every(x => /^worked/.test(x.line)), JSON.stringify(diaries.slice(-3)));
   // the runner under local-brain.cmd reloads itself when its code changes (exit 3 = start the new code)
   const watch = path.join(DATA, 'watch.txt'); fs.writeFileSync(watch, 'v1');
-  const sup = spawn(process.execPath, ['scripts/local-brain.mjs'], { cwd: ROOT, env: { ...process.env, COUNTRY_URL: `http://127.0.0.1:${PORT}`, WORKER_TOKEN: TOKEN, OLLAMA_URL: OLLAMA, OLLAMA_MODEL: 'qwen3:8b', PARALLEL: '1', LOCAL_BRAIN_SUPERVISED: '1', LOCAL_BRAIN_WATCH: watch, RELOAD_CHECK_MS: '300' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const sup = spawn(process.execPath, ['scripts/local-brain.mjs'], { cwd: ROOT, env: { ...process.env, COUNTRY_URL: `http://127.0.0.1:${PORT}`, WORKER_TOKEN: TOKEN, LOCAL_BACKEND: 'ollama', OLLAMA_URL: OLLAMA, OLLAMA_MODEL: 'qwen3:8b', PARALLEL: '1', LOCAL_BRAIN_SUPERVISED: '1', LOCAL_BRAIN_WATCH: watch, RELOAD_CHECK_MS: '300' }, stdio: ['ignore', 'pipe', 'pipe'] });
   let slog = ''; sup.stdout.on('data', d => { slog += d; });
   const code = await new Promise(res => { sup.on('exit', c => res(c)); setTimeout(() => { fs.writeFileSync(watch, 'v2'); fs.utimesSync(watch, new Date(), new Date(Date.now() + 5000)); }, 1500); setTimeout(() => { sup.kill(); res('timeout'); }, 15000); });
   check('the supervised runner restarts itself with new code (exit 3)', code === 3 && /restarting with the new code/.test(slog), `${code} ${slog.slice(-200)}`);
   check('the runner says which temperatures it uses', /daily-life temperature 0\.9 \(exams 0\.4\)/.test(slog), slog.slice(0, 200));
+  // ---- llama.cpp backend (owner, 14 Nov): llama-server with the general LoRA, a mock here
+  worker?.kill(); await wait(500);
+  const llamaBodies = []; let llamaHealth = 'ok'; let llamaIds = [0];
+  const llama = http.createServer((req, res) => {
+    let b = ''; req.on('data', c => { b += c; }); req.on('end', () => {
+      if (req.url === '/health') { res.writeHead(llamaHealth === 'ok' ? 200 : 503, { 'content-type': 'application/json' }); return res.end(JSON.stringify(llamaHealth === 'ok' ? { status: 'ok' } : { error: { code: 503, message: 'Loading model' } })); }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      if (req.url === '/lora-adapters') return res.end(JSON.stringify(llamaIds.map(id => ({ id, path: `adapters/a${id}.gguf`, scale: 0 }))));
+      if (req.url !== '/v1/chat/completions') { res.writeHead(404); return res.end('{}'); }
+      const body = JSON.parse(b || '{}'); llamaBodies.push(body);
+      const userText = String(body.messages?.find(m => m.role === 'user')?.content || '');
+      res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: `<think>\n\n</think>${smartAnswer(userText)}` } }], usage: { prompt_tokens: 300, completion_tokens: 20 } }));
+    });
+  });
+  await new Promise(r => llama.listen(0, '127.0.0.1', r));
+  const LLAMA = `http://127.0.0.1:${llama.address().port}`;
+  const llamaEnv = extra => ({ ...process.env, COUNTRY_URL: `http://127.0.0.1:${PORT}`, WORKER_TOKEN: TOKEN, LOCAL_BACKEND: 'llamacpp', LLAMA_URL: LLAMA, PARALLEL: '2', LLAMA_LORAS: '', LLAMA_LORA_SCALE: '', ...extra });
+  const runOnce = extra => new Promise(res => { const p = spawn(process.execPath, ['scripts/local-brain.mjs'], { cwd: ROOT, env: llamaEnv(extra), stdio: ['ignore', 'pipe', 'pipe'] }); let o = ''; p.stdout.on('data', d => { o += d; }); p.stderr.on('data', d => { o += d; }); p.on('exit', c => res({ code: c, out: o })); setTimeout(() => { p.kill(); }, 8000); });
+  try {
+    llamaHealth = 'loading';
+    const notReady = await runOnce({});
+    check('llamacpp: a llama-server still loading stops the runner with a clear message (the .cmd tries again)', notReady.code === 1 && /not ready yet \(health 503/.test(notReady.out), `${notReady.code} ${notReady.out.slice(0, 200)}`);
+    llamaHealth = 'ok';
+    const noAdapter = await runOnce({ LLAMA_LORAS: 'general:0,law:1' });
+    check('llamacpp: an adapter llama-server has not loaded stops the runner, naming it', noAdapter.code === 1 && /law:1/.test(noAdapter.out) && /loaded ids: 0/.test(noAdapter.out), `${noAdapter.code} ${noAdapter.out.slice(0, 200)}`);
+    const badBackend = await runOnce({ LOCAL_BACKEND: 'vllm' });
+    check('an unknown LOCAL_BACKEND is refused', badBackend.code === 1 && /must be ollama or llamacpp/.test(badBackend.out));
+    const noServer = await runOnce({ LLAMA_URL: 'http://127.0.0.1:1' });
+    check('llamacpp: no llama-server at LLAMA_URL stops the runner with a clear message', noServer.code === 1 && /llama-server is not running/.test(noServer.out), noServer.out.slice(0, 200));
+
+    const lw = spawn(process.execPath, ['scripts/local-brain.mjs'], { cwd: ROOT, env: llamaEnv({}), stdio: ['ignore', 'pipe', 'pipe'] });
+    let llog = ''; lw.stdout.on('data', d => { llog += d; }); lw.stderr.on('data', d => { llog += d; });
+    let ls = null; const lengines = new Set();
+    for (let i = 0; i < 40; i++) {
+      await wait(1000); ls = await get('/api/state');
+      for (const d of ls.decisions) lengines.add(d.engine);
+      if (llamaBodies.length >= 12 && llamaBodies.some(x => x.response_format) && ls.localBrain?.model?.startsWith('llamacpp/')) break;
+    }
+    lw.kill();
+    check('llamacpp: the runner answers through llama-server\'s chat completions', llamaBodies.length > 0 && ls.localBrain?.online, `${llamaBodies.length} ${llog.slice(-300)}`);
+    check('llamacpp: every request switches on the general adapter (lora id 0, scale 1)', llamaBodies.length > 0 && llamaBodies.every(x => JSON.stringify(x.lora) === '[{"id":0,"scale":1}]'), JSON.stringify(llamaBodies[0]?.lora));
+    check('llamacpp: thinking off, 400 tokens at most, the same temperatures as on Ollama', llamaBodies.every(x => x.chat_template_kwargs?.enable_thinking === false && x.max_tokens === 400 && [0.4, 0.9].includes(x.temperature) && x.messages?.length === 2 && x.messages[0].role === 'system'), JSON.stringify(llamaBodies[0] && { k: llamaBodies[0].chat_template_kwargs, m: llamaBodies[0].max_tokens, t: llamaBodies[0].temperature }));
+    const js = llamaBodies.filter(x => /JSON object only/.test(x.messages?.[0]?.content || ''));
+    check('llamacpp: a JSON question (daily life) asks llama-server for a JSON object, the others do not', js.length > 0 && js.every(x => x.response_format?.type === 'json_object') && llamaBodies.filter(x => !js.includes(x)).every(x => !x.response_format), `${js.length} json of ${llamaBodies.length}`);
+    check('llamacpp: the server is told honestly what answered (llamacpp/qwen3:8b+general)', ls.localBrain?.model === 'llamacpp/qwen3:8b+general' && [...lengines].some(e => e === 'local:llamacpp/qwen3:8b+general'), JSON.stringify({ model: ls.localBrain?.model, engines: [...lengines].filter(e => /^local:/.test(e)) }));
+    check('llamacpp: reasoning tags are stripped', !JSON.stringify(ls.feed).includes('<think>'));
+    check('llamacpp: the runner says its backend, adapter and scale', /qwen3:8b\+general via llama-server .*adapter scale 1/.test(llog) && /daily-life temperature 0\.9 \(exams 0\.4\)/.test(llog), llog.slice(0, 200));
+    // LLAMA_LORA_SCALE=0: the plain base model, every loaded adapter named at 0, and the label without +general
+    llamaBodies.length = 0; llamaIds = [0, 1];
+    const base = spawn(process.execPath, ['scripts/local-brain.mjs'], { cwd: ROOT, env: llamaEnv({ LLAMA_LORA_SCALE: '0' }), stdio: ['ignore', 'pipe', 'pipe'] });
+    let bs = null;
+    for (let i = 0; i < 20; i++) { await wait(1000); bs = await get('/api/state'); if (llamaBodies.length >= 3 && bs.localBrain?.model === 'llamacpp/qwen3:8b') break; }
+    base.kill();
+    check('LLAMA_LORA_SCALE=0 rolls back to the base model: every adapter off, label llamacpp/qwen3:8b', llamaBodies.length > 0 && llamaBodies.every(x => JSON.stringify(x.lora) === '[{"id":0,"scale":0},{"id":1,"scale":0}]') && bs.localBrain?.model === 'llamacpp/qwen3:8b', JSON.stringify({ lora: llamaBodies[0]?.lora, model: bs?.localBrain?.model }));
+  } finally { llama.close(); }
+
+  // ---- local-brain.cmd (owner, 14 Nov): llama.cpp by default, llama-server started when it does not answer
+  const cmd = fs.readFileSync(path.join(ROOT, 'scripts', 'local-brain.cmd'), 'latin1');
+  check('local-brain.cmd: llamacpp is the default, from the environment or .env.local-brain first', /if not defined LOCAL_BACKEND set LOCAL_BACKEND=llamacpp/.test(cmd) && /"%%a"=="LOCAL_BACKEND" if not defined LOCAL_BACKEND set "LOCAL_BACKEND=%%b"/.test(cmd) && cmd.indexOf('.env.local-brain" for /f') < cmd.indexOf('set LOCAL_BACKEND=llamacpp'));
+  check('local-brain.cmd: llama-server is started minimised from LLAMA_START when LLAMA_URL does not answer, then up to 120 s for /health', /set "LLAMA_START=C:\\Users\\User\\Downloads\\lora-lab\\start-llama\.cmd"/.test(cmd) && /curl -s -o nul "%LLAMA_URL%\/health" && goto llamawait/.test(cmd) && /start "llama" \/min "%LLAMA_START%"/.test(cmd) && /geq 120/.test(cmd) && /if \/i "%LOCAL_BACKEND%"=="llamacpp" call :llama/.test(cmd));
+  // the window already running read the older file up to byte 1079 (its node line) and goes on reading there when
+  // its runner reloads: that byte must start a whole line that keeps such a window on Ollama
+  const LAND = 'if not defined LOCAL_BACKEND set LOCAL_BACKEND=ollama';
+  check('local-brain.cmd: a window started with the older file lands on a whole line at byte 1079 that keeps it on Ollama', cmd.indexOf(LAND) === 1079 && cmd[1078] === '\n', `the line starts at ${cmd.indexOf(LAND)}`);
+  // LF-only batch files: a label line that crosses a 512-byte block can be missed by goto/call
+  let off = 0; const crossing = [];
+  for (const line of cmd.split('\n')) { if (/^:\w/.test(line) && (off >> 9) !== ((off + line.length) >> 9)) crossing.push(`${line}@${off}`); off += line.length + 1; }
+  check('local-brain.cmd: no label crosses a 512-byte block (goto and call find every label)', !crossing.length, crossing.join(' '));
   check('no server errors',!/step error|TypeError|ReferenceError/.test(stderr), stderr.slice(-400));
 } catch (e) {
   fail++; console.log('  FAIL crashed', e.stack);
