@@ -138,7 +138,13 @@ export interface State {
   v: number;
   tick: number;
   day: number;
+  /** the clock's anchor: (now - foundedAt) mod day is the time of day in the republic's zone (REPUBLIC_TZ); it moves
+   *  when the zone or daylight saving changes (see alignRepublicClock in server.mjs), the day number never does */
   foundedAt: number;
+  /** the founding instant, fixed: the population seed */
+  seedAt?: number;
+  /** the zone the anchor follows and the census hour shift that keeps hour numbers going forward */
+  clock?: { tz: string | null; hourShift: number; since?: number };
   citizens: Citizen[];
   seats: Record<string, string[]>;
   treasury: number;

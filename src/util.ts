@@ -40,6 +40,63 @@ export function buildInfo(root: string, env = process.env) {
   };
 }
 
+// ---------------------------------------------------------------- the republic's clock zone (REPUBLIC_TZ)
+// The republic keeps the wall clock of a real time zone (default America/New_York, Eastern Time, daylight saving
+// handled by the zone rules): a republic day starts at local midnight, and every "hour of the day" in the engine
+// ((now - foundedAt) mod day) is local time. foundedAt is the clock's anchor: alignClock moves it so local midnight
+// is a day boundary, keeping the day number the republic is on (a day never goes back and never skips).
+export const DEFAULT_TZ = 'America/New_York';
+const tzFormatters = new Map<string, Intl.DateTimeFormat>();
+function tzFmt(tz: string) {
+  let f = tzFormatters.get(tz);
+  if (!f) { f = new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }); tzFormatters.set(tz, f); }
+  return f;
+}
+export function validTz(tz: unknown): string {
+  const s = String(tz || '').trim();
+  if (!s || s.length > 64 || !/^[A-Za-z_+\-/0-9]+$/.test(s)) return DEFAULT_TZ;
+  try { tzFmt(s).format(0); return s; } catch { return DEFAULT_TZ; }
+}
+// local wall-clock parts of instant t in zone tz
+export function tzParts(t: number, tz: string) {
+  const p = Object.fromEntries(tzFmt(tz).formatToParts(new Date(t)).filter(x => x.type !== 'literal').map(x => [x.type, Number(x.value)]));
+  return { y: p.year, m: p.month, d: p.day, h: p.hour % 24, min: p.minute, s: p.second };
+}
+// how far local time is ahead of UTC at instant t (ms; New York is -5 h in winter, -4 h in summer)
+export function tzOffsetMs(t: number, tz: string) {
+  const p = tzParts(t, tz);
+  return Date.UTC(p.y, p.m - 1, p.d, p.h, p.min, p.s) - Math.floor(t / 1000) * 1000;
+}
+// the instant of local midnight that starts the local day containing t
+export function tzMidnight(t: number, tz: string) {
+  const p = tzParts(t, tz); const wall = Date.UTC(p.y, p.m - 1, p.d);
+  const guess = wall - tzOffsetMs(t, tz);
+  return wall - tzOffsetMs(guess, tz); // the offset at midnight itself (a zone changes its offset at 02:00, not at 00:00)
+}
+// short label for the zone: 'ET' for New York, else the zone's own abbreviation now (e.g. CET, PST)
+export function tzInfo(t: number, tz: string) {
+  let abbr = '';
+  try { abbr = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'short' }).formatToParts(new Date(t)).find(x => x.type === 'timeZoneName')?.value || ''; } catch { /* plain zone */ }
+  const off = tzOffsetMs(t, tz) / 60000; const sign = off < 0 ? '-' : '+'; const a = Math.abs(off);
+  return { tz, label: tz === 'America/New_York' ? 'ET' : abbr || tz, abbr, utcOffset: `${sign}${String(Math.floor(a / 60)).padStart(2, '0')}:${String(a % 60).padStart(2, '0')}` };
+}
+// Where the clock's anchor must be at instant now for the republic's current day `day`: now minus the local wall
+// time since 00:00, minus (day - 1) days. So (now - anchor) mod day reads the wall clock, also on the two days a
+// year with 23 or 25 hours (the anchor moves by an hour at the change, and the next day still starts at local
+// midnight). Only for real days (dayMs = 24 h). Returns the new anchor, the census hour shift that keeps hour
+// numbers from going back, and the change in minutes (0 when already aligned).
+export function alignClock(c: { foundedAt: number; day: number; hourShift?: number }, now: number, tz: string, dayMs = 86400000) {
+  if (dayMs !== 86400000) return { foundedAt: c.foundedAt, hourShift: c.hourShift || 0, deltaMin: 0 };
+  const p = tzParts(now, tz);
+  const wall = ((p.h * 60 + p.min) * 60 + p.s) * 1000 + (((now % 1000) + 1000) % 1000);
+  const target = now - wall - (c.day - 1) * dayMs;
+  const delta = target - c.foundedAt;
+  if (Math.abs(delta) < 1000) return { foundedAt: c.foundedAt, hourShift: c.hourShift || 0, deltaMin: 0 };
+  // census hours count (now - foundedAt) / hour: moving the anchor later would make them go back; the shift
+  // (rounded up) keeps them going forward
+  return { foundedAt: target, hourShift: (c.hourShift || 0) + Math.ceil(delta / 3600000), deltaMin: Math.round(delta / 60000) };
+}
+
 export const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 export const pick = a => a[Math.floor(Math.random() * a.length)];
 export const chance = p => Math.random() < p;

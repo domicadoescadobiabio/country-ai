@@ -6,7 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
-import { loadDotEnv, clamp, uid, slug, cleanText, pick, citizenById, buildInfo } from './src/util.ts';
+import { loadDotEnv, clamp, uid, slug, cleanText, pick, citizenById, buildInfo, validTz, alignClock, tzInfo, tzMidnight, tzParts } from './src/util.ts';
 import { makeLLM } from './src/llm.ts';
 import { NATION, CURRENCY, CONSTITUTION } from './src/constitution.mjs';
 import { ROLES, ROLE_ORDER } from './src/roles.mjs';
@@ -16,7 +16,7 @@ import { CITIES, assignCity } from './src/cities.ts';
 import { tierOf, budgetState, trainBudgetState, trainPaceView, cleanDomain, workerPull, workerAnswer, localStatus, localOnline, ladderTick, localQueueView } from './src/brains.ts';
 import { borderCheck } from './src/military.ts';
 import { placeView as governmentPlace } from './src/president.ts'; // government buildings (Government box)
-import { placeView as peoplePlace, nowDoing } from './src/daily.ts'; // the people's buildings and the robot card (People box)
+import { placeView as peoplePlace, nowDoing, staffOnDuty } from './src/daily.ts'; // the people's buildings, the robot card and who is on duty (People box)
 import { freshAcademy, academyTick, totalSeats } from './src/academy.ts';
 import { lifeTick, payday } from './src/life.ts';
 import { INSTITUTIONS } from './src/institutions.ts';
@@ -45,6 +45,8 @@ const CFG = {
   courtModel: (process.env.CLAUDE_COURT_MODEL || 'claude-opus-5-5').trim(), // judges: a stronger model than the officials
   leaderModel: (process.env.CLAUDE_LEADER_MODEL || process.env.CLAUDE_MODEL || 'claude-opus-5-5').trim(), // President, VP, Ministers, Speaker, chiefs
   dailyBudgetUsd: Math.max(0, Number(process.env.LLM_DAILY_BUDGET_USD ?? 25)), // Art. 25: what thought may cost per day (0 = no limit)
+  // the republic's wall clock: a day starts at local midnight of this zone (US Eastern by default, DST included)
+  tz: validTz(process.env.REPUBLIC_TZ || 'America/New_York'),
   // the school's paid teachers (src/brains.ts teach): their own daily budget (0 = none), the provider mix and models
   trainBudgetUsd: Math.max(0, Number(process.env.TRAIN_BUDGET_USD ?? 3)),
   // the least the OpenRouter teachers should get a day (in dollars, paced); Claude teaches only with what is left
@@ -84,7 +86,7 @@ const CHANNELS = BASE_CHANNELS.concat(INSTITUTIONS.flatMap(i => i.channels || []
 // ---------------------------------------------------------------- state
 function freshState() {
   const s = {
-    v: 1, tick: 0, day: 1, foundedAt: Date.now(),
+    v: 1, tick: 0, day: 1, foundedAt: Date.now(), seedAt: Date.now(),
     citizens: FOUNDERS.map(f => makeCitizen(f)),
     seats: Object.fromEntries(ROLE_ORDER.map(r => [r, []])),
     academy: freshAcademy(),
@@ -107,6 +109,8 @@ let S = freshState();
     if (!raw.foundedAt) S.foundedAt = Date.now() - (S.day - 1) * CFG.dayMs; // older republics: keep today's day number
   }
 }
+// the population seed is the founding instant: it must not move when the clock's anchor (foundedAt) is aligned
+S.seedAt ??= S.foundedAt;
 let dirty = false;
 function flush() { if (!dirty) return; dirty = false; store.saveState(S); }
 setInterval(flush, 4000).unref();
@@ -233,6 +237,7 @@ async function step() {
       for (const inst of INSTITUTIONS) if (inst.day) await inst.day(ctx);
     }
     if (S.day < today) { logActivity('state', `Clock caught up from day ${S.day} to day ${today} after downtime`); S.day = today; }
+    alignRepublicClock(); // the day keeps its number; the next one starts at local midnight of CFG.tz
     for (const inst of INSTITUTIONS) if (inst.tick) await inst.tick(ctx);
     await lifeTick(ctx);
     ladderTick(ctx);
@@ -247,10 +252,37 @@ async function step() {
   } finally { busy = false; }
 }
 
+// The republic's clock follows CFG.tz: the anchor (foundedAt) is kept so that local midnight starts a day. The
+// first time (moving from the old founding-hour clock) and at each daylight-saving change it moves; the day number
+// is kept (a day never goes back or skips: no wage, basic income, fine or term counted twice), and every move
+// is on the ledger. A switch of zone (REPUBLIC_TZ) is a move too.
+function alignRepublicClock(now = Date.now()) {
+  const c = (S.clock ||= { tz: null, hourShift: 0 });
+  if (CFG.dayMs !== 86400000) { c.tz = CFG.tz; return null; } // compressed test days have no wall clock to follow
+  const r = alignClock({ foundedAt: S.foundedAt, day: S.day, hourShift: c.hourShift }, now, CFG.tz, CFG.dayMs);
+  if (!r.deltaMin && c.tz === CFG.tz) return null;
+  const from = S.foundedAt, reason = c.tz !== CFG.tz ? 'timezone' : 'dst';
+  S.foundedAt = r.foundedAt; c.hourShift = r.hourShift; c.tz = CFG.tz; c.since = now;
+  if (r.deltaMin || reason === 'timezone') {
+    const info = tzInfo(now, CFG.tz);
+    ctx.record('clock_change', 'state', { tz: CFG.tz, label: info.label, utcOffset: info.utcOffset, reason, day: S.day, from, to: S.foundedAt, deltaMinutes: r.deltaMin, nextDayAt: S.foundedAt + S.day * CFG.dayMs });
+    logActivity('state', reason === 'dst' ? `Clocks changed for daylight saving (${info.abbr || info.label}, UTC${info.utcOffset}); day ${S.day} goes on` : `The republic now keeps ${info.label} time (${CFG.tz}); day ${S.day} goes on until local midnight`);
+    dirty = true;
+  }
+  return r;
+}
+function clockView(now = Date.now()) {
+  const info = tzInfo(now, CFG.tz); const p = tzParts(now, CFG.tz);
+  const real = CFG.dayMs === 86400000;
+  return { ...info, localTime: `${String(p.h).padStart(2, '0')}:${String(p.min).padStart(2, '0')}`, localDate: `${p.y}-${String(p.m).padStart(2, '0')}-${String(p.d).padStart(2, '0')}`,
+    day: S.day, dayStartedAt: real ? tzMidnight(now, CFG.tz) : S.foundedAt + (S.day - 1) * CFG.dayMs, nextDayAt: S.foundedAt + S.day * CFG.dayMs };
+}
+
 // Census: one snapshot per hour of republic time, kept in state and sealed on the ledger,
 // so an outside auditor can follow the whole day hour by hour.
 function census() {
-  const hour = Math.floor((Date.now() - S.foundedAt) / (CFG.dayMs / 24));
+  // hours since the anchor, plus the shift that keeps the count going forward when the clock's anchor moves
+  const hour = Math.floor((Date.now() - S.foundedAt) / (CFG.dayMs / 24)) + (S.clock?.hourShift || 0);
   S.census ||= [];
   if (S.census.length && S.census[S.census.length - 1].hour >= hour) return;
   const st = stats();
@@ -393,12 +425,17 @@ const placeViews = {};
 const brainSamples = [];
 setInterval(() => { brainSamples.push({ t: Date.now(), answered: localStatus().answered, lessons: Number(S?.school?.stats?.total ?? 0) }); if (brainSamples.length > 12) brainSamples.shift(); }, 15000).unref();
 const perMin = key => { const a = brainSamples[0], b = brainSamples.at(-1); return a && b && b.t > a.t ? Math.round(((b[key] - a[key]) / ((b.t - a.t) / 60000)) * 10) / 10 : null; };
-placeViews.data_center = (Sx) => {
+placeViews.data_center = (Sx, city) => {
   const ls = localStatus(), q = localQueueView(PLACE_MAX_OCC), T = trainBudgetState(ctx);
   const KIND = { exam: 'sitting an exam question', vote: 'deciding a vote', life: 'thinking about the day', train: 'at school', night: 'at night school', poke: 'grumbling about a poke' };
+  // the technicians on duty (People box: programming and engineering, 2 by day and 1 at night per city, never empty);
+  // without a city, the data centre of every city
+  let staff = [];
+  for (const c of city ? [city] : CITIES.map(x => x.id)) { try { staff = staff.concat(staffOnDuty(Sx, 'data_center', c) || []); } catch { /* the roster is the People box's */ } }
+  const waiting = q.list.map(j => { const a = citizenById(Sx, j.agent); return a && (!city || a.city === city) && { id: a.id, name: a.name, role: 'citizen', activity: KIND[j.kind] || 'thinking', detail: j.leased ? 'the local model is answering' : 'waiting in the queue', since: j.since, mood: moodLite(a) }; }).filter(Boolean);
   return {
-    occupants: q.list.map(j => { const a = citizenById(Sx, j.agent); return a && { id: a.id, name: a.name, role: 'citizen', activity: KIND[j.kind] || 'thinking', detail: j.leased ? 'the local model is answering' : 'waiting in the queue', since: j.since, mood: moodLite(a) }; }).filter(Boolean),
-    board: { online: ls.online, model: ls.model || null, answeredPerMin: perMin('answered'), queued: ls.queued, queuedTrain: ls.queuedTrain, answered: ls.answered, expired: ls.expired, trainExpired: ls.trainExpired,
+    occupants: [...staff, ...waiting],
+    board: { onDuty: staff.length, online: ls.online, model: ls.model || null, answeredPerMin: perMin('answered'), queued: ls.queued, queuedTrain: ls.queuedTrain, answered: ls.answered, expired: ls.expired, trainExpired: ls.trainExpired,
       runnerVersion: ls.runner?.version ?? null, lessonsPerMin: perMin('lessons'), lessonsToday: Number(Sx.school?.stats?.today ?? 0),
       teachersToday: { openrouter: Math.round(T.spentBy.openrouter * 100) / 100, claude: Math.round(T.spentBy.claude * 100) / 100 } },
     more: Math.max(0, q.total - q.list.length),
@@ -476,6 +513,8 @@ function fullState() {
   return {
     ...compact,
     config: {
+      // the republic's clock zone and local time (a day starts at local midnight of tz)
+      clock: clockView(),
       // the sections a tab may ask for alone (/api/state?parts=elections,court): the fixed list, as far as present
       stateParts: [...STATE_PARTS].filter(k => Object.hasOwn(compact, k)),
       nation: NATION, currency: CURRENCY, ca: CFG.ca, engine: llm.enabled ? 'llm' : 'offline', engineLabel: llm.label, tickSec: S.tickSec, dayMs: CFG.dayMs, foundedAt: S.foundedAt,
@@ -686,7 +725,7 @@ const server = http.createServer(async (req, res) => {
       });
       return;
     }
-    if (req.method === 'GET' && p === '/api/health') return send(res, 200, { ok: true, day: S.day, build: BUILD });
+    if (req.method === 'GET' && p === '/api/health') return send(res, 200, { ok: true, day: S.day, build: BUILD, clock: clockView() });
     if (p === '/api/worker/pull' || p === '/api/worker/answer') {
       // the local brain: only with WORKER_TOKEN, compared in constant time; without a token the door is closed
       const want = Buffer.from(CFG.workerToken || ''); const got = Buffer.from(String(req.headers['x-worker-token'] || ''));
@@ -843,7 +882,7 @@ for (const f of FOUNDERS) { const a = S.citizens.find(x => x.id === f.id && !x.b
 for (const a of S.citizens) if (!a.city) a.city = assignCity(S);
 if (S.citizens.length < CFG.population && (S.constitutionVersion || 1) >= 6) {
   const before = S.citizens.length;
-  const born = growPopulation(S, CFG.population, { cities: CITIES, seed: `country-ai|${S.foundedAt}`, day: S.day });
+  const born = growPopulation(S, CFG.population, { cities: CITIES, seed: `country-ai|${S.seedAt ?? S.foundedAt}`, day: S.day });
   const grant = born.length * 100; S.treasury = Math.round(S.treasury + grant); // a founding grant of 100 CAI per new citizen
   const digest = crypto.createHash('sha256').update(born.map(a => a.id).join(',')).digest('hex');
   ctx.record('population', 'founders', { from: before, to: S.citizens.length, born: born.length, grant, idsDigest: digest, underworld: born.filter(a => a.faction === 'underworld').length });

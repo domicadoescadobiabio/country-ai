@@ -29,14 +29,20 @@ const mock = http.createServer((req, res) => {
 });
 await new Promise(r => mock.listen(0, '127.0.0.1', r));
 
-const child = spawn(process.execPath, ['server.mjs'], {
-  cwd: ROOT,
-  env: { ...process.env, PORT: String(PORT), DATA_DIR: DATA, TICK_SECONDS: '0.05', DAY_SECONDS: '0.5', POPULATION: '400', OPENROUTER_API_KEY: '', ANTHROPIC_API_KEY: '', ADMIN_TOKEN: TOKEN, IMMIGRANTS_PER_HOUR: '50',
-    BRAIN_SECRET: 'smoke-brain-secret', SSE_STATE_MS: '1500', ANTHROPIC_BASE_URL: `http://127.0.0.1:${mock.address().port}`, REGISTER_COOLDOWN_MS: '0', CAREER_DAYS_SCALE: '0.3', ELECTION_MIN_VOTING_MS: '5000' },
-  stdio: ['ignore', 'pipe', 'pipe'],
-});
+// The republic under test is started only after the checks that need no server (ledger store, dataset migration,
+// clock functions): its clock runs fast (50 ms ticks, 0.5 s days), and every second spent before the first look
+// at it is time for the Academy to seat someone.
+let child = null;
 let stderr = '';
-child.stderr.on('data', d => { stderr += d; });
+function startServer() {
+  child = spawn(process.execPath, ['server.mjs'], {
+    cwd: ROOT,
+    env: { ...process.env, PORT: String(PORT), DATA_DIR: DATA, TICK_SECONDS: '0.05', DAY_SECONDS: '0.5', POPULATION: '400', OPENROUTER_API_KEY: '', ANTHROPIC_API_KEY: '', ADMIN_TOKEN: TOKEN, IMMIGRANTS_PER_HOUR: '50',
+      BRAIN_SECRET: 'smoke-brain-secret', SSE_STATE_MS: '1500', ANTHROPIC_BASE_URL: `http://127.0.0.1:${mock.address().port}`, REGISTER_COOLDOWN_MS: '0', CAREER_DAYS_SCALE: '0.3', ELECTION_MIN_VOTING_MS: '5000' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  child.stderr.on('data', d => { stderr += d; });
+}
 
 let pass = 0, fail = 0;
 function check(name, ok, info = '') {
@@ -99,17 +105,74 @@ try {
     mig?.close(); try { fs.rmSync(OD, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch { /* windows handle */ }
   }
 
+  // --- the republic's clock keeps US Eastern time (REPUBLIC_TZ): pure functions with fixed instants
+  {
+    const { alignClock, tzInfo, validTz } = await import('../src/util.ts');
+    const DAY = 86400000, H = 3600000, TZ = 'America/New_York';
+    const dayAt = (F, t) => Math.floor((t - F) / DAY) + 1, hourAt = (F, t) => (((t - F) % DAY) + DAY) % DAY / H;
+    // 1. the switch: day 5 of a republic founded at 00:25 WIB, at 03:00 WIB on 14 Nov 2026 (= 15:00 EST on 13 Nov)
+    const now = Date.parse('2026-11-13T20:00:00Z'), oldF = now - (4 * 24 * H + 2 * H + 35 * 60000);
+    const r = alignClock({ foundedAt: oldF, day: 5, hourShift: 0 }, now, TZ);
+    const again = alignClock({ foundedAt: r.foundedAt, day: 5, hourShift: r.hourShift }, now + 60000, TZ);
+    const censusBefore = Math.floor((now - oldF) / H), censusAfter = Math.floor((now - r.foundedAt) / H) + r.hourShift;
+    check('clock: the switch to Eastern time keeps the day number (5), shows 15:00, and the next day starts at midnight ET', dayAt(r.foundedAt, now) === 5 && Math.abs(hourAt(r.foundedAt, now) - 15) < 1e-9
+      && r.foundedAt + 5 * DAY === Date.parse('2026-11-14T05:00:00Z') && again.deltaMin === 0, JSON.stringify({ day: dayAt(r.foundedAt, now), hour: hourAt(r.foundedAt, now), next: new Date(r.foundedAt + 5 * DAY).toISOString() }));
+    check('clock: census hours never go back when the anchor moves', censusAfter >= censusBefore, JSON.stringify({ censusBefore, censusAfter }));
+    // 2. spring forward, 14 Mar 2027: 02:00 EST -> 03:00 EDT
+    const s1 = Date.parse('2027-03-14T06:30:00Z'), F1 = alignClock({ foundedAt: 0, day: 9 }, s1, TZ).foundedAt;
+    const s2 = Date.parse('2027-03-14T07:30:00Z'), sp = alignClock({ foundedAt: F1, day: 9 }, s2, TZ);
+    check('clock: spring forward moves the anchor by 60 min at 03:30 EDT, same day, the next day starts at midnight EDT (04:00 UTC)', hourAt(F1, s1) === 1.5 && sp.deltaMin === -60 && dayAt(sp.foundedAt, s2) === 9 && hourAt(sp.foundedAt, s2) === 3.5
+      && dayAt(sp.foundedAt, Date.parse('2027-03-15T03:59:59Z')) === 9 && dayAt(sp.foundedAt, Date.parse('2027-03-15T04:00:01Z')) === 10, JSON.stringify({ delta: sp.deltaMin, hour: hourAt(sp.foundedAt, s2) }));
+    // 3. fall back, 7 Nov 2027: 02:00 EDT -> 01:00 EST
+    const f1 = Date.parse('2027-11-07T05:30:00Z'), G1 = alignClock({ foundedAt: 0, day: 30 }, f1, TZ).foundedAt;
+    const f2 = Date.parse('2027-11-07T07:30:00Z'), fb = alignClock({ foundedAt: G1, day: 30, hourShift: 0 }, f2, TZ);
+    check('clock: fall back moves the anchor by 60 min, same day, census hours still go forward, the next day starts at midnight EST (05:00 UTC)', hourAt(G1, f1) === 1.5 && fb.deltaMin === 60 && dayAt(fb.foundedAt, f2) === 30 && hourAt(fb.foundedAt, f2) === 2.5
+      && Math.floor((f2 - fb.foundedAt) / H) + fb.hourShift >= Math.floor((f2 - G1) / H) && dayAt(fb.foundedAt, Date.parse('2027-11-08T04:59:59Z')) === 30 && dayAt(fb.foundedAt, Date.parse('2027-11-08T05:00:01Z')) === 31, JSON.stringify({ delta: fb.deltaMin, hour: hourAt(fb.foundedAt, f2) }));
+    const w = tzInfo(now, TZ), su = tzInfo(Date.parse('2027-07-01T12:00:00Z'), TZ);
+    check('clock: zone labels (ET, EST/EDT, UTC offset) and REPUBLIC_TZ falls back to New York when invalid', w.label === 'ET' && w.abbr === 'EST' && w.utcOffset === '-05:00' && su.abbr === 'EDT' && su.utcOffset === '-04:00'
+      && validTz('Mars/Olympus') === TZ && validTz('Asia/Jakarta') === 'Asia/Jakarta' && validTz('../etc') === TZ, JSON.stringify({ w, su }));
+    check('clock: compressed test days are left alone', alignClock({ foundedAt: 123, day: 3 }, now, TZ, 400).foundedAt === 123);
+  }
+  async function realClockChecks() { // runs at the end: it boots two short-lived servers of its own
+    const RD = fs.mkdtempSync(path.join(os.tmpdir(), 'country-clock-'));
+    const freePort = () => new Promise((res, rej) => { const s = net.createServer(); s.once('error', rej); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => res(p)); }); });
+    const boot = async () => {
+      const port = await freePort();
+      const ch = spawn(process.execPath, ['server.mjs'], { cwd: ROOT, stdio: 'ignore', env: { ...process.env, PORT: String(port), DATA_DIR: RD, TICK_SECONDS: '0.2', DAY_SECONDS: '86400', POPULATION: '24', OPENROUTER_API_KEY: '', ANTHROPIC_API_KEY: '', ADMIN_TOKEN: TOKEN, REPUBLIC_TZ: 'America/New_York' } });
+      const B = `http://127.0.0.1:${port}`;
+      for (let i = 0; i < 100; i++) { try { await fetch(B + '/api/health'); break; } catch { await wait(150); } }
+      return { ch, B };
+    };
+    const changes = async B => { for (let i = 0; i < 40; i++) { const l = await (await fetch(B + '/api/ledger?kind=clock_change&limit=50')).json(); if (l.entries.length) return l.entries; await wait(250); } return []; };
+    let a = await boot(); const c1 = await changes(a.B); const h1 = await (await fetch(a.B + '/api/health')).json();
+    a.ch.kill(); await new Promise(r => { a.ch.once('exit', r); setTimeout(r, 3000); });
+    a = await boot(); await wait(2000); const c2 = (await (await fetch(a.B + '/api/ledger?kind=clock_change&limit=50')).json()).entries; const h2 = await (await fetch(a.B + '/api/health')).json();
+    a.ch.kill(); await new Promise(r => { a.ch.once('exit', r); setTimeout(r, 3000); });
+    try { fs.rmSync(RD, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch { /* windows handle */ }
+    const etMidnightNext = (() => { const nx = h1.clock?.nextDayAt; return nx && new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hourCycle: 'h23', hour: '2-digit', minute: '2-digit' }).format(new Date(nx)) === '00:00'; })();
+    check('clock: a real server records the switch to ET once (clock_change, reason timezone), keeps day 1, and the next day starts at 00:00 ET', c1.length === 1 && c1[0].data.reason === 'timezone' && c1[0].data.tz === 'America/New_York' && h1.day === 1 && etMidnightNext, JSON.stringify({ c1: c1.map(e => e.data), h1: h1.clock }));
+    check('clock: after a restart nothing is recorded again and the day does not move', c2.length === 1 && h2.day === h1.day && h2.clock.nextDayAt === h1.clock.nextDayAt, JSON.stringify({ n: c2.length, d1: h1.day, d2: h2.day }));
+  }
+
+  startServer(); // now, not earlier: see startServer
   for (let i = 0; i < 50; i++) { try { await get('/api/health'); break; } catch { await wait(100); } }
+  const s0 = await get('/api/state'); // the first look, before anything else asks the server for time
+  const hc = (await get('/api/health')).clock;
+  check('/api/health names the republic\'s clock zone (America/New_York, ET) and local time', hc && hc.tz === 'America/New_York' && hc.label === 'ET' && /^-0[45]:00$/.test(hc.utcOffset) && /^\d\d:\d\d$/.test(hc.localTime) && typeof hc.nextDayAt === 'number', JSON.stringify(hc));
   const hb = (await get('/api/health')).build;
   const { codeHash, buildInfo } = await import('../src/util.ts');
   check('/api/health names the running code: its fingerprint matches this checkout', hb && hb.code === codeHash(ROOT) && /^[0-9a-f]{16}$/.test(hb.code) && !Number.isNaN(Date.parse(hb.startedAt)), JSON.stringify(hb));
   const bi = buildInfo(ROOT, { RAILWAY_GIT_COMMIT_SHA: 'ABCDEF1234567', RAILWAY_DEPLOYMENT_ID: '3f5c7652-aa' });
   const bj = buildInfo(ROOT, { BUILD_COMMIT: '<script>', RAILWAY_DEPLOYMENT_ID: 'x y/../z' });
   check('build info shows a commit and deployment id only when they look like one', bi.commit === 'abcdef1234567' && bi.deployment === '3f5c7652-aa' && bj.commit === null && bj.deployment === null, JSON.stringify([bi, bj]));
-  const s0 = await get('/api/state');
   const roles = s0.config.roles.map(r => r.id);
   console.log(`institutions: ${roles.join(', ')}`);
-  check('starts with every seat vacant', Object.values(s0.seats).every(x => x.length === 0));
+  // the census snapshot of the first step is taken before any exam can finish (an exam takes several steps), so it
+  // shows the founding state whatever the timing; the first /api/state usually shows it too
+  // (from the ledger, which keeps every snapshot: the census list in state keeps only the last 336 hours, and a test
+  // hour is 20 ms)
+  const cen0 = (await get('/api/ledger?kind=census&limit=1')).entries?.[0]?.data;
+  check('starts with every seat vacant', Object.values(s0.seats).every(x => x.length === 0) || cen0?.seated === 0, JSON.stringify({ seated: Object.values(s0.seats).flat().length, census0: cen0 && { hour: cen0.hour, seated: cen0.seated } }));
   check('founders exist', s0.citizens.length >= 10);
 
   // --- Academy + President
@@ -307,6 +370,9 @@ try {
   check('place: an unknown type (or __proto__) is 404, an unknown city or bad portfolio is 400', pUnknown.status === 404 && pProto.status === 404 && pCity.status === 400 && pPort.status === 400, `${pUnknown.status} ${pProto.status} ${pCity.status} ${pPort.status}`);
   const dc = await get(`/api/place/data_center?city=${city0}`);
   check('place: the data centre shows the local brain and the school (answers a minute, queue, model, lessons a minute)', ['online', 'model', 'answeredPerMin', 'queued', 'queuedTrain', 'trainExpired', 'lessonsPerMin', 'lessonsToday', 'teachersToday'].every(k => k in dc.board), JSON.stringify(dc.board));
+  const dcAll = await get('/api/place/data_center');
+  check('place: the data centre always has technicians on duty, listed first (one city, and every city without ?city=)', dc.board.onDuty >= 1 && dc.occupants.slice(0, dc.board.onDuty).every(o => o.activity === 'on duty')
+    && dcAll.board.onDuty >= dc.board.onDuty, JSON.stringify({ onDuty: dc.board.onDuty, first: dc.occupants[0], all: dcAll.board.onDuty }));
   const c1 = await get('/api/place/parliament'), c2 = await get('/api/place/parliament');
   check('place: views are cached for 10 s per (type, city) and the city is optional', c1.updatedAt === c2.updatedAt && c1.city === null, JSON.stringify([c1.updatedAt, c2.updatedAt, c1.city]));
   const pl = []; for (let i = 0; i < 61; i++) pl.push((await fetch(BASE + '/api/place/market', { headers: { 'x-forwarded-for': '203.0.113.50' } })).status);
@@ -347,12 +413,14 @@ try {
   const dbad2 = await fetch(BASE + '/api/decisions?agent=../../etc');
   check('/api/decisions rejects a malformed type or agent', dbad.status === 400 && dbad2.status === 400, `${dbad.status} ${dbad2.status}`);
 
+  // the switch on a real server with real days: once on the ledger, the day kept, nothing recorded again after a restart
+  await realClockChecks();
   check('no server errors logged', !/step error|TypeError|ReferenceError/.test(stderr), stderr.slice(0, 400));
 } catch (e) {
   fail++; console.log('  FAIL crashed', e);
 } finally {
-  child.kill(); mock.close();
-  if (child.exitCode === null && child.signalCode === null) await new Promise(r => { child.once('exit', r); setTimeout(r, 3000); });
+  child?.kill(); mock.close();
+  if (child && child.exitCode === null && child.signalCode === null) await new Promise(r => { child.once('exit', r); setTimeout(r, 3000); });
   try { fs.rmSync(DATA, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 }); } catch { /* Windows may keep the db handle a moment; temp dir is harmless */ }
   console.log(`\nsmoke: ${pass} passed, ${fail} failed`);
   process.exitCode = fail ? 1 : 0;
