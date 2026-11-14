@@ -20,6 +20,8 @@ function h(tag, attrs = {}, ...kids) {
   return el;
 }
 const cit = id => st.citizens.find(a => a.id === id) || st.found?.[id];
+// a university student (server field occupation: 'student' | 'official' | 'citizen'): they study and do not work
+const isStudent = a => !!a && a.occupation === 'student' && !a.office;
 const role = id => st.config.roles.find(r => r.id === id);
 const time = ts => fmtTime(ts, { seconds: true });
 const cai = n => Math.round(n || 0).toLocaleString('en-US') + ' CAI';
@@ -288,7 +290,7 @@ const PANELS = {
     if (!a) return [h('p', { class: 'empty', text: 'No citizens yet.' })];
     const out = [h('div', { class: 'card' },
       h('h4', { text: a.name }), h('p', { text: a.bio }),
-      kv([['Office', a.office ? `${role(a.office)?.title}${a.termEnds ? ` (term to day ${a.termEnds})` : ''}` : 'citizen'], ['Status', a.status], ['City', cityName(a.city)], ['Wallet', cai(a.wallet)], ['Brain', brainLabel(a)], ['Path', a.faction === 'underworld' ? 'underworld' : 'civilian'], ['Rank', rankTitle(a) || '-'], ['Qualified for', Object.keys(a.quals || {}).map(r => role(r)?.title || r).join(', ') || '-'], ['Origin', a.origin],
+      kv([['Office', a.office ? `${role(a.office)?.title}${a.termEnds ? ` (term to day ${a.termEnds})` : ''}` : isStudent(a) ? 'Student (University)' : 'citizen'], ['Status', a.status], ['City', cityName(a.city)], ['Wallet', cai(a.wallet)], ['Brain', brainLabel(a)], ['Path', a.faction === 'underworld' ? 'underworld' : isStudent(a) ? 'student' : 'civilian'], ['Rank', rankTitle(a) || '-'], ['Qualified for', Object.keys(a.quals || {}).map(r => role(r)?.title || r).join(', ') || '-'], ['Origin', a.origin],
         ...(typeof a.reputation === 'number' ? [['Reputation', pct(a.reputation)]] : []), ...(a.goalsDone ? [['Goals reached', a.goalsDone]] : []), ...(a.resisted ? [['Temptations resisted', a.resisted]] : [])]))];
     // the week's goal: chosen by the citizen from a menu, progress measured by the server from what happened
     const g = a.goal;
@@ -356,11 +358,12 @@ const PANELS = {
     const pop = st.population || {}; st.cq ||= { page: 1 };
     // full records (office holders) show the wallet; the light search list shows the mood instead
     const row = a => h('div', { class: 'citizen-row', color: a.color, onclick: () => openCitizen(a.id) },
-      h('i'), h('span', { text: a.name + (a.office ? ` · ${role(a.office)?.title}` : '') + (a.status !== 'free' ? ` · ${a.status}` : '') + ` · ${cityName(a.city)}` }),
+      h('i'), h('span', { text: a.name + (a.office ? ` · ${role(a.office)?.title}` : isStudent(a) ? ' · Student' : '') + (a.status !== 'free' ? ` · ${a.status}` : '') + ` · ${cityName(a.city)}` }),
       h('small', { text: typeof a.wallet === 'number' ? cai(a.wallet) : a.mood?.label ? `${a.mood.emoji || ''} ${a.mood.label}`.trim() : '' }));
     const summary = h('div', { class: 'card' }, h('h4', { text: `${(pop.total || st.citizens.length).toLocaleString('en')} citizens in ${Object.keys(pop.byCity || {}).length} cities` }),
       kv([['By city', Object.entries(pop.byCity || {}).map(([c, n]) => `${cityName(c)} ${n}`).join(' · ')], ['Status', Object.entries(pop.byStatus || {}).map(([k, n]) => `${k} ${n}`).join(' · ')],
-        ['Path', Object.entries(pop.byFaction || {}).map(([k, n]) => `${k} ${n}`).join(' · ')], ['Thinks with', Object.entries(pop.byFamily || {}).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k, n]) => `${k} ${n}`).join(' · ')],
+        ['Path', Object.entries(pop.byFaction || {}).map(([k, n]) => `${k} ${n}`).join(' · ')],
+        ...(typeof pop.students === 'number' ? [['University students', `${pop.students.toLocaleString('en')} (they study, they do not work)`]] : []), ['Thinks with', Object.entries(pop.byFamily || {}).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k, n]) => `${k} ${n}`).join(' · ')],
         ['Wallets', pop.wallets ? `median ${cai(pop.wallets.median)}, max ${cai(pop.wallets.max)}` : '-']]));
     const input = h('input', { type: 'search', placeholder: 'Search 10,000 citizens by name', value: st.cq.q || '', onchange: e => { st.cq = { ...st.cq, q: e.target.value.trim(), page: 1 }; searchCitizens(); } });
     const city = h('select', { onchange: e => { st.cq = { ...st.cq, city: e.target.value, page: 1 }; searchCitizens(); } }, h('option', { value: '', text: 'all cities' }), ...Object.keys(pop.byCity || {}).map(c => h('option', { value: c, text: cityName(c), selected: st.cq.city === c })));
@@ -386,7 +389,7 @@ const PANELS = {
     const d = st.me;
     if (!d) { out.push(h('p', { class: 'empty', text: st.meError || 'Loading…' })); if (st.meError) out.push(h('button', { class: 'btn-ghost', type: 'button', text: 'Use another key', onclick: () => { setMyKey(''); st.me = null; st.meError = null; renderPanel(); } })); return out; }
     const y = d.you; const b = y.career.brain;
-    out.push(h('div', { class: 'card' }, h('h4', { text: `${y.name} · ${y.office ? role(y.office)?.title : 'citizen'} · ${cityName(y.city)}` }),
+    out.push(h('div', { class: 'card' }, h('h4', { text: `${y.name} · ${y.office ? role(y.office)?.title : isStudent(y) ? 'Student' : 'citizen'} · ${cityName(y.city)}` }),
       kv([['Status', y.status], ['Citizen for', `${y.career.days} days`], ['Wallet', cai(y.wallet)], ['Term ends', y.career.termEnds ? `day ${y.career.termEnds}` : '-'], ['Inbox', `${d.inbox.length} waiting`]]),
       d.what_to_do_next.length ? h('p', { text: 'Next: ' + d.what_to_do_next[0] }) : null));
     const brain = h('div', { class: 'card' }, h('h4', { text: 'Brain' }),

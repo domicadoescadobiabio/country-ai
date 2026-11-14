@@ -8,6 +8,7 @@ import { OutputPass } from '../vendor/three/OutputPass.js';
 import { generateCountry, hash } from './gen.js';
 import { buildWorld, buildLife, pick, night, clock, buildCoverage, COVERAGE } from './world.js';
 import { Agents, moodOf } from './agents.js';
+import { People, HOUSING, kindOf } from './people.js';
 import { Scenes, SCENE_COLOR } from './scenes.js';
 import { TYPES, CATS, ACT_COLOR, REP, MOODS, BOND_COLOR } from './catalog.js';
 import { setClock, fmtTime, hourOf, clockDetail } from '../clock.js'; // every time on the map is the republic's (ET)
@@ -34,7 +35,8 @@ const st = { state: null, lastTs: 0, feed: [], selected: null, city: null };
 // citizens outside the 160-odd in /api/state are looked up one by one and cached (undefined = never asked, null = pending/unknown)
 const recs = new Map();
 const lite = new Map(); // the background robots' citizens (/api/citizens?lite=1): id -> { name, city, home, mood, goal }
-const citizen = id => st.state?.citizens?.find(c => c.id === id) || recs.get(id) || lite.get(id);
+let people = null; // all citizens (people.js), once loaded
+const citizen = id => st.state?.citizens?.find(c => c.id === id) || recs.get(id) || lite.get(id) || people?.byId.get(id);
 // Real citizens for the background robots: one light request per city when the map opens, a random page of free
 // citizens each visit. Offline or on error: an empty list, and that city keeps anonymous sample walkers.
 async function loadBackground(cities, perCity) {
@@ -160,7 +162,9 @@ function cityButtons() {
   box.append(h('button', { type: 'button', text: 'Country', onclick: () => { st.city = null; cityButtons(); flyTo(0, 0, 7200, 1500); } }));
   for (const c of st.state?.cities || Object.values(data.cities)) {
     const city = data.cities[c.id]; if (!city) continue;
-    box.append(h('button', { type: 'button', class: st.city === c.id ? 'on' : '', onclick: () => { st.city = c.id; cityButtons(); flyTo(city.cx, city.cz, 1300); } }, c.name, h('small', { text: (c.residents || 0).toLocaleString('en-US') })));
+    const k = people?.byCity?.[c.id]; // the real counts once everyone is loaded: residents · out now
+    box.append(h('button', { type: 'button', class: st.city === c.id ? 'on' : '', title: k ? `${k.total.toLocaleString('en-US')} here now · ${k.out} outside · ${k.home} at home · ${k.asleep} asleep · ${k.work} at work or school · ${k.prison} held` : null, onclick: () => { st.city = c.id; cityButtons(); flyTo(city.cx, city.cz, 1300); } },
+      c.name, h('small', { text: `${(c.residents || 0).toLocaleString('en-US')}${k ? ` · ${k.out} out` : ''}` })));
   }
 }
 
@@ -249,7 +253,8 @@ function showBuilding(b) {
   const city = data.cities[b.city]; const body = $('#infoBody'); body.replaceChildren();
   body.append(h('span', { class: 'cat', color: cat.color }, h('i'), cat.label), h('h2', { text: b.name }), h('p', { text: t.desc || '' }));
   const rows = [['City', city?.name || b.city]];
-  if (b.households) rows.push(['Households', `~${b.households.toLocaleString('en-US')}`], ['AI citizens living here', `~${Math.max(1, Math.round(b.households * 2.8 / REP))}`]);
+  // the drawn size of the block; once everyone is loaded the real residents are listed below instead of a guess
+  if (b.households) rows.push(['Households (drawn)', `~${b.households.toLocaleString('en-US')}`], ...(people?.counts ? [] : [['AI citizens living here', `~${Math.max(1, Math.round(b.households * 2.8 / REP))}`]]));
   body.append(h('div', { class: 'kv' }, rows.flatMap(([k, v]) => [h('span', { text: k }), h('b', { text: v })])));
   body.append(...details(b));
   const here = scenes.at(b);
@@ -262,10 +267,159 @@ function showBuilding(b) {
   if (w.length) body.append(h('h4', { text: 'Works here' }), h('ul', {}, w.slice(0, 40).map(p => h('li', {}, h('b', { text: p.name }), h('span', { text: p.role })))));
   const inside = agents.list.filter(a => a.dest === b && a.state === 'stay' && a.name).slice(0, 12);
   if (inside.length) body.append(h('h4', { text: 'Inside now' }), h('ul', {}, inside.map(a => h('li', {}, h('b', { text: a.name }), h('span', { text: a.act })))));
-  const live = agents.list.filter(a => a.home === b && a.name && !a.scene).slice(0, 12);
+  const live = people?.counts ? [] : agents.list.filter(a => a.home === b && a.name && !a.scene).slice(0, 12); // the real list is below
   if (live.length) body.append(h('h4', { text: 'Lives here' }), h('ul', {}, live.map(a => h('li', {}, h('b', { text: a.name }), h('span', { text: a.seat ? roleTitle(a.seat) : 'citizen' })))));
+  if (people?.counts) body.append(peopleSection(b));
+  else if (CHILD_SCHOOLS.has(b.type)) body.append(h('p', { class: 'note', text: CHILD_NOTE }));
   if (INSIDE.has(b.type)) body.prepend(h('button', { type: 'button', class: 'go-in', onclick: () => enterBuilding(b) }, 'Go inside', h('span', { text: '→' })));
   $('#info').hidden = false;
+}
+
+// ------------------------------------------------------------ the people in a building (from the whereabouts)
+// A home cannot be entered, but it says who lives there and what they are doing; any other building lists who is
+// inside now. 50 names a page, a name filter, rendered only when the card opens.
+const CHILD_SCHOOLS = new Set(['primary_school', 'middle_school', 'high_school']);
+const CHILD_NOTE = "Reserved for the republic's children (coming in a later update).";
+const statusOf = p => {
+  const k = kindOf(p); const home = p.h?.address || p.h?.b?.name || 'their home';
+  if (k === 'asleep') return `Asleep at home in ${home}`;
+  if (k === 'home') return `At home in ${home}`;
+  if (k === 'out') return 'Outside';
+  if (k === 'prison') return `Inside ${p.b?.name || (p.where === 'jail' ? 'the jail' : 'the prison')}${p.act ? ` · ${p.act}` : ''}`;
+  return `Inside ${p.b?.name || p.where}${p.act ? ` · ${p.act}` : ''}`;
+};
+const shortStatus = (p, b) => { const k = kindOf(p); return k === 'asleep' ? 'asleep' : k === 'home' ? 'at home' : k === 'out' ? 'outside' : p.b === b ? (p.act || 'here') : `out at ${p.b?.name || p.where}`; };
+function peopleSection(b) {
+  const box = h('div', { class: 'people' });
+  // the schools for children stand empty: every citizen is an adult for now
+  if (CHILD_SCHOOLS.has(b.type)) { box.append(h('h4', { text: 'Inside now: 0' }), h('p', { class: 'note', text: CHILD_NOTE })); return box; }
+  const housing = HOUSING.has(b.type) || b.type === 'police_housing' || b.type === 'military_housing';
+  const list = housing ? people.residents(b) : (people.inB.get(b.idx) || []).slice();
+  const ORDER = { asleep: 0, home: 1, work: 2, prison: 2, out: 3 };
+  list.sort((x, y) => (ORDER[kindOf(x)] - ORDER[kindOf(y)]) || x.name.localeCompare(y.name));
+  if (housing) {
+    const c = { asleep: 0, home: 0, out: 0 }; for (const p of list) { const k = kindOf(p); if (k === 'asleep') c.asleep++; else if (k === 'home') c.home++; else c.out++; }
+    box.append(h('h4', { text: `Residents: ${list.length.toLocaleString('en-US')} citizen${list.length === 1 ? '' : 's'}` }),
+      h('p', { class: 'note', text: list.length ? `${c.asleep} asleep · ${c.home} at home · ${c.out} out${people.real ? '' : ' (estimate)'}. Homes cannot be entered.` : 'Nobody lives here in this republic yet.' }));
+  } else box.append(h('h4', { text: `Inside now: ${list.length.toLocaleString('en-US')}${people.real ? '' : ' (estimate)'}` }));
+  if (!list.length) return box;
+  let page = 0, q = '';
+  const ul = h('ul', { class: 'people-list' }); const nav = h('div', { class: 'pager' });
+  const draw = () => {
+    const f = q ? list.filter(p => p.name.toLowerCase().includes(q)) : list; const pages = Math.max(1, Math.ceil(f.length / 50)); page = Math.min(page, pages - 1);
+    ul.replaceChildren(...f.slice(page * 50, page * 50 + 50).map(p => h('li', { onclick: () => goPerson(p) },
+      h('span', { class: 'em', text: emoji(p.mood || 'calm') }), h('b', {}, p.name, p.student ? h('span', { class: 'tag-student', text: 'Student' }) : null), h('small', { text: shortStatus(p, b) }))));
+    nav.replaceChildren(...(pages > 1 ? [h('button', { type: 'button', text: '‹', disabled: page === 0, onclick: () => { page--; draw(); } }), h('span', { text: `${page + 1} / ${pages} · ${f.length}` }), h('button', { type: 'button', text: '›', disabled: page >= pages - 1, onclick: () => { page++; draw(); } })] : []));
+  };
+  if (list.length > 12) box.append(h('input', { type: 'search', class: 'people-q', placeholder: 'Find a name here', maxlength: '40', oninput: e => { q = e.target.value.trim().toLowerCase(); page = 0; draw(); } }));
+  box.append(ul, nav); draw();
+  return box;
+}
+// open a person from a list or the search: their robot if they are out, else their card where they are
+function goPerson(p) {
+  let a = agents.byId.get(p.id);
+  if (a && (a.vs > 0 || a.state === 'walk')) { flyTo(a.x, a.z, 260, 1000); markOn(a); showAgent(a); return; }
+  const b = p.b || p.h?.b; if (!b) { mapToast(`${p.name}: no place on the map`); return; }
+  if (!a) {
+    a = agents.ensure(p.id, p.name, p.at || p.city); if (!a) { mapToast('The map is full right now'); return; }
+    a.ghost = true; // a stand-in at the building, removed when the card closes
+  }
+  const at = kindOf(p) === 'home' || kindOf(p) === 'asleep' ? (p.h || b) : b;
+  a.x = at.x; a.z = at.z; a.state = 'stay'; a.dest = b; a.wait = 1e9; a.act = p.act || kindOf(p); if (p.mood) a.mood = p.mood;
+  flyTo(b.x, b.z, 300, 1000); markOn({ x: b.x, z: b.z, y: (b.h || 20) + 12, size: Math.min(4, Math.max(1.5, (b.w || 40) / 30)) });
+  mapToast(`${p.name}: ${statusOf(p)}`, 4000);
+  showAgent(a);
+}
+
+// ------------------------------------------------------------ all 10,000: load, where they are, robots, the HUD
+const night0 = () => { const hr = hourOf(); return hr >= 20 || hr < 6; };
+const ROBOT_CAP = mobile ? 1200 : 3000;
+let whereTimer = null, whereTurn = 0, whereWait = 0;
+async function whereabouts(city) {
+  const r = await fetch(`/api/whereabouts?city=${encodeURIComponent(city)}`, { cache: 'no-store' });
+  if (r.status === 429) { const j = await r.json().catch(() => null); whereWait = Date.now() + 1000 * Math.min(120, Math.max(5, Number(j?.retryAfter) || Number(r.headers.get('retry-after')) || 60)); return null; }
+  if (!r.ok) return null;
+  const txt = await r.text(); people.bytes += txt.length; return JSON.parse(txt);
+}
+async function loadPeople() {
+  people = new People(data, agents);
+  const ids = Object.keys(data.cities);
+  try { await people.load(ids); } catch { /* keep what came */ }
+  if (!people.byId.size) { people = null; return false; }
+  let ok = 0;
+  for (const c of ids) { try { const v = await whereabouts(c); if (v) { people.apply(c, v); ok++; } } catch { /* this city stays an estimate */ } }
+  people.estimate(night0()); people.real = ok > 0; people.index();
+  syncRobots(); renderPeopleHud(); cityButtons(); refreshOpenCard();
+  // one city every 60 s, in turn, while the page is visible (and never inside a 429 wait)
+  whereTimer = setInterval(async () => {
+    if (document.hidden || inside || Date.now() < whereWait) return;
+    const c = ids[whereTurn++ % ids.length];
+    try { const v = await whereabouts(c); if (!v) return; const moved = people.apply(c, v); people.index(); syncRobots(moved); renderPeopleHud(); cityButtons(); } catch { /* next turn */ }
+  }, 60000);
+  // no whereabouts at all (older server, or it failed): the counts are an estimate, and the streets keep the
+  // previous sample of walkers so the city does not look empty
+  return ok > 0;
+}
+// robots for the people outside: the city in view and the nearest to the camera first, up to ROBOT_CAP robots in all
+function syncRobots(moved = []) {
+  const keep = new Set(); for (const p of people.byId.values()) if (kindOf(p) === 'out') keep.add(p.id);
+  // someone who went in: their robot walks to the building and is gone; someone who came out leaves from it
+  for (const a of agents.list.slice()) if (a.person && !keep.has(a.id)) {
+    const p = people.byId.get(a.id);
+    if (p?.b && a.vs > 0) { a.street = false; a.person = false; agents.walkTo(a, p.b.x, p.b.z, x => agents.remove(x)); } else agents.remove(a);
+  }
+  const f = controls.target; const cityIn = st.city;
+  const want = [...keep].map(id => people.byId.get(id)).filter(p => p && !agents.byId.has(p.id))
+    .map(p => { const h = people.homeOf(p); return [p, (p.at === cityIn ? 0 : 1e9) + (h ? (h.x - f.x) ** 2 + (h.z - f.z) ** 2 : 1e12)]; }).sort((x, y) => x[1] - y[1]);
+  const movedFrom = new Map(moved.map(p => [p.id, p.from]));
+  for (const [p] of want) {
+    if (agents.list.length >= ROBOT_CAP) break;
+    const a = agents.add({ id: p.id, name: p.name, city: p.at || p.city, home: people.homeOf(p)?.b, x: 0, z: 0, state: 'stay', wait: Math.random() * 4, act: p.act || 'talk', color: ACT_COLOR.talk, scale: 1, mood: p.mood || undefined, street: true, person: true });
+    if (!a) break;
+    const from = movedFrom.get(p.id) || people.homeOf(p); if (from) { a.x = from.x; a.z = from.z; }
+  }
+}
+// a building card opened before the people arrived (a deep link, a quick click) gets its lists now
+function refreshOpenCard() { if (st.selected && !st.agent && !$('#info').hidden && !inside) showBuilding(st.selected); }
+function renderPeopleHud() {
+  const c = people?.counts; const box = $('#peopleHud'); if (!c) { box.hidden = true; return; }
+  box.hidden = false; const est = people.real ? '' : ' (estimate)';
+  $('#peopleCounts').textContent = `${c.total.toLocaleString('en-US')} citizens${c.students ? ` (${c.students.toLocaleString('en-US')} students)` : ''} · outside ${c.out.toLocaleString('en-US')} · at home ${c.home.toLocaleString('en-US')} · asleep ${c.asleep.toLocaleString('en-US')} · at work/school ${c.work.toLocaleString('en-US')} · held ${c.prison}${est}`;
+  const drawn = agents.list.filter(a => a.person).length;
+  $('#peopleCounts').title = `${drawn.toLocaleString('en-US')} of the ${c.out.toLocaleString('en-US')} outside are drawn as robots (nearest to the camera first)`;
+}
+function peopleSearchUi() {
+  const q = $('#peopleQ'), out = $('#peopleHits');
+  q.addEventListener('input', () => {
+    const hits = people ? people.find(q.value) : [];
+    out.replaceChildren(...hits.map(p => h('li', { onclick: () => { out.replaceChildren(); q.value = ''; goPerson(p); } }, h('span', { class: 'em', text: emoji(p.mood || 'calm') }), h('b', { text: p.name }), h('small', { text: `${data.cities[p.city]?.name || p.city} · ${statusOf(p)}` }))));
+    out.hidden = !hits.length;
+  });
+  q.addEventListener('keydown', e => { if (e.key === 'Enter') { const p = people?.find(q.value, 1)[0]; if (p) { out.replaceChildren(); out.hidden = true; q.value = ''; goPerson(p); } } });
+}
+
+// /map.html?selftest=people: how many citizens came, how many robots are drawn, the download, frames a second
+function peopleTest() {
+  const out = h('div', { class: 'selftest', text: 'people test: loading…' }); document.body.append(out);
+  const t0 = performance.now(); const sim = new URLSearchParams(location.search).get('simulate') === 'street';
+  const wait = () => {
+    if (!people?.counts && performance.now() - t0 < 15000) return setTimeout(wait, 200);
+    // test only: when the local copy is asleep, send a third of everyone out to check the street robots
+    if (sim && people && !people.counts.out) { let k = 0; for (const p of people.byId.values()) if (k++ % 3 === 0 && kindOf(p) !== 'prison') { p.where = 'street'; p.act = 'talking'; } people.index(); syncRobots(); renderPeopleHud(); cityButtons(); }
+    let frames = 0; const f0 = performance.now();
+    const count = () => { frames++; if (performance.now() - f0 < 2000) requestAnimationFrame(count); else done(frames / ((performance.now() - f0) / 1000)); };
+    requestAnimationFrame(count);
+  };
+  const done = fps => {
+    const c = people?.counts; const res = performance.getEntriesByType('resource').filter(r => /\/api\/(citizens\?lite|whereabouts)/.test(r.name));
+    const wire = res.reduce((n, r) => n + (r.transferSize || r.encodedBodySize || 0), 0);
+    const drawn = agents.list.filter(a => a.person).length, visible = agents.list.filter(a => a.vs > 0).length;
+    out.textContent = `people test · ${people ? people.byId.size.toLocaleString('en-US') : 0} citizens loaded (${people?.real ? 'real whereabouts' : 'estimate'}) · outside ${c?.out ?? '-'}, home ${c?.home ?? '-'}, asleep ${c?.asleep ?? '-'}, work/school ${c?.work ?? '-'}, held ${c?.prison ?? '-'} · robots: ${drawn} citizens outside drawn, ${agents.list.length} robots in all, ${visible} on screen now · first download ${Math.round((people?.bytes || 0) / 1024)} KB raw, ${Math.round(wire / 1024)} KB over the wire (${res.length} requests) · ${fps.toFixed(0)} fps`;
+    // and a home's card, to see the residents list
+    const home = data.buildings.find(b => HOUSING.has(b.type) && people?.residents(b).length > 3);
+    if (home) { flyTo(home.x, home.z, 300, 600); showBuilding(home); }
+  };
+  wait();
 }
 
 // ------------------------------------------------------------ inside a building (GET /api/place/<type>)
@@ -362,7 +516,8 @@ function localPlace(type, b) {
       const pf = s.cabinet?.portfolios?.finance; if (pf) add(pf, 'Minister of Finance', 'checks the treasury');
       const p = s.policy || {}; Object.assign(board, { treasury: Math.round(s.treasury || 0), taxRate: `${Math.round((p.taxRate || 0) * 100)}%`, ubi: p.ubi, wage: p.wage, ubiPaid: Math.round(s.econ?.ubiPaid || 0) }); break;
     }
-    case 'primary_school': case 'middle_school': case 'high_school': case 'university': case 'library': {
+    case 'primary_school': case 'middle_school': case 'high_school': board.note = CHILD_NOTE; break; // empty until there are children
+    case 'university': case 'library': {
       const sc = s.school || {};
       for (const f of sc.gifted?.byField || []) if (f.top?.id) add(f.top.id, 'Top student', `studies ${f.name}`, { field: f.name, gifted: true });
       for (const x of sc.topStudents || []) add(x.id, 'Student', 'revising the core subjects');
@@ -384,7 +539,7 @@ async function enterBuilding(b, push = true) {
   if (entering || inside || !INSIDE.has(b.type)) return; entering = true;
   const box = $('#enter'); $('#enterTitle').textContent = `Entering ${b.name}`; box.hidden = false; enterStep(8, 'Opening the doors…');
   try {
-    insideMod ||= await import('./interior.js?v=3'); enterStep(40, 'Reading who is inside…');
+    insideMod ||= await import('./interior.js?v=4'); enterStep(40, 'Reading who is inside…');
     const place = await placeFor(b.type, b); enterStep(75, 'Furnishing the room…');
     await new Promise(r => setTimeout(r, 30));
     renderer.setAnimationLoop(null); controls.enabled = false; // the map pauses where it is (and ignores drags)
@@ -524,19 +679,29 @@ async function loadBonds(a) {
   if (st.agent === a) showAgent(a, true);
 }
 function select(a) {
-  if (st.agent && st.agent !== a) st.agent.selected = false;
+  const prev = st.agent;
+  if (prev && prev !== a) {
+    prev.selected = false;
+    // a stand-in robot for someone indoors (opened from a list), or one removed while its card was open: gone now
+    if (prev.ghost || prev.removeLater) agents.remove(prev);
+  }
   st.agent = a; if (a) a.selected = true; arcList = [];
 }
 function showAgent(a, keepBonds) {
   if (st.agent !== a) select(a);
   const body = $('#infoBody'); body.replaceChildren();
   const rec = isReal(a) ? recs.get(a.id) : null; const label = moodLabel(a);
-  const role = a.seat ? roleTitle(a.seat) : a.scene ? 'At an institution' : a.name ? 'Citizen' : 'Passer-by';
+  // occupation from the server ('student' | 'official' | 'citizen'): a university student is labelled as one
+  const occ = isReal(a) ? (rec || citizen(a.id))?.occupation ?? (people?.byId.get(a.id)?.student ? 'student' : null) : null;
+  const role = a.seat ? roleTitle(a.seat) : a.scene ? 'At an institution' : a.name ? (occ === 'student' ? 'Student · University' : 'Citizen') : 'Passer-by';
   body.append(h('div', { class: 'who' }, avatar(a, true), h('div', {},
     h('span', { class: 'cat', color: a.color }, h('i'), role), h('h2', { text: a.name || (a.scene ? 'A sample figure' : 'A citizen') }),
     h('p', { class: 'mood' }, h('b', { text: `${emoji(label)} ${label}` }), rec?.mood?.why ? ` · ${rec.mood.why}` : a.mood ? '' : ' · (a guess from what they are doing)'))));
   const rows = a.scene ? [['City', data.cities[a.city]?.name || a.city], ['Where', a.b?.name || ''], ['Doing', a.what || a.act]]
     : [['City', data.cities[a.city]?.name || a.city], ['Doing', a.state === 'walk' ? `walking to ${a.dest ? a.dest.name : 'home'}` : a.act], ['Home', a.address ? `${a.address} (${a.home?.name || ''})` : (a.home?.name || '')]];
+  // where the whereabouts put them, for someone who is not out walking: "At home in …", "Inside …"
+  const pp = people?.byId.get(a.id);
+  if (pp && !a.scene && a.state !== 'walk' && !a.street) { const s = statusOf(pp); if (s) rows.splice(1, 1, ['Now', s]); }
   const pk = rec?.pokes?.n ?? a.pokesToday; if (pk) rows.push(['Poked today', `${pk}×`]);
   const info = isReal(a) ? (rec || citizen(a.id)) : null; // goal and reputation from the citizen record
   if (typeof info?.reputation === 'number') rows.push(['Reputation', `${Math.round(info.reputation * 100)}%`]);
@@ -872,15 +1037,19 @@ async function boot() {
     const c = citizen(id); if (!c?.home || !st.state?.homeLayout) return null;
     return { home: c.home, layout: st.state.homeLayout, blocks: st.state.cities?.find(x => x.id === c.home.city)?.blocks };
   });
-  { // every background robot is a real citizen (at most 4 s to fetch them; past that, anonymous walkers)
+  // every citizen of the republic, loaded after the map is up (the map shows at once, the people arrive): whoever is
+  // outside walks as a robot. If that fails, the old way: a sample of real citizens, or anonymous walkers.
+  const fallback = async () => {
     const per = mobile ? 120 : 300;
-    const people = await Promise.race([loadBackground(Object.values(data.cities).map(c => ({ id: c.id, residents: st.state?.cities?.find(x => x.id === c.id)?.residents })), per), new Promise(r => setTimeout(() => r({}), 4000))]);
-    agents.populate(per, people);
-  }
+    const bg = await Promise.race([loadBackground(Object.values(data.cities).map(c => ({ id: c.id, residents: st.state?.cities?.find(x => x.id === c.id)?.residents })), per), new Promise(r => setTimeout(() => r({}), 4000))]);
+    agents.populate(per, bg);
+  };
+  setTimeout(() => loadPeople().then(ok => { if (!ok) fallback(); }).catch(() => fallback()), 50);
+  // (when the people loaded but their whereabouts did not, the fallback walkers come from the same real citizens)
   scenes = new Scenes(agents, data, { nameOf, roleTitle, citizen, fetchCitizen });
   coverage = buildCoverage(scene, data);
   life = buildLife(scene, data, { traffic: mobile ? 140 : 360 });
-  makeLabels(); cityButtons(); legend(); zoomUi(); leadersUi();
+  makeLabels(); cityButtons(); legend(); zoomUi(); leadersUi(); peopleSearchUi();
   if (st.state) ingest(st.state);
   setTimeout(poll, 120000); stream(); drain();
   setInterval(() => { if (scenes.dirty) scenes.sync(st.state); }, 3000); // citizen look-ups finished: redraw the prison
@@ -902,12 +1071,13 @@ async function boot() {
   }
   if (qs.get('selftest') === 'interior') setTimeout(selfTest, 100);
   if (qs.get('selftest') === 'pick') setTimeout(pickTest, 1200); // after the robots have walked out for a while
+  if (qs.get('selftest') === 'people') peopleTest();
   $('#lyShadows').checked = false; setShadows(false);
   $('#lyShadows').addEventListener('change', e => setShadows(e.target.checked));
   $('#lyAgents').addEventListener('change', e => { agents.visible = e.target.checked; });
   lighting(); setInterval(lighting, 60000); setInterval(renderClock, 30000);
   $('#loading').classList.add('done'); setTimeout(() => { $('#loading').hidden = true; }, 600);
-  window.COUNTRY_MAP = { data, agents, scenes, coverage, flyTo, camera, controls, night, pokeAgent, showAgent, composer, renderer, enterBuilding, exitBuilding, pickRobot, pickTest }; // for debugging in the console
+  window.COUNTRY_MAP = { data, agents, scenes, coverage, flyTo, camera, controls, night, pokeAgent, showAgent, composer, renderer, enterBuilding, exitBuilding, pickRobot, pickTest, get people() { return people; }, goPerson }; // for debugging in the console
   let last = performance.now();
   renderer.setAnimationLoop(mapLoop = now => {
     if (now - last > 1000) last = now - 16; // back from inside a building: no jump

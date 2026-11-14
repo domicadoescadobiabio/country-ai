@@ -29,6 +29,7 @@ const ROOM = {
   office: 'work', factory: 'work', community_hall: 'hall',
 };
 export const INTERIOR_TYPES = Object.keys(ROOM);
+const CHILD = new Set(['primary_school', 'middle_school', 'high_school']); // empty classrooms until there are children
 // Where a person stands follows their role from /api/place, as in a real building: guards at the entrance, the desk
 // officer behind the front desk, wardens in front of the cells, bailiffs beside the bench, nurses at the station.
 // Only people the server lists are drawn; an empty building says so.
@@ -398,7 +399,9 @@ export function enter(opts) {
     const old = new Map(bots.map(b => [b.o.id, b]));
     for (const b of bots) if (!placed.some(([o]) => o.id === b.o.id)) { b.tag.remove(); b.bubble.remove(); }
     // nobody is drawn who is not in the server's list: an empty building says so
-    empty.hidden = placed.length > 0; empty.textContent = placed.length ? '' : 'Nobody is inside right now.';
+    // empty: the place's own note when it has one (the children's schools: reserved for a later update)
+    const note = typeof place.board?.note === 'string' && place.board.note ? place.board.note : null;
+    empty.hidden = placed.length > 0; empty.textContent = placed.length ? '' : (CHILD.has(type) && note ? note : 'Nobody is inside right now.');
     bots = placed.map(([o, slot]) => {
       const was = old.get(o.id);
       const b = was || { tag: h('div', { class: 'itag' }), bubble: h('div', { class: 'ibubble', hidden: true }), pokeT: 0, phase: (hashStr(String(o.id)) % 628) / 100, shell: SHELLS[hashStr(String(o.id)) % SHELLS.length] };

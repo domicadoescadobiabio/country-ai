@@ -189,6 +189,34 @@ body.inside .leaders, body.inside .zoom, body.inside .zoom-tip, body.inside .map
   .map-toast { top: 124px; }
 }
 
+/* ---------- all the citizens: the HUD (top centre), search, and the lists on building cards */
+.people-hud { position: fixed; top: 64px; left: 50%; transform: translateX(-50%); z-index: 2; width: min(760px, calc(100vw - 720px)); min-width: 360px; display: grid; gap: 6px; }
+.people-hud[hidden] { display: none; }
+.people-hud p { margin: 0; padding: 6px 12px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line); font: 600 11.5px var(--mono); color: var(--text); text-align: center; backdrop-filter: blur(8px); }
+.people-find { position: relative; justify-self: center; width: min(320px, 100%); }
+.people-find input { width: 100%; padding: 7px 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel); color: var(--text); font-size: 13px; }
+.people-find ul, .people-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; }
+.people-find ul { position: absolute; left: 0; right: 0; top: 38px; padding: 6px; border-radius: 12px; background: rgba(14, 10, 38, 0.95); border: 1px solid var(--line); z-index: 3; }
+.people-find ul[hidden] { display: none; }
+.people-find li, .info .people-list li { display: grid; grid-template-columns: 20px 1fr; column-gap: 6px; padding: 5px 8px; border-radius: 8px; background: rgba(255, 255, 255, 0.04); cursor: pointer; }
+.people-find li:hover, .info .people-list li:hover { background: rgba(34, 211, 238, 0.12); }
+.people-find li .em, .info .people-list li .em { grid-row: span 2; font-size: 15px; }
+.people-find li small, .info .people-list li small { color: var(--muted); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tag-student { margin-left: 6px; padding: 0 6px; border-radius: 6px; border: 1px solid rgba(251, 146, 60, 0.6); color: #fdba74; font: 600 10px var(--mono); vertical-align: 1px; }
+.info .people-q { width: 100%; margin: 4px 0 6px; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line); background: rgba(255, 255, 255, 0.05); color: var(--text); }
+.info .pager { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 6px; font: 600 11px var(--mono); color: var(--muted); }
+.info .pager button { border: 1px solid var(--line); background: transparent; color: var(--text); border-radius: 6px; padding: 2px 10px; cursor: pointer; }
+.info .pager button[disabled] { opacity: 0.35; cursor: default; }
+.map-toast { top: 130px; }
+body.inside .people-hud { display: none; }
+@media (max-width: 1100px) { .people-hud { left: auto; right: 14px; transform: none; top: 64px; width: 340px; min-width: 0; } .people-hud p { font-size: 10.5px; } }
+@media (max-width: 760px) {
+  .people-hud { top: 124px; left: 10px; right: 62px; width: auto; }
+  .people-hud p { font-size: 10px; padding: 5px 8px; text-align: left; }
+  .people-find { justify-self: stretch; width: 100%; }
+  .map-toast { top: 200px; }
+}
+
 /* ---------- inside a building */
 .go-in { display: flex; align-items: center; justify-content: space-between; width: 100%; margin: 0 0 12px; padding: 11px 16px; border: 0; border-radius: 12px; cursor: pointer;
   font: 800 15px var(--font); color: #13072e; background: linear-gradient(90deg, #22d3ee, #f472b6); box-shadow: 0 0 18px rgba(244, 114, 182, 0.45); }

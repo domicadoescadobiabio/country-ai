@@ -7,7 +7,7 @@
   <meta name="description" content="A live 3D map of COUNTRY AI: five cities, every public building, and citizens walking to what they actually decided to do.">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/vendor/fonts/fonts.css?v=1">
-  <link rel="stylesheet" href="/map/map.css?v=8">
+  <link rel="stylesheet" href="/map/map.css?v=10">
 </head>
 <body>
   <canvas id="scene" aria-label="3D map of the country"></canvas>
@@ -29,6 +29,12 @@
   <section class="leaders" id="leaders" aria-label="Leaders">
     <button class="leaders-toggle" id="leadersToggle" type="button" aria-expanded="false" aria-controls="leadersBody">👑 Leaders <span id="leadersCount"></span></button>
     <div class="leaders-body" id="leadersBody" hidden></div>
+  </section>
+
+  <!-- everyone, really: where all the citizens are now, and a search by name -->
+  <section class="people-hud" id="peopleHud" aria-label="Citizens" hidden>
+    <p id="peopleCounts"></p>
+    <div class="people-find"><input id="peopleQ" type="search" placeholder="Find a citizen by name" maxlength="40" autocomplete="off" aria-label="Find a citizen"><ul id="peopleHits" hidden></ul></div>
   </section>
 
   <!-- zoom: + / − / fit, the current zoom level, and how to move around -->
@@ -63,6 +69,6 @@
   <!-- going inside a building: a short loading screen, then the room (public/map/interior.js) -->
   <div class="enter" id="enter" hidden><div class="enter-box"><p id="enterTitle">Entering…</p><div class="enter-bar"><i id="enterBar"></i></div><small id="enterStep"></small></div></div>
   <button class="inside-back" id="insideBack" type="button">← Back to the map <kbd>Esc</kbd></button>
-  <script src="/map/main.js?v=11" type="module"></script>
+  <script src="/map/main.js?v=13" type="module"></script>
 </body>
 </html>

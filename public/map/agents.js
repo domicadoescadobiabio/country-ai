@@ -78,6 +78,7 @@ export class Agents {
   // swap-remove keeps the instanced meshes dense (slot = index in list)
   remove(a) {
     if (!a || this.list[a.slot] !== a) return;
+    if (a.selected) { a.removeLater = true; return; } // the card is open on them: removed when it closes
     const last = this.list.pop();
     if (last !== a) { this.list[a.slot] = last; last.slot = a.slot; }
     this.byId.delete(a.id); this.setCount();
@@ -178,8 +179,10 @@ export class Agents {
       } else if (a.state === 'home' || a.state === 'stay') {
         a.wait -= dt;
         if (a.wait <= 0 && !(a.pokeT && now - a.pokeT < 2500)) {
-          if (a.state === 'stay') { const hm = a.door || a.home; a.target = hm; a.path = route(this.cityOf(a.city), a.x, a.z, hm.x, hm.z, (hash(a.id) % 7) - 3); a.seg = 0; a.state = 'walk'; a.dest = null; }
+          if (a.state === 'stay' && a.street) this.go(a, 'talk');
+          else if (a.state === 'stay') { const hm = a.door || a.home; a.target = hm; a.path = route(this.cityOf(a.city), a.x, a.z, hm.x, hm.z, (hash(a.id) % 7) - 3); a.seg = 0; a.state = 'walk'; a.dest = null; }
           else if (a.seat) this.go(a, null);
+          else if (a.street) this.go(a, 'talk'); // outside: from square to park to food stall, never home
           else this.go(a, pickWeighted(this.r, this.weights));
         }
       } else if (a.state === 'walk' && !(a.pokeT && now - a.pokeT < 1600)) {
@@ -197,7 +200,8 @@ export class Agents {
         }
       }
       const live = a.liveUntil > now; const poked = a.pokeT && now - a.pokeT < 1600;
-      const visible = a.state === 'walk' || a.state === 'pin' || a.state === 'loop' || live || a.selected;
+      // a.street: a citizen whose whereabouts say they are outside: drawn even while standing still
+      const visible = a.state === 'walk' || a.state === 'pin' || a.state === 'loop' || live || a.selected || (a.street && a.state !== 'home');
       const s = visible ? a.scale * (live || a.selected ? 1.35 : 1) : 0;
       a.vs = s; // drawn size, 0 = not on screen (screen picking uses it)
       // walking bob, idle sway, and the poke: a hop with a squash and a full spin
