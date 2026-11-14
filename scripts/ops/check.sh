@@ -17,18 +17,25 @@ say "auditor unit tests (Python)"
 "$PY" -m unittest discover -s auditor/tests -t . -q
 ok "auditor"
 
-say "voting rules (Node unit checks)"
-node scripts/smoke-voting-rules.mjs | tail -n 1
-say "smoke: the whole republic, compressed time (Node)"
-node scripts/smoke.mjs | tail -n 3
-say "smoke: the local brain worker (Node, mocked Ollama)"
-node scripts/smoke-local-brain.mjs | tail -n 1
-say "smoke: brains and model routing (Node, mocked providers)"
-node scripts/smoke-brains.mjs | tail -n 2
-say "smoke: citizens' feelings and nudges (Node)"
-node scripts/smoke-feelings.mjs | tail -n 1
-say "smoke: the underworld and mischievous citizens (Node)"
-node scripts/smoke-underworld.mjs | tail -n 1
-say "smoke: the school (Node)"
-node scripts/smoke-school.mjs | tail -n 1
+# Run one Node suite: print every FAIL line (so a flaky check is named) and the summary,
+# keep going after a failure, and remember it for the end.
+failed=()
+suite() { # suite "<title>" <script>
+  local title="$1" script="$2" out rc=0
+  say "$title"
+  out="$(node "$script" 2>&1)" || rc=$?
+  printf '%s\n' "$out" | grep -E '^[[:space:]]*FAIL' || true
+  printf '%s\n' "$out" | tail -n 1
+  if (( rc != 0 )); then failed+=("$script"); fi
+}
+
+suite "voting rules (Node unit checks)" scripts/smoke-voting-rules.mjs
+suite "smoke: the whole republic, compressed time (Node)" scripts/smoke.mjs
+suite "smoke: the local brain worker (Node, mocked Ollama)" scripts/smoke-local-brain.mjs
+suite "smoke: brains and model routing (Node, mocked providers)" scripts/smoke-brains.mjs
+suite "smoke: citizens' feelings and nudges (Node)" scripts/smoke-feelings.mjs
+suite "smoke: the underworld and mischievous citizens (Node)" scripts/smoke-underworld.mjs
+suite "smoke: the school (Node)" scripts/smoke-school.mjs
+
+if (( ${#failed[@]} )); then die "failed: ${failed[*]}"; fi
 ok "all checks passed"
