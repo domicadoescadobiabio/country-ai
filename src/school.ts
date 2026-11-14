@@ -14,7 +14,8 @@
 //   serves daily life first (school jobs have the lowest priority on its queue).
 //   This replaces the night school that lived in src/daily.ts (its office practice is the 'office' subject).
 import { ROLES, ROLE_ORDER, RULE_GENERATORS } from './roles.mjs';
-import { think, teach, saveExample, localOnline } from './brains.ts';
+import { think, teach, saveExample, localOnline, trainPaceView, trainBudgetState } from './brains.ts';
+import * as brains from './brains.ts'; // trainPlan() (ticket #512) when brains.ts has it; the school paces itself until then
 import { startStudy, gradeStudy, isRole } from './careers.ts';
 import { buildItem, inExam, LETTERS } from './academy.ts';
 import { borderCheck } from './military.ts';
@@ -770,7 +771,7 @@ function addExample(S: State, sub: string, ex: { q: string; a: string; why?: str
 function startLesson(ctx: Ctx, a: Citizen, night: number | null, now: number) {
   const { S } = ctx;
   const id = `school:${a.id}:${now}:${Math.floor(Math.random() * 1e6)}`;
-  const base0 = { id, agent: a.id, night, day: S.day, at: now, teach: TEACHER_SHARE > 0 && Math.random() < TEACHER_SHARE };
+  const base0 = { id, agent: a.id, night, day: S.day, at: now, teach: pace.share > 0 && Math.random() < pace.share };
   // most lessons are in the fields each citizen chooses; a share is the common core everybody needs (civics, law,
   // ethics, economy, adapting to new rules), and someone close to an office drills its handbook first
   const officeFirst = rank(S, a) === 0 && (profile(a).due.office || 0) <= now;
@@ -857,8 +858,111 @@ export function teacherUser(L: any) {
 // the teachers' time is shared: while the talent programme has members, ordinary students use at most half the
 // teacher places at once, and over the day at most NORMAL_TEACHER_FLOOR calls more than the gifted had (so most
 // teacher calls go to the gifted, and the others still get some every day)
+// ---------------------------------------------------------------- pacing the teachers to the day's target (owner, 14 Nov)
+// The owner wants OpenRouter's teachers to really reach TRAIN_OR_MIN_USD ($15) a day. brains.ts paces the money
+// (trainPaceView: orShortUsd = how far OpenRouter is behind its minimum right now) and refuses any call over the
+// day's training budget or Claude's cap; the school only asks for more lessons when it is behind:
+//   the teacher share of lessons rises from SCHOOL_TEACHER_SHARE up to 100% while behind, and falls back when ahead;
+//   more teachers may work at once (SCHOOL_TEACHER_CONCURRENCY_MAX);
+//   "teacher-only" lessons: a bank question in a field, the OpenRouter teacher answers and explains, the citizen
+//   reads the explanation (a note in their notebook). They run even when the local brain is slow or offline, go
+//   first to the fields with the least training data and to the gifted, and every pair is checked against the
+//   server's answer key by saveExample() before it counts as kept.
+const TEACHER_CONCURRENCY_MAX = Math.round(env('SCHOOL_TEACHER_CONCURRENCY_MAX', 16, 1, 64));
+const TEACHER_ONLY_PER_TICK = 6;
+const STUDENT_TEACHER_SLOTS = 4; // teacher places teacher-only lessons never take: kept for students, the gifted first
+const pace = { behind: false, short: 0, minNow: 0, share: TEACHER_SHARE, teacherOnly: 0, est: 0.0011, allowedNow: 0 };
+// the share of lessons that get a teacher: the base when on schedule, up to all of them when behind by 5% of the
+// minimum so far (or 5 cents)
+export function teacherShareFor(base: number, short: number, minNow: number) {
+  if (!(short > 0)) return base;
+  return round(base + (1 - base) * clamp(short / Math.max(0.05, minNow * 0.05), 0, 1), 3);
+}
+// the plan comes from brains.ts (ticket #512): trainPlan() gives the share of lessons with a teacher and how many
+// teacher-only lessons to start now, inside the per-minute and the paced budget; the school only carries it out
+function updatePace(ctx: Ctx) {
+  if (!ctx.llm?.enabled) { Object.assign(pace, { behind: false, short: 0, share: TEACHER_SHARE, teacherOnly: 0 }); return; }
+  let pv: any = null, plan: any = null;
+  try { pv = trainPaceView(ctx); } catch { pv = null; }
+  const batch = Math.max(0, Math.min(TEACHER_ONLY_PER_TICK, maxTeachingWhenBehind() - teaching.size));
+  const tp = (brains as any).trainPlan;
+  try { plan = typeof tp === 'function' ? tp(ctx, TEACHER_SHARE, batch) : null; } catch { plan = null; }
+  const short = Number(plan?.behindUsd ?? pv?.orShortUsd) || 0, minNow = Number(pv?.orMinNow) || 0;
+  const est = Number(pv?.estPerCall?.openrouter) || 0.0011;
+  // without trainPlan: the same idea from trainPaceView (enough lessons to catch up, at most a batch)
+  const teacherOnly = plan ? Math.floor(Number(plan.teacherOnly) || 0) : short > 0 ? Math.min(batch, Math.ceil(short / Math.max(1e-4, est))) : 0;
+  Object.assign(pace, { behind: short > 0, short, minNow, share: plan ? clamp(Number(plan.share) || 0, 0, 1) : teacherShareFor(TEACHER_SHARE, short, minNow),
+    teacherOnly: Math.max(0, teacherOnly), est, allowedNow: Number(pv?.allowedNow) || 0, planned: !!plan });
+}
+const maxTeachingWhenBehind = () => Math.max(MAX_TEACHING, TEACHER_CONCURRENCY_MAX);
+const maxTeaching = () => (pace.behind ? Math.max(MAX_TEACHING, TEACHER_CONCURRENCY_MAX) : MAX_TEACHING);
+// how much training data each field has: the server's counts when it shares them (ctx.trainCounts), else the
+// pairs this school saw kept
+function fieldNeeds(ctx: Ctx) {
+  let counts: any = null; try { counts = typeof (ctx as any).trainCounts === 'function' ? (ctx as any).trainCounts()?.byDomain : null; } catch { counts = null; }
+  const kept = SC(ctx.S).keptByField || {};
+  return FIELD_IDS.map(f => ({ f, n: Number(counts ? counts[f] : kept[f]) || 0 })).sort((x, y) => x.n - y.n || x.f.localeCompare(y.f));
+}
+// a teacher-only lesson: one of the field's bank questions at the citizen's level, for the paid teacher alone
+function teacherOnlyLesson(S: State, a: Citizen, field: string, gifted: boolean, now: number) {
+  const level = Math.min(5, fieldLevel(fieldSkill(a, field, now, DAY_MS)) + (gifted ? 1 : 0));
+  const raw = fieldItem(field, level); if (!raw) return null;
+  const it = buildItem(raw); const options = it.options.map((o: string, i: number) => `${LETTERS[i]}) ${o}`);
+  return { id: `teach:${a.id}:${now}:${Math.floor(Math.random() * 1e6)}`, agent: a.id, subject: field, field, level, gifted, kind: 'mcq', item: it, note: raw.note, options,
+    teacherOnly: true, teach: true, day: S.day, at: now, user: `Question: ${it.q}\n${options.join('\n')}\n\nReply with only the letter of your answer, then " - " and one short reason.` };
+}
+// who reads it: the field's gifted first, else someone who studies or loves the field (from a sample), else anyone
+function readerFor(ctx: Ctx, f: string) {
+  const { S } = ctx; const busy = new Set([...teaching.values()].map(e => e.lesson.agent));
+  const ok = (a: any) => who(S, a) && !busy.has(a.id);
+  const gifted = (S.school?.gifted?.byField?.[f] || []).map((x: any) => citizen(ctx, x.id)).filter(ok);
+  if (gifted.length) return { a: pick(gifted), gifted: true };
+  const list = S.citizens || []; if (!list.length) return null;
+  let any: any = null;
+  for (let k = 0; k < 300; k++) {
+    const a = list[Math.floor(Math.random() * list.length)]; if (!ok(a)) continue;
+    any ||= a;
+    if (a.school?.fields?.[f] || talentsOf(a).interests.includes(f)) return { a, gifted: false };
+  }
+  return any ? { a: any, gifted: false } : null;
+}
+// called every tick, local brain or not: while OpenRouter is behind its minimum, start teacher-only lessons in the
+// fields that need data most (one of the three thinnest each time), never over the paced allowance
+function teacherOnlyTick(ctx: Ctx, now: number) {
+  if (!ctx.llm?.enabled || !pace.behind) return;
+  const T: any = trainBudgetState(ctx);
+  if (!(Number(T.daily) > 0) || T.spent >= pace.allowedNow) return; // the day's budget so far is used: stop
+  const s = SC(ctx.S);
+  // as many as the plan allows, but always leaving room for the students' own lessons (the gifted first, ticket
+  // #509): teacher-only lessons never take the last STUDENT_TEACHER_SLOTS teacher places, nor more than half of the
+  // teacher calls still allowed this minute (TRAIN_PER_MIN in brains.ts)
+  const slots = Math.max(0, maxTeaching() - STUDENT_TEACHER_SLOTS - [...teaching.values()].filter(e => e.lesson.teacherOnly && !e.done).length - [...teaching.values()].filter(e => !e.lesson.teacherOnly && !e.done).length);
+  const roomFn = (brains as any).teachRoomNow; let room = Infinity; try { if (typeof roomFn === 'function') room = Number(roomFn(ctx)); } catch { room = Infinity; }
+  const perMinute = Number.isFinite(room) ? Math.floor(Math.max(0, room) / 2) : Infinity;
+  const want = Math.min(slots, pace.teacherOnly, TEACHER_ONLY_PER_TICK, perMinute);
+  const needs = fieldNeeds(ctx).slice(0, 3);
+  for (let i = 0; i < want; i++) {
+    const f = needs[Math.floor(Math.random() * needs.length)].f;
+    const r = readerFor(ctx, f); if (!r) return;
+    const L = teacherOnlyLesson(ctx.S, r.a, f, r.gifted, now); if (!L) continue;
+    const before = teaching.size; callTeacher(ctx, L, '', null as any);
+    if (teaching.size > before) {
+      s.stats.teacherOnly = (s.stats.teacherOnly || 0) + 1;
+      if (s.stats.tday?.day === ctx.S.day) s.stats.tday.teacherOnly = (s.stats.tday.teacherOnly || 0) + 1;
+    }
+  }
+}
+// a pair the dataset kept (saveExample checked the key or the rubric): counted per field
+function noteKept(S: State, L: any, kept: boolean) {
+  if (!kept) return;
+  const s = SC(S); const d = domainOf(L);
+  s.keptByField ||= {}; s.keptByField[d] = (s.keptByField[d] || 0) + 1;
+  if (L.teacherOnly) s.stats.teacherOnlyKept = (s.stats.teacherOnlyKept || 0) + 1;
+}
+
 function teacherAllowed(S: State, L: any) {
-  if (L.gifted || !anyGifted(S)) return true;
+  // behind the day's teacher target: every lesson may have its teacher
+  if (pace.behind || L.gifted || !anyGifted(S)) return true;
   const t = SC(S).stats.tday;
   const busy = [...teaching.values()].filter(e => !e.done && !e.lesson.gifted).length;
   return busy < Math.floor(MAX_TEACHING / 2) && (t?.day !== S.day || t.normal < t.gifted + NORMAL_TEACHER_FLOOR);
@@ -866,11 +970,11 @@ function teacherAllowed(S: State, L: any) {
 // deeper feedback for the talent programme: the method, the usual mistake, and a harder question to think about
 const GIFTED_TEACHER = (field: string) => `You are a demanding ${fieldName(field)} mentor in the talent programme of Country AI, a simulated nation of AI citizens; this student shows real promise.`;
 function callTeacher(ctx: Ctx, L: any, studentText: string, score: number) {
-  if (!ctx.llm?.enabled || teaching.has(L.id) || teaching.size >= MAX_TEACHING || !teacherAllowed(ctx.S, L)) return;
+  if (!ctx.llm?.enabled || teaching.has(L.id) || teaching.size >= maxTeaching() || !teacherAllowed(ctx.S, L)) return;
   const entry = { done: false, result: null as any, lesson: { ...L, studentText, score } };
   teaching.set(L.id, entry);
   const st = SC(ctx.S).stats; st.teacherCalls++;
-  if (st.tday?.day !== ctx.S.day) st.tday = { day: ctx.S.day, gifted: 0, normal: 0 };
+  if (st.tday?.day !== ctx.S.day) st.tday = { day: ctx.S.day, gifted: 0, normal: 0, teacherOnly: 0 };
   if (L.gifted) { st.tday.gifted++; st.giftedTeacherCalls = (st.giftedTeacherCalls || 0) + 1; } else st.tday.normal++;
   const free = L.kind === 'free';
   const system = L.gifted && free
@@ -882,7 +986,8 @@ function callTeacher(ctx: Ctx, L: any, studentText: string, score: number) {
     : 'You are a patient teacher at the school of Country AI, a simulated nation of AI citizens. Answer the question with the letter of the right option, then explain in at most two sentences, citing the rule or the arithmetic.';
   const user = teacherUser(L);
   // gifted: true gets them the OpenRouter teacher when it can take them, counted apart (brains.ts, budget.train.gifted)
-  Promise.resolve().then(() => teach(ctx, L.gifted ? { system, user, maxTokens: free ? 700 : 500, purpose: `gifted:${L.field}`, gifted: true } : { system, user, maxTokens: free ? 500 : 300, purpose: `school:${L.field || L.subject}` }))
+  // teacherOnly: true marks a lesson with no local student (brains.ts counts it in budget.train.teacherOnly)
+  Promise.resolve().then(() => teach(ctx, L.gifted ? { system, user, maxTokens: free ? 700 : 500, purpose: `gifted:${L.field}`, gifted: true, teacherOnly: !!L.teacherOnly } : { system, user, maxTokens: free ? 500 : 300, purpose: `school:${L.field || L.subject}`, teacherOnly: !!L.teacherOnly }))
     .then(r => { entry.result = r; entry.done = true; }, () => { entry.done = true; });
 }
 // the faculty a training pair belongs to, for a LoRA per faculty later: the field, else the core subject
@@ -909,7 +1014,7 @@ function applyTeacher(ctx: Ctx, entry: any) {
       if (![card.title, card.text, card.question].some(t => borderCheck({ text: t }, 2)) && !/https?:|www\./i.test(`${card.title} ${card.text} ${card.question}`)) { const cards = SC(S).cards; cards.push(card); if (cards.length > MAX_CARDS) cards.splice(0, cards.length - MAX_CARDS); }
     }
     // kept only with the teacher's own better answer and numeric grade (brains.ts: verified 'rubric', ticket #379)
-    if (j.better) saveExample(ctx, { question: `${L.card.title}\n${L.card.text}\n${L.card.question}`, teacher: String(j.better || ''), explanation: String(j.feedback || ''), student: `${L.decision} - ${L.reason}`, score: Number.isFinite(ts) ? clamp(ts, 0, 1) : L.score, teacherEngine: r.engine, studentEngine: L.engine || 'local', purpose: `${L.gifted ? 'gifted' : 'school'}:${L.field || L.subject}`, domain: domainOf(L), verified: Number.isFinite(ts) ? 'rubric' : null });
+    if (j.better) noteKept(S, L, saveExample(ctx, { question: `${L.card.title}\n${L.card.text}\n${L.card.question}`, teacher: String(j.better || ''), explanation: String(j.feedback || ''), student: `${L.decision} - ${L.reason}`, score: Number.isFinite(ts) ? clamp(ts, 0, 1) : L.score, teacherEngine: r.engine, studentEngine: L.engine || 'local', purpose: `${L.gifted ? 'gifted' : 'school'}:${L.field || L.subject}`, domain: domainOf(L), verified: Number.isFinite(ts) ? 'rubric' : null }));
   } else {
     const m = String(r.text).match(/^\W*([A-D])\b/i);
     const right = L.kind === 'mcq' ? L.item.correct : null;
@@ -919,7 +1024,7 @@ function applyTeacher(ctx: Ctx, entry: any) {
       addExample(S, exKey(L), { q: L.item.q, a: L.item.options[right], why });
       if (a && L.field && why) addNote(a, L.field, why);
     }
-    saveExample(ctx, { question: L.user, teacher: r.text, explanation: why, student: L.studentText, score: L.score, teacherEngine: r.engine, studentEngine: L.engine || 'local', purpose: `${L.gifted ? 'gifted' : 'school'}:${L.field || L.subject}`, domain: domainOf(L), answerKey: right != null ? LETTERS[right] : null });
+    noteKept(S, L, saveExample(ctx, { question: L.user, teacher: r.text, explanation: why, student: L.studentText || '', score: L.score, teacherEngine: r.engine, studentEngine: L.engine || 'local', purpose: `${L.gifted ? 'gifted' : 'school'}:${L.field || L.subject}`, domain: domainOf(L), answerKey: right != null ? LETTERS[right] : null }));
   }
 }
 
@@ -958,6 +1063,10 @@ export async function schoolTick(ctx: Ctx, busy: (id: string) => boolean = () =>
   }
   for (const [id, e] of [...teaching]) if (e.done) { teaching.delete(id); applyTeacher(ctx, e); }
   morningReport(ctx);
+  // the teachers' pace (behind the day's OpenRouter minimum or not), and teacher-only lessons while behind: these
+  // run whether or not the local brain is online
+  updatePace(ctx);
+  teacherOnlyTick(ctx, now);
   // new lessons: only with the local brain online; at night at the full rate, by day at the smaller one
   const night = nightOf(S);
   if (!localOnline()) { s.carry = 0; s.lastAt = now; return; }
@@ -1041,7 +1150,11 @@ export function schoolState(S: State) {
     summary = { at: Date.now(), n: s.stats.total, view: { avgSkill: Object.fromEntries(Object.entries(sums).map(([k, [t, c]]) => [k, round(t / c, 3)])), students, fields: byField, topStudents: top.slice(0, 5).map(([average, id, name]) => ({ id, name, average })) } };
   }
   return { lessonsToday: s.stats.today, lessons: s.stats.total, correct: s.stats.correct, teacherCalls: s.stats.teacherCalls, teacherAnswers: s.stats.teacherAnswers, localCalls: s.stats.localCalls,
-    choices: s.stats.choices || 0, fieldLessons: s.stats.fieldLessons || 0, coreShare: CORE_SHARE, inFlight: pending.size, gifted: giftedView(S), perMin: { day: DAY_PER_MIN, night: NIGHT_PER_MIN }, teacherShare: TEACHER_SHARE, cards: s.cards.length, examples: Object.fromEntries(Object.entries(s.examples).map(([k, v]: any) => [k, v.length])), ...summary.view };
+    choices: s.stats.choices || 0, fieldLessons: s.stats.fieldLessons || 0, coreShare: CORE_SHARE,
+    // the teachers' pacing for budget.train: the share of lessons with a teacher now, teacher-only lessons, data kept
+    teacher: { shareNow: pace.share, shareBase: TEACHER_SHARE, behind: pace.behind, planned: !!(pace as any).planned, // planned: brains.ts trainPlan() in use orShortUsd: round(pace.short, 4), concurrency: maxTeaching(),
+      teacherOnly: s.stats.teacherOnly || 0, teacherOnlyToday: s.stats.tday?.day === S.day ? s.stats.tday.teacherOnly || 0 : 0, teacherOnlyKept: s.stats.teacherOnlyKept || 0,
+      keptByField: Object.fromEntries(Object.entries(s.keptByField || {}).filter(([k]) => /^[a-z][a-z0-9_]{0,23}$/.test(k))) }, inFlight: pending.size, gifted: giftedView(S), perMin: { day: DAY_PER_MIN, night: NIGHT_PER_MIN }, teacherShare: TEACHER_SHARE, cards: s.cards.length, examples: Object.fromEntries(Object.entries(s.examples).map(([k, v]: any) => [k, v.length])), ...summary.view };
 }
 // the night part, for daily.night (kept for monitoring)
 export function nightView(S: State) {
@@ -1079,7 +1192,8 @@ export function schoolNow() {
   return { pending: [...pending.values()].map(L => lessonEntry(L.agent, L, null, L.at || Date.now())), recent: recentLessons.slice(), lastBy: (id: string) => lastLessonBy.get(id) || null };
 }
 // for tests: forget module state (a test may build several republics in one process)
-export function _resetSchool() { pending.clear(); teaching.clear(); soon.length = 0; recentLessons.length = 0; lastLessonBy.clear(); plan = { key: null, ids: [], i: 0 }; summary = { at: 0, n: -1, view: null }; giftedCache = { ref: null, map: new Map() }; }
+export const teacherPace = () => ({ ...pace, concurrency: maxTeaching() }); // budget.train and tests
+export function _resetSchool() { pending.clear(); teaching.clear(); soon.length = 0; Object.assign(pace, { behind: false, short: 0, minNow: 0, share: TEACHER_SHARE, teacherOnly: 0, allowedNow: 0 }); recentLessons.length = 0; lastLessonBy.clear(); plan = { key: null, ids: [], i: 0 }; summary = { at: 0, n: -1, view: null }; giftedCache = { ref: null, map: new Map() }; }
 export const _teacherPending = () => [...teaching.values()].filter(e => !e.done).length;
 export const _pending = () => [...pending.values()];
 export const promptFor = lessonPrompt; // the lesson's system prompt (tests: notes and worked examples in it)

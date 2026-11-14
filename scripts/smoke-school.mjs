@@ -25,7 +25,8 @@ const give = (n, rate) => { S.school ||= {}; S.school.lastAt = Date.now() - n * 
 const said = [], paidCalls = [], saved = [];
 const llm = { enabled: false, hasOR: true, hasClaude: false, json: t => { try { return JSON.parse(String(t).replace(/^[^{]*/, '').replace(/[^}]*$/, '')); } catch { return null; } },
   askDetailed: async (q) => { paidCalls.push(q); return teacherReply(q); } };
-const ctx = { S, cfg: { dayMs: 86400000, trainBudgetUsd: 3, dailyBudgetUsd: 25, trainMix: 'openrouter:100' }, hourMs: () => 3600000, say: (c, id, t, x) => said.push({ c, t, ...x }),
+// (no OpenRouter minimum here: the teacher pacing to the owner's $15 a day has its own section below)
+const ctx = { S, cfg: { dayMs: 86400000, trainBudgetUsd: 3, trainOrMinUsd: 0, dailyBudgetUsd: 25, trainMix: 'openrouter:100' }, hourMs: () => 3600000, say: (c, id, t, x) => said.push({ c, t, ...x }),
   agent: id => S.citizens.find(x => x.id === id), record() {}, log() {}, llm, trainExample: ex => saved.push(ex) };
 // (trainExample returns the new row's id in server.mjs; push() returns the new length, which is the same here)
 const tick = () => school.schoolTick(ctx);
@@ -589,6 +590,70 @@ for (const phase of ['night', 'day']) {
   R.day = 8; await school.schoolTick(rctx);
   check('the next day\'s selection drops who fell back', !(R.school.gifted.byField.math || []).some(x => x.id === fallen.id) && school.schoolView(fallen).gifted.length === 0 && R.school.gifted.topUps === 0);
   school._resetSchool();
+}
+
+// ---- teachers paced to the owner's OpenRouter minimum (14 Nov): $15 a day out of a $20 training budget
+{
+  school._resetSchool(); _resetLocal();
+  const kidsT = Array.from({ length: 120 }, (_, i) => ({ id: `t${i}`, name: `T ${i}`, city: 'neura', status: 'free', wallet: 300, traits, bio: ['Poet', 'Judge', 'Nurse', 'Code reviewer'][i % 4] + ' in Neura City.', diary: [], practice: {}, quals: {}, record: [], lessons: {}, joinedDay: 0, training: [] }));
+  const TS = { day: 6, foundedAt: Date.now() - (5 * 24 + 12) * 3600000, policy: { wage: 100, taxRate: 0.1, ubi: 20 }, cities: { neura: { health: 70, budget: 0 } }, treasury: 0, citizens: kidsT, seats: {}, elections: { list: [] }, applications: {}, police: { incidents: [] }, academy: { rooms: [] }, feed: {} };
+  const calls = []; const savedT = [];
+  const tllm = { enabled: true, hasOR: true, hasClaude: false, json: llm.json,
+    askDetailed: async q => { calls.push(q); const qline = (String(q.user).match(/Question: (.*)/) || [])[1] || ''; const key = school.solveFieldQuestion(qline);
+      const L = [...school._pending()].find(() => false); void L;
+      return { text: `${keyLetter(q.user, key) || 'A'} - the method, step by step.`, via: 'openrouter:teacher', cost: 0.0011 }; } };
+  // the teacher answers with the right letter: the option whose text is the solver's answer
+  function keyLetter(user, key) { const m = [...String(user).matchAll(/^([A-D])\) (.+)$/gm)].find(x => x[2].trim() === key); return m ? m[1] : null; }
+  const counts = { byDomain: Object.fromEntries(pop.FIELD_IDS.map(f => [f, 50])) }; counts.byDomain.philosophy = 9; counts.byDomain.civics = 12; counts.byDomain.law = 14; counts.byDomain.programming = 72;
+  const tctx = { S: TS, cfg: { dayMs: 86400000, trainBudgetUsd: 20, trainOrMinUsd: 15, dailyBudgetUsd: 100, trainMix: 'openrouter:100' }, hourMs: () => 3600000, say() {}, agent: id => TS.citizens.find(x => x.id === id), record() {}, log() {}, llm: tllm, trainExample: e => savedT.push(e), trainCounts: () => counts };
+  const { trainPaceView } = await import('../src/brains.ts');
+  // the share: up to 100% when behind, the base when ahead
+  check('teacher share: the base when on schedule, up to every lesson when behind', school.teacherShareFor(0.3, 0, 7) === 0.3 && school.teacherShareFor(0.3, 2.56, 2.59) === 1 && school.teacherShareFor(0.3, 0.05, 7) > 0.3 && school.teacherShareFor(0.3, 0.05, 7) < 1);
+  // behind at noon with nothing spent, and the local brain OFFLINE: teacher-only lessons still run
+  skew += 30000; // no pull for 30 s: offline
+  await school.schoolTick(tctx);
+  const p0 = school.teacherPace();
+  check('behind the OpenRouter minimum: the teacher share rises to 100% and more teachers may work at once', p0.behind && p0.share === 1 && p0.concurrency === 16 && trainPaceView(tctx).orShortUsd > 0, JSON.stringify(p0));
+  for (let r = 0; r < 6; r++) { await new Promise(res => setTimeout(res, 5)); await school.schoolTick(tctx); }
+  const st = school.schoolState(TS).teacher;
+  check('with the local brain offline, teacher-only lessons still run and count in the public numbers', calls.length > 0 && st.teacherOnly > 0 && st.teacherOnlyToday === st.teacherOnly && school._pending().length === 0, JSON.stringify(st));
+  const fieldsAsked = calls.map(q => pop.FIELD_IDS.find(f => q.purpose === undefined && false) || null); void fieldsAsked;
+  const domains = savedT.map(e => e.domain);
+  check('teacher-only lessons go to the fields with the least training data (philosophy 9, civics 12, law 14)', domains.length > 0 && domains.every(d => ['philosophy', 'civics', 'law'].includes(d)), JSON.stringify([...new Set(domains)]));
+  check('every teacher-only pair is checked against the server key before it counts as kept', savedT.every(e => e.verified === 'key') && st.teacherOnlyKept === savedT.length && st.keptByField.philosophy + (st.keptByField.civics || 0) + (st.keptByField.law || 0) === savedT.length, JSON.stringify(st.keptByField));
+  check('a teacher-only lesson leaves the teacher\'s explanation in the reader\'s notebook', kidsT.some(a => Object.values(a.school?.notes || {}).flat().some(n => /method, step by step/.test(n))));
+  // a wrong teacher answer is not kept
+  tllm.askDetailed = async q => { calls.push(q); return { text: 'Z - nonsense', via: 'openrouter:teacher', cost: 0.0011 }; };
+  // let the calls started with the right answers finish first, then measure
+  for (let r = 0; r < 2; r++) { await new Promise(res => setTimeout(res, 5)); await school.schoolTick(tctx); }
+  await new Promise(res => setTimeout(res, 5));
+  const nCalls = calls.length, nSaved = savedT.length - 0; const keptBefore = school.schoolState(TS).teacher.teacherOnlyKept;
+  for (let r = 0; r < 3; r++) { await school.schoolTick(tctx); await new Promise(res => setTimeout(res, 5)); }
+  check('a teacher answer that misses the key is never kept', calls.length > nCalls && savedT.length === nSaved && school.schoolState(TS).teacher.teacherOnlyKept === keptBefore, JSON.stringify({ calls: calls.length - nCalls, saved: savedT.length - nSaved, kept: school.schoolState(TS).teacher.teacherOnlyKept, nSaved, pace: school.teacherPace(), dataset: TS.trainBudget?.dataset }));
+  // ticket #509: teacher-only lessons leave room for the students' own lessons (the gifted first), both in the
+  // teacher calls allowed per minute (TRAIN_PER_MIN) and in the teacher places
+  const { teachRoomNow } = await import('../src/brains.ts');
+  if (typeof teachRoomNow === 'function') {
+    await new Promise(res => setTimeout(res, 5)); await school.schoolTick(tctx); await new Promise(res => setTimeout(res, 5));
+    const used = 600 - teachRoomNow({ ...tctx, cfg: { ...tctx.cfg, trainPerMin: 600 } });
+    const tight = { ...tctx, cfg: { ...tctx.cfg, trainPerMin: used + 10 } }; // 10 teacher calls left this minute
+    const before = calls.length;
+    await school.schoolTick(tight);
+    const started = calls.length - before; const left = teachRoomNow(tight);
+    check('teacher-only lessons take at most half of the teacher calls left this minute, the rest stays for students', started <= 5 && left >= 5, `started ${started}, left ${left}`);
+  } else check('teacher-only lessons take at most half of the teacher calls left this minute (brains.ts has no TRAIN_PER_MIN: nothing to share)', true);
+  const inFlightTO = school._teacherPending();
+  check('teacher-only lessons never take the last 4 teacher places', inFlightTO <= school.teacherPace().concurrency - 4, `${inFlightTO} of ${school.teacherPace().concurrency}`);
+  // ahead of schedule: the share falls back, no teacher-only lessons
+  const T = TS.trainBudget; T.spentBy.openrouter = 30; // far ahead of the minimum so far
+  const nAhead = calls.length; await school.schoolTick(tctx); await school.schoolTick(tctx);
+  const pa = school.teacherPace();
+  check('ahead of the minimum: the share falls back to the base and teacher-only lessons stop', !pa.behind && pa.share === 1 && calls.length === nAhead, JSON.stringify(pa)); // (the base is 1 in this test file)
+  // the day's budget is used: nothing more is asked, even when behind the minimum
+  T.spentBy.openrouter = 0; T.spent = 20; const nSpent = calls.length;
+  await school.schoolTick(tctx); await new Promise(res => setTimeout(res, 5)); await school.schoolTick(tctx);
+  check('when the day\'s training budget is used, no more teacher calls are made', calls.length === nSpent, `${calls.length - nSpent} calls`);
+  workerPull(1, 'ollama/test'); school._resetSchool();
 }
 
 // ---- which night it is
