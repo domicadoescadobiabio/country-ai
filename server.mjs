@@ -30,7 +30,7 @@ import { applyAmendments } from './src/constitution.mjs';
 import { requirement, TERMS, goalView } from './src/careers.ts';
 import { reputationOf } from './src/underworld.ts';
 import { poke, moodView, bondsView } from './src/feelings.ts';
-import { schoolView } from './src/school.ts';
+import { schoolView, teacherPace, schoolState } from './src/school.ts';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 // what is running (commit when known, fingerprint of the engine code, boot time): shown on /api/health
@@ -51,6 +51,8 @@ const CFG = {
   trainBudgetUsd: Math.max(0, Number(process.env.TRAIN_BUDGET_USD ?? 3)),
   // the least the OpenRouter teachers should get a day (in dollars, paced); Claude teaches only with what is left
   trainOrMinUsd: Math.max(0, Number(process.env.TRAIN_OR_MIN_USD ?? 15)),
+  // teacher calls a minute at most (they share LLM_PER_MIN with the government); unset = a quarter of LLM_PER_MIN
+  trainPerMin: process.env.TRAIN_PER_MIN ? clamp(Number(process.env.TRAIN_PER_MIN) || 30, 1, 600) : undefined,
   trainMix: (process.env.TRAIN_TEACHER_MIX || 'openrouter:70,claude:30').trim(),
   trainOrModel: (process.env.TRAIN_OR_MODEL || 'deepseek/deepseek-v4-pro-0813').trim(),
   trainClaudeModel: (process.env.TRAIN_CLAUDE_MODEL || 'claude-sonnet-5-5').trim(),
@@ -191,6 +193,9 @@ const ctx = {
   archiveBallots: (id, digest, list) => store.archiveBallots(id, digest, list),
   // the school's distillation set: called through saveExample() in src/brains.ts, which masks the text first
   trainExample: e => store.trainAdd(e, CFG.trainExamplesMax),
+  // examples kept per field of study ({ total, byDomain }, cached 30 s): the school sends teacher-only lessons to the
+  // fields with the least data first
+  trainCounts: () => trainCounts(),
   // time helpers: everything that happens "N times a day" is a rate per hour of republic time
   hourMs: () => CFG.dayMs / 24,
   hoursSince: ms => (Date.now() - ms) / (CFG.dayMs / 24),
@@ -274,8 +279,12 @@ function alignRepublicClock(now = Date.now()) {
 function clockView(now = Date.now()) {
   const info = tzInfo(now, CFG.tz); const p = tzParts(now, CFG.tz);
   const real = CFG.dayMs === 86400000;
+  // real days: the boundaries are local midnights of the zone (read from the zone itself, so they are right even in
+  // the seconds after a boot before the first step has aligned the anchor); the next one is the midnight of the date
+  // 30 h after today's (days are 23-25 h long)
+  const dayStart = real ? tzMidnight(now, CFG.tz) : S.foundedAt + (S.day - 1) * CFG.dayMs;
   return { ...info, localTime: `${String(p.h).padStart(2, '0')}:${String(p.min).padStart(2, '0')}`, localDate: `${p.y}-${String(p.m).padStart(2, '0')}-${String(p.d).padStart(2, '0')}`,
-    day: S.day, dayStartedAt: real ? tzMidnight(now, CFG.tz) : S.foundedAt + (S.day - 1) * CFG.dayMs, nextDayAt: S.foundedAt + S.day * CFG.dayMs };
+    day: S.day, dayStartedAt: dayStart, nextDayAt: real ? tzMidnight(dayStart + 30 * 3600000, CFG.tz) : S.foundedAt + S.day * CFG.dayMs };
 }
 
 // Census: one snapshot per hour of republic time, kept in state and sealed on the ledger,
@@ -360,6 +369,21 @@ function academyView() {
     current: rooms[0] ? view(rooms[0]) : null, rooms: rooms.map(view),
   };
 }
+// the share of lessons with a teacher right now, as the school paces it (null if the school has not paced yet)
+const schoolPaceShare = () => { try { const v = Number(teacherPace()?.share); return Number.isFinite(v) ? Math.round(v * 1000) / 1000 : null; } catch { return null; } };
+// the school's own teacher pacing (src/school.ts schoolState(S).teacher, with the live pace from teacherPace() for
+// any number it lacks): numbers and booleans only, field names checked
+function schoolPacing() {
+  let t = null, p = null;
+  try { t = schoolState(S)?.teacher || null; } catch { t = null; }
+  try { p = teacherPace() || null; } catch { p = null; }
+  if (!t && !p) return null;
+  const num = (...vs) => { for (const v of vs) { const n = Number(v); if (v != null && Number.isFinite(n)) return Math.round(n * 10000) / 10000; } return null; };
+  const kept = {};
+  for (const [k, v] of Object.entries(t?.keptByField || {})) if (/^[a-z][a-z0-9_]{0,23}$/.test(k) && Number.isFinite(Number(v))) kept[k] = Number(v);
+  return { shareNow: num(t?.shareNow, p?.share), shareBase: num(t?.shareBase), behind: !!(t?.behind ?? p?.behind), orShortUsd: num(t?.orShortUsd, p?.short), concurrency: num(t?.concurrency, p?.concurrency),
+    teacherOnly: num(t?.teacherOnly) ?? 0, teacherOnlyToday: num(t?.teacherOnlyToday) ?? 0, teacherOnlyKept: num(t?.teacherOnlyKept) ?? 0, keptByField: kept };
+}
 // examples kept per field of study (for one LoRA per field), counted at most every 30 s: /api/state is polled often
 let trainCountCache = { at: 0, v: { total: 0, byDomain: {} } };
 function trainCounts() {
@@ -376,6 +400,10 @@ function compactState() {
       train: { daily: T.daily, spent: Math.round(T.spent * 10000) / 10000, calls: T.calls, denied: T.denied, ...trainPaceView(ctx),
         spentBy: { openrouter: Math.round(T.spentBy.openrouter * 10000) / 10000, claude: Math.round(T.spentBy.claude * 10000) / 10000 },
         gifted: { calls: T.gifted.calls, spent: Math.round(T.gifted.spent * 10000) / 10000 }, yesterday: T.last || null,
+        // the school's own pacing toward the OpenRouter floor (src/school.ts): the share of lessons with a teacher now,
+        // and the lessons taught by a teacher alone (no local student) today
+        teacherShare: schoolPaceShare(), teacherOnly: S.school?.stats?.tday?.day === S.day ? Number(S.school.stats.tday.teacherOnly) || 0 : 0,
+        school: schoolPacing(), // the school's pacing in full (share now/base, behind, orShortUsd, concurrency, teacher-only counts, kept per field)
         examples: trainCounts().total, byDomain: trainCounts().byDomain, dataset: T.dataset || { kept: 0, unverified: 0, wrong: 0, duplicate: 0 } } } };
   for (const inst of INSTITUTIONS) Object.assign(out, inst.publicState?.(S) || {});
   return out;

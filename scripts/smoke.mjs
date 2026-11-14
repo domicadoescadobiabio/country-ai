@@ -299,9 +299,12 @@ try {
   const exBad = await fetch(BASE + '/api/admin/train/export?domain=..%2Fetc', { headers: { 'x-admin-token': TOKEN } });
   check('train export filters by field of study (?domain=math) and refuses a malformed one', exD.status === 200 && (await exD.text()).split('\n').filter(Boolean).every(l => JSON.parse(l).domain === 'math') && exBad.status === 400, `${exD.status} ${exBad.status}`);
   const stT = (await get('/api/state')).budget?.train;
+  const sp0 = stT?.school;
+  check('/api/state budget.train.school shows the school\'s teacher pacing (share now/base, behind, orShortUsd, concurrency, teacher-only counts, kept per field)', sp0 && typeof sp0.shareNow === 'number' && typeof sp0.shareBase === 'number' && typeof sp0.behind === 'boolean'
+    && typeof sp0.orShortUsd === 'number' && typeof sp0.concurrency === 'number' && ['teacherOnly', 'teacherOnlyToday', 'teacherOnlyKept'].every(k => typeof sp0[k] === 'number') && sp0.keptByField && typeof sp0.keptByField === 'object', JSON.stringify(sp0));
   check('/api/state budget.train shows the teachers\' budget, calls, denials, pacing, examples per field and the quality gate', stT && typeof stT.daily === 'number' && typeof stT.examples === 'number' && stT.calls && 'claude' in stT.calls
     && typeof stT.allowedNow === 'number' && typeof stT.inFlight === 'number' && typeof stT.spentBy?.openrouter === 'number' && typeof stT.spentBy?.claude === 'number'
-    && typeof stT.orShortUsd === 'number' && typeof stT.orMinUsd === 'number' && typeof stT.claudeCapNow === 'number' && typeof stT.gifted?.calls === 'number' && 'yesterday' in stT && stT.byDomain && typeof stT.byDomain === 'object' && ['kept', 'unverified', 'wrong', 'duplicate'].every(k => typeof stT.dataset?.[k] === 'number'), JSON.stringify(stT));
+    && typeof stT.orShortUsd === 'number' && typeof stT.orMinUsd === 'number' && typeof stT.teacherShare === 'number' && typeof stT.teacherOnly === 'number' && typeof stT.claudeCapNow === 'number' && typeof stT.gifted?.calls === 'number' && 'yesterday' in stT && stT.byDomain && typeof stT.byDomain === 'object' && ['kept', 'unverified', 'wrong', 'duplicate'].every(k => typeof stT.dataset?.[k] === 'number'), JSON.stringify(stT));
   // --- the live stream: `state` is small (< 30 KB) and rare (here SSE_STATE_MS 1.5 s; the ticks run every 50 ms),
   // while messages and decisions keep streaming as they happen; the page merges `state` over /api/state
   const sse = await new Promise(resolve => {

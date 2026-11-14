@@ -377,6 +377,19 @@ function pickTeacher(ctx, llm, gifted) {
   for (const who of order) if (ok(who) && (who === 'openrouter' || behind.claude > 0)) return who;
   return null;
 }
+// The school paces its teachers itself (src/school.ts: the teacher share and teacher-only lessons while OpenRouter is
+// behind trainPaceView().orShortUsd); here only the limits every teacher call must pass.
+// Teachers share LLM_PER_MIN with everyone (the leadership included): at most TRAIN_PER_MIN teacher calls a minute,
+// by default a quarter of LLM_PER_MIN (120 -> 30, about three times what $15 a day needs on average), so catching up
+// never crowds out the government. Without LLM_PER_MIN there is no shared quota to protect and no extra cap.
+const teachTimes: number[] = [];
+const trainPerMin = ctx => {
+  const own = Number(ctx.cfg?.trainPerMin); if (own > 0) return own; // the server clamps TRAIN_PER_MIN to 1..600
+  const all = Number(ctx.cfg?.llmPerMin); return all > 0 ? Math.max(1, Math.floor(all / 4)) : Infinity;
+};
+function teachRoom(ctx) { const now = Date.now(); while (teachTimes.length && now - teachTimes[0] > 60000) teachTimes.shift(); return Math.max(0, trainPerMin(ctx) - teachTimes.length); }
+// teacher calls left this minute (the school can size its batches with it)
+export const teachRoomNow = ctx => teachRoom(ctx);
 // gifted: true (or purpose 'gifted...'): a citizen of the talent programme; gets the OpenRouter teacher when it can,
 // and is counted apart in budget.train.gifted
 export async function teach(ctx, { system, user, maxTokens = 700, purpose = 'train', gifted = false } = {} as any) {
@@ -385,8 +398,10 @@ export async function teach(ctx, { system, user, maxTokens = 700, purpose = 'tra
   const T = trainBudgetState(ctx);
   const pur = cleanText(purpose, 30) || 'train';
   const isGifted = gifted === true || /^gifted\b/i.test(pur);
+  if (!teachRoom(ctx)) { T.denied++; return null; } // TRAIN_PER_MIN reached: the government keeps its share of LLM_PER_MIN
   const who = pickTeacher(ctx, llm, isGifted);
   if (!who) { T.denied++; return null; }
+  teachTimes.push(Date.now());
   const tokens = Math.max(64, Math.min(4000, Math.round(Number(maxTokens) || 700)));
   TRAIN_RUN.inFlight[who]++;
   let r;

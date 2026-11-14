@@ -87,7 +87,7 @@ try {
   // --- the school's teachers: teach() mixes providers by TRAIN_TEACHER_MIX, has its own paced budget inside the day's total
   check('/api/state publishes budget.train (spent, calls per provider, denied)', s.budget?.train && typeof s.budget.train.spent === 'number' && 'claude' in (s.budget.train.calls || {}) && 'openrouter' in s.budget.train.calls && typeof s.budget.train.denied === 'number', JSON.stringify(s.budget?.train));
   process.env.ANTHROPIC_BASE_URL = MOCK; // the SDK in this process talks to the same mock
-  const { teach, trainBudgetState, budgetState, workerPull, localStatus, saveExample, parseTeacherMix, _resetLocal, trainPaceView } = await import('../src/brains.ts');
+  const { teach, trainBudgetState, budgetState, workerPull, localStatus, saveExample, parseTeacherMix, _resetLocal, trainPaceView, teachRoomNow } = await import('../src/brains.ts');
   const { makeLLM } = await import('../src/llm.ts');
   const llmT = makeLLM({ anthropicKey: 'test-claude', orKey: 'test-or', orBase: MOCK, llmPerMin: 5000, claudeModel: 'claude-opus-5-5' }, () => {});
   const OR_T = 'deepseek/deepseek-v4-pro-0813', CL_T = 'claude-sonnet-5-5';
@@ -103,7 +103,8 @@ try {
     check('a failing OpenRouter model costs no Claude call: that official thinks offline', rb.text == null && (seen.openrouter[BROKEN] || 0) === orB + 1 && Object.values(seen.claude).reduce((t, n) => t + n, 0) === clB && llmT.usage.fallbacks === 0, JSON.stringify({ rb, or: (seen.openrouter[BROKEN] || 0) - orB }));
     check('errors are counted per model with the kind of failure', be?.errors === 1 && be.lastKind === 'http' && be.lastStatus === 404 && typeof be.lastAt === 'string', JSON.stringify(llmT.usage.errorsByModel));
   }
-  const tctx = (cfg = {}, S = {}) => ({ S: { day: 1, foundedAt: Date.now() - 3600000, ...S }, cfg: { dayMs: 86400000, dailyBudgetUsd: 25, trainBudgetUsd: 3, trainOrModel: OR_T, trainClaudeModel: CL_T, ...cfg }, llm: llmT });
+  // trainPerMin is lifted here (these checks run hundreds of lessons in a minute); its own check is further down
+  const tctx = (cfg = {}, S = {}) => ({ S: { day: 1, foundedAt: Date.now() - 3600000, ...S }, cfg: { dayMs: 86400000, dailyBudgetUsd: 25, trainBudgetUsd: 3, trainOrModel: OR_T, trainClaudeModel: CL_T, trainPerMin: 1e6, ...cfg }, llm: llmT });
   const lesson = { system: 'You are a teacher.', user: 'Explain quorum in one line.' };
   const orBefore = seen.openrouter[OR_T] || 0, opusBefore = seen.claude['claude-opus-5-5'] || 0;
   const c1 = tctx({ trainMix: 'openrouter:100' }); const r1 = []; for (let i = 0; i < 6; i++) r1.push(await teach(c1, lesson));
@@ -135,6 +136,16 @@ try {
   const g1 = await teach(cg, { ...lesson, gifted: true }), g2 = await teach(cg, { ...lesson, purpose: 'gifted:math' }), g3 = await teach(cg, lesson);
   const Tg = trainBudgetState(cg);
   check('teach: gifted citizens (gifted: true or purpose gifted...) get the OpenRouter teacher, counted in budget.train.gifted', g1?.teacher === 'openrouter' && g1.gifted && g2?.teacher === 'openrouter' && g3?.teacher === 'claude' && Tg.gifted.calls === 2 && Tg.gifted.spent > 0, JSON.stringify({ g1: g1?.teacher, g2: g2?.teacher, g3: g3?.teacher, gifted: Tg.gifted }));
+  // TRAIN_PER_MIN: teachers share LLM_PER_MIN with the government (the school's catching up included), so every teacher
+  // call stops at the teachers' own per-minute cap; by default a quarter of LLM_PER_MIN, none without it
+  const pp = () => tctx({ trainMix: 'openrouter:90,claude:10', trainBudgetUsd: 20, trainOrMinUsd: 15 }, half);
+  for (let i = 0; i < 3; i++) await teach(pp(), lesson); // at least 3 teacher calls in the last minute
+  const pCap = tctx({ trainMix: 'openrouter:100', trainBudgetUsd: 20, trainOrMinUsd: 15, trainPerMin: 3 }, half);
+  const capRoom = teachRoomNow(pCap), capTeach = await teach(pCap, lesson);
+  const pQuarter = tctx({ trainMix: 'openrouter:100', trainBudgetUsd: 20, trainOrMinUsd: 15, trainPerMin: undefined, llmPerMin: 8 }, half); // a quarter of 8 = 2
+  const pFree = tctx({ trainMix: 'openrouter:100', trainBudgetUsd: 20, trainOrMinUsd: 15, trainPerMin: undefined, llmPerMin: undefined }, half);
+  check('pacing: at TRAIN_PER_MIN teacher calls a minute no more are made (the government keeps its LLM_PER_MIN)', capRoom === 0 && capTeach === null && trainBudgetState(pCap).denied >= 1, JSON.stringify({ capRoom, capTeach }));
+  check('pacing: by default the teachers get a quarter of LLM_PER_MIN, and no extra cap without LLM_PER_MIN', teachRoomNow(pQuarter) === 0 && (await teach(pQuarter, lesson)) === null && teachRoomNow(pFree) === Infinity, JSON.stringify({ quarter: teachRoomNow(pQuarter), free: teachRoomNow(pFree) }));
   // a new republic day: yesterday's OpenRouter shortfall is kept for the record, today's counters start at zero
   c3b.S.day = 2; const Tn = trainBudgetState(c3b);
   check('budget: at the day\'s end the OpenRouter shortfall against TRAIN_OR_MIN_USD is kept as yesterday.orShortUsd', Tn.last?.day === 1 && Math.abs(Tn.last.orShortUsd - (0.15 - by3b.openrouter)) < 0.0001 && Tn.spentBy.openrouter === 0 && Tn.spent === 0, JSON.stringify(Tn.last));
