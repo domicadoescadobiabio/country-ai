@@ -72,7 +72,7 @@ export class People {
       if (!Array.isArray(row)) continue;
       const p = this.byId.get(row[0]); if (!p) continue;
       let where = typeof row[1] === 'string' ? row[1] : 'home'; const act = typeof row[2] === 'string' ? row[2].slice(0, 40) : null;
-      if (where === 'unknown') where = act === 'sleeping' ? 'asleep' : 'home'; // asleep may arrive as unknown (cleaned)
+      if (where === 'unknown') where = 'home'; // not known: counted at home (asleep now arrives as itself)
       const was = p.b;
       p.where = where; p.act = act; p.at = city; p.seen = true; seen.add(p.id);
       p.b = this.placeOf(p);

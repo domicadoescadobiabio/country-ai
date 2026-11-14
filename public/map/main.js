@@ -384,7 +384,10 @@ function refreshOpenCard() { if (st.selected && !st.agent && !$('#info').hidden 
 function renderPeopleHud() {
   const c = people?.counts; const box = $('#peopleHud'); if (!c) { box.hidden = true; return; }
   box.hidden = false; const est = people.real ? '' : ' (estimate)';
-  $('#peopleCounts').textContent = `${c.total.toLocaleString('en-US')} citizens${c.students ? ` (${c.students.toLocaleString('en-US')} students)` : ''} · outside ${c.out.toLocaleString('en-US')} · at home ${c.home.toLocaleString('en-US')} · asleep ${c.asleep.toLocaleString('en-US')} · at work/school ${c.work.toLocaleString('en-US')} · held ${c.prison}${est}`;
+  // students: counted from the loaded citizens (the same data as the badges); the server's stats.students when
+  // the list did not say
+  const stu = c.students || (Number.isFinite(st.state?.stats?.students) ? st.state.stats.students : 0);
+  $('#peopleCounts').textContent = `${c.total.toLocaleString('en-US')} citizens${stu ? ` (${stu.toLocaleString('en-US')} students)` : ''} · outside ${c.out.toLocaleString('en-US')} · at home ${c.home.toLocaleString('en-US')} · asleep ${c.asleep.toLocaleString('en-US')} · at work/school ${c.work.toLocaleString('en-US')} · held ${c.prison}${est}`;
   const drawn = agents.list.filter(a => a.person).length;
   $('#peopleCounts').title = `${drawn.toLocaleString('en-US')} of the ${c.out.toLocaleString('en-US')} outside are drawn as robots (nearest to the camera first)`;
 }

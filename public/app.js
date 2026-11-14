@@ -363,7 +363,7 @@ const PANELS = {
     const summary = h('div', { class: 'card' }, h('h4', { text: `${(pop.total || st.citizens.length).toLocaleString('en')} citizens in ${Object.keys(pop.byCity || {}).length} cities` }),
       kv([['By city', Object.entries(pop.byCity || {}).map(([c, n]) => `${cityName(c)} ${n}`).join(' · ')], ['Status', Object.entries(pop.byStatus || {}).map(([k, n]) => `${k} ${n}`).join(' · ')],
         ['Path', Object.entries(pop.byFaction || {}).map(([k, n]) => `${k} ${n}`).join(' · ')],
-        ...(typeof pop.students === 'number' ? [['University students', `${pop.students.toLocaleString('en')} (they study, they do not work)`]] : []), ['Thinks with', Object.entries(pop.byFamily || {}).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k, n]) => `${k} ${n}`).join(' · ')],
+        ...((n => (typeof n === 'number' ? [['University students', `${n.toLocaleString('en')} (they study, they do not work)`]] : []))(st.stats?.students ?? pop.students)), ['Thinks with', Object.entries(pop.byFamily || {}).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k, n]) => `${k} ${n}`).join(' · ')],
         ['Wallets', pop.wallets ? `median ${cai(pop.wallets.median)}, max ${cai(pop.wallets.max)}` : '-']]));
     const input = h('input', { type: 'search', placeholder: 'Search 10,000 citizens by name', value: st.cq.q || '', onchange: e => { st.cq = { ...st.cq, q: e.target.value.trim(), page: 1 }; searchCitizens(); } });
     const city = h('select', { onchange: e => { st.cq = { ...st.cq, city: e.target.value, page: 1 }; searchCitizens(); } }, h('option', { value: '', text: 'all cities' }), ...Object.keys(pop.byCity || {}).map(c => h('option', { value: c, text: cityName(c), selected: st.cq.city === c })));
