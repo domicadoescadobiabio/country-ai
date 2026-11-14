@@ -12,7 +12,8 @@
 //                     short server-written lesson go into that official's next prompts
 //   work plans        leaders write a short plan every 3 days, shown in their prompts and in #palace
 // Laws run by themselves: the basic income set by law is paid every day from the treasury (Art. 4), not by order.
-import { ROLES, loadExpertise, topFieldsText, giftedText } from './roles.mjs';
+import { ROLES, loadExpertise, topFieldsText, giftedText, civilOnDuty } from './roles.mjs';
+import { onDuty, siteFor, sitesOf, capitalOf, postingOf, standInGuard, dutyShift, CORPS, DUTY_PLAN } from './command.ts';
 import { constitutionText } from './constitution.mjs';
 import { pick, chance, cai, round, cleanText, clamp, shuffle, citizenById } from './util.ts';
 import { think } from './brains.ts';
@@ -393,10 +394,21 @@ const lastOffence = (a: Citizen) => { const r = [...(a.record || [])].reverse().
 const inCity = (city: string | null) => (a: Citizen) => !city || a.city === city;
 const lastDecision = (S: State, pred: (d: any) => boolean) => [...(S.decisions || [])].reverse().find(pred) || null;
 
+// the guards and staff on the duty roster (src/command.ts) on shift now, as occupant rows
+const dutyRows = (S: State, type: string, site: string | null, unit: string | null, now: number) => onDuty(S, type, site, unit, now)
+  .map(x => occ(S, x.a, x.p.role, x.doing, `${CORPS[x.p.corps]}, ${x.p.shift} shift${x.unit ? `, ${x.unit}` : ''}${x.standIn ? ' (standing in)' : ''}`, x.p.since ?? null));
+const ACADEMIES = ['academy', 'police_academy', 'military_academy'];
+
 export function placeView(S: State, type: string, city: string | null = null, q: any = {}) {
   if (!PLACE_TYPES.includes(type)) return null;
-  const c = city && S.cities && Object.hasOwn(S.cities, city) ? city : null;
-  let occupants = [], board: any = {}, title = '';
+  let c = city && S.cities && Object.hasOwn(S.cities, city) ? city : null;
+  // a building that stands only in some cities (the national ones in the capital): the view is of that building
+  const fixed = Object.hasOwn(DUTY_PLAN, type) || ACADEMIES.includes(type);
+  if (c && fixed) c = siteFor(S, type, c);
+  const site = fixed ? siteFor(S, type, c) : c;
+  const now = typeof q?.now === 'number' && Number.isFinite(q.now) ? q.now : Date.now(); // tests pick the shift
+  const posted = (a: Citizen) => !c || postingOf(S, a) === c;
+  let occupants = [], board: any = {}, title = '', staff = [];
   const day = S.day;
   if (type === 'parliament') {
     title = 'The Council';
@@ -426,6 +438,7 @@ export function placeView(S: State, type: string, city: string | null = null, q:
       occupants.push(occ(S, m, `Minister (${p})`, d ? (d.day === day ? `acted today: ${d.chosen}` : `last act day ${d.day}: ${d.chosen}`) : 'no act yet', d ? d.outcome : '', m.sworn?.day ?? null));
     }
     board = { portfolio: port, acts: occupants.map(o => ({ minister: o.name, act: o.activity, outcome: o.detail })) };
+    staff = dutyRows(S, type, site, port, now);
   } else if (type === 'const_court' || type === 'court') {
     title = type === 'const_court' ? 'The Constitutional Court' : 'Court';
     const k = S.court || { slots: [], cases: [] };
@@ -438,7 +451,10 @@ export function placeView(S: State, type: string, city: string | null = null, q:
   } else if (type === 'prison' || type === 'jail') {
     title = type === 'prison' ? 'Prison' : 'Jail (awaiting trial)';
     const status = type === 'prison' ? 'jailed' : 'detained';
-    const held = S.citizens.filter(a => a.status === status && inCity(c)(a));
+    // a prisoner serves in their own city's prison, or the capital's when their city has none
+    const prisons = sitesOf(S, 'prison'), cap = capitalOf(S);
+    const prisonOf = (a: Citizen) => (prisons.includes(a.city) ? a.city : cap);
+    const held = S.citizens.filter(a => a.status === status && (type === 'prison' ? !c || prisonOf(a) === c : inCity(c)(a)));
     occupants = held.map(a => {
       const o = lastOffence(a);
       return type === 'prison'
@@ -448,7 +464,8 @@ export function placeView(S: State, type: string, city: string | null = null, q:
     board = { held: held.length, maxJailDays: 3, maxDetentionDays: 3 };
   } else if (type === 'police_hq' || type === 'police_station') {
     title = type === 'police_hq' ? 'Police Headquarters' : 'Police Station';
-    const force = [...seated(S, 'police_chief'), ...seated(S, 'police')].filter(type === 'police_station' ? inCity(c) : () => true);
+    // the Chief at headquarters; each officer at the station of the city they are posted to (src/command.ts)
+    const force = type === 'police_hq' ? seated(S, 'police_chief') : seated(S, 'police').filter(posted);
     occupants = force.map(a => occ(S, a, a.office === 'police_chief' ? 'Chief of Police' : `Officer (${a.rank || 'officer'})`, a.status === 'free' ? 'on duty' : a.status, '', a.sworn?.day ?? null));
     for (const a of S.citizens.filter(x => x.status === 'detained' && inCity(c)(x))) occupants.push(occ(S, a, 'Arrested', 'held for trial', `detained day ${a.detainedDay ?? '-'}`, a.detainedDay ?? null));
     const inc = (S.police?.incidents || []).filter(i => i.status !== 'hidden');
@@ -463,7 +480,7 @@ export function placeView(S: State, type: string, city: string | null = null, q:
     board = { rooms: rooms.length, graduates: S.academy?.graduates || 0, failures: S.academy?.failures || 0, ruleQuestions: S.academy?.rules || { asked: 0, right: 0 }, drills: S.training?.drills || 0 };
   } else if (type === 'military_hq' || type === 'army_base' || type === 'border_post') {
     title = { military_hq: 'Military Headquarters', army_base: 'Army Base', border_post: 'Border Post' }[type];
-    const force = [...seated(S, 'military_chief'), ...seated(S, 'military')].filter(type === 'military_hq' ? () => true : inCity(c));
+    const force = type === 'military_hq' ? seated(S, 'military_chief') : seated(S, 'military').filter(posted);
     occupants = force.map(a => occ(S, a, a.office === 'military_chief' ? 'Commander of the Military' : `Soldier (${a.rank || 'officer'})`, a.status === 'free' ? (type === 'border_post' ? 'guarding the gate' : 'on duty') : a.status, '', a.sworn?.day ?? null));
     // the gate's log without the visitors' words: what kind, what was decided, under which rule, by whom
     board = { level: S.policy?.borderLevel ?? 2, alert: (S.military?.alertUntil ?? -1) >= day, blocked: S.military?.blocked || 0, admitted: S.military?.admitted || 0, raids: S.military?.raids || 0, recent: (S.military?.log || []).slice(-8).map(l => ({ kind: l.kind, verdict: l.verdict, rule: l.rule || null, by: who(S, l.by)?.name || null, day: l.day })) };
@@ -486,8 +503,14 @@ export function placeView(S: State, type: string, city: string | null = null, q:
     if (mayor) occupants.push(occ(S, mayor, 'Mayor', k.lastDecisionDay === day ? 'decided the budget today' : 'at the desk', d ? d.outcome : '', mayor.sworn?.day ?? null));
     board = k ? { city: c, budget: Math.round(k.budget || 0), health: k.health ?? null, spent: Math.round(k.spent || 0), lastDecisionDay: k.lastDecisionDay ?? null, lastOutcome: d ? short(d.outcome, 140) : null } : { cities: Object.keys(S.cities || {}) };
   }
-  const more = Math.max(0, occupants.length - MAX_OCC);
-  return { type, city: c, title, updatedAt: Date.now(), occupants: occupants.slice(0, MAX_OCC), board, more };
+  // who keeps the building on this shift: the duty roster, or the people's staff at the academies
+  if (type !== 'ministry') staff = Object.hasOwn(DUTY_PLAN, type) ? dutyRows(S, type, site, null, now) : ACADEMIES.includes(type) ? civilOnDuty(S, type, site, now).slice(0, 20) : [];
+  if (!staff.length && ACADEMIES.includes(type)) { const g = standInGuard(S, type, site, now); if (g) staff = [occ(S, g.a, g.p.role, g.doing, `${g.p.shift} shift (standing in)`, g.p.since)]; }
+  board.onDuty = { shift: dutyShift(S, now), staff: staff.length };
+  // the staff always fit: officials and the held fill the rest, the cut is counted in "more"
+  const room = Math.max(0, MAX_OCC - staff.length);
+  const more = Math.max(0, occupants.length - room);
+  return { type, city: c, title, updatedAt: Date.now(), occupants: [...occupants.slice(0, room), ...staff].slice(0, MAX_OCC), board, more };
 }
 
 export const institution = {

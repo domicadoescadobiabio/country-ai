@@ -41,8 +41,30 @@ export async function loadExpertise() {
         fieldQuestion: id => (typeof school.fieldQuestion === 'function' ? school.fieldQuestion(id, 3) : bankQuestion(school.BANKS?.[id], 3)),
       };
     } catch { EXPERTISE = false; }
+    // the people's civil staff (src/daily.ts, Rakyat): who already holds a post, and who is on duty in their
+    // buildings (the academies); optional, the duty roster works without it
+    if (EXPERTISE) try {
+      const daily = await import('./daily.ts');
+      if (typeof daily.workplaceOf === 'function') EXPERTISE.workplace = (S, a) => daily.workplaceOf(S, a);
+      if (typeof daily.staffOnDuty === 'function') EXPERTISE.onDuty = (S, type, city, now) => daily.staffOnDuty(S, type, city, now);
+    } catch { /* no civil staff module */ }
   }
   return EXPERTISE || null;
+}
+// a citizen's level (0-5) in one field, 0 when unknown
+export function fieldLevelOf(a, id) {
+  if (!EXPERTISE || typeof EXPERTISE.fieldLevel !== 'function' || !a) return 0;
+  try { return Number(EXPERTISE.fieldLevel(a, id)) || 0; } catch { return 0; }
+}
+// the people's civil post a citizen already holds today (hospital, school, academy...), or null
+export function civilPostOf(S, a) {
+  if (!EXPERTISE || typeof EXPERTISE.workplace !== 'function' || !a) return null;
+  try { return EXPERTISE.workplace(S, a) || null; } catch { return null; }
+}
+// the people's civil staff on duty now in one building (occupant rows), [] when unknown
+export function civilOnDuty(S, type, city, now) {
+  if (!EXPERTISE || typeof EXPERTISE.onDuty !== 'function' || !city) return [];
+  try { const r = EXPERTISE.onDuty(S, type, city, now); return Array.isArray(r) ? r : []; } catch { return []; }
 }
 export function setExpertiseSource(mod) { EXPERTISE = mod || false; } // tests: a stand-in, or none
 export function resetExpertise() { EXPERTISE = null; } // tests: load the real modules again on the next loadExpertise()

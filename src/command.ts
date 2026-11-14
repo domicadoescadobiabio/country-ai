@@ -10,7 +10,7 @@
 //   Promotions: every 10 days per force, the Merit Board ranks members with enough time in rank;
 //     quota 1, fixed before it sits. Ranks: Recruit -> Officer -> Senior Officer.
 // Every step: decision log (#decisions) + national ledger.
-import { ROLES, OFFICE_FIELDS, fieldsText, topFieldsText, giftedText, giftedFor } from './roles.mjs';
+import { ROLES, OFFICE_FIELDS, PORTFOLIO_FIELDS, fieldsText, topFieldsText, giftedText, giftedFor, fieldLevelOf, civilPostOf, loadExpertise } from './roles.mjs';
 import { think } from './brains.ts';
 import { qualifiedPool } from './academy.ts';
 import { constitutionText } from './constitution.mjs';
@@ -322,17 +322,222 @@ function migrate(ctx: Ctx) {
   }
 }
 
+// ---------------------------------------------------------------- duty roster: no important building stands empty (owner, 14 Nov)
+// Every government building is staffed around the clock, a day shift (06:00-20:00 republic time) and a night
+// shift, by real citizens with a real duty. Three corps, none with a seat or any power beyond the post (they guard,
+// keep the door and report; they never arrest, try or sentence):
+//   Auxiliary police (desk, duty, cells, wardens, bailiffs, building guards): appointed by the Chief of Police
+//   Reserve guard (gates, duty rooms, the President's bodyguards): appointed by the Commander of the Military
+//   Civil staff (clerks, tellers): appointed by the President
+// An acting head cannot appoint (Art. 10): the President signs for a vacant head; with no President either, the
+// state fills the post by the same published rule. Chosen from ordinary citizens of the building's city: free, an
+// adult, no office, no own brain, not the underworld, no unpardoned conviction, no civil post of the people's
+// (src/daily.ts); the best level in the post's fields first (security and sport for a guard), then a fixed draw.
+// One AI citizen stands for 25 people (map catalog REP), so one desk officer by day is a desk of 25. No new money:
+// a post holder keeps the wage they already earn. Posts are kept day to day; a holder who is arrested, jailed,
+// takes an office or joins the underworld is dismissed at once and the post filled again, so no shift is empty.
+type DutyPost = { corps: 'police' | 'military' | 'civil'; role: string; fields: string[]; day: number; night: number; doing: [string, string] };
+const P = (corps: DutyPost['corps'], role: string, fields: string[], day: number, night: number, doing: [string, string]): DutyPost => ({ corps, role, fields, day, night, doing });
+const GUARD = ['security', 'sport'];
+const DOOR: [string, string] = ['checking visitors at the door', 'night round of the building'];
+export const DUTY_PLAN: Record<string, DutyPost[]> = {
+  police_hq: [P('police', 'Desk officer', ['security', 'law'], 1, 1, ['taking reports at the front desk', 'answering the night line']), P('police', 'Duty officer', ['security', 'management'], 1, 1, ['keeping the duty log', 'running the night watch']), P('police', 'Cell guard', GUARD, 1, 1, ['watching the cells', 'night round of the cells'])],
+  police_station: [P('police', 'Desk officer', ['security', 'law'], 1, 1, ['taking reports at the front desk', 'answering the night line']), P('police', 'Cell guard', GUARD, 1, 1, ['watching the cells', 'night round of the cells'])],
+  jail: [P('police', 'Warden', GUARD, 1, 1, ['guarding the remand cells', 'night count of the detainees'])],
+  prison: [P('police', 'Warden', GUARD, 2, 2, ['guarding the cell blocks', 'night count of the prisoners'])],
+  army_base: [P('military', 'Gate guard', GUARD, 2, 2, ['checking passes at the gate', 'guarding the gate at night']), P('military', 'Duty officer', ['security', 'logistics'], 1, 1, ['keeping the armoury log', 'night duty at the armoury'])],
+  military_hq: [P('military', 'Gate guard', GUARD, 1, 1, ['checking passes at the gate', 'guarding the gate at night']), P('military', 'Duty officer', ['security', 'management'], 1, 1, ['manning the operations room', 'night watch in the operations room'])],
+  border_post: [P('military', 'Gate guard', GUARD, 2, 2, ['screening arrivals at the barrier', 'watching the border at night'])],
+  palace: [P('military', 'Bodyguard', GUARD, 2, 2, ['guarding the President', 'guarding the residence at night']), P('civil', 'Palace clerk', ['management', 'language'], 1, 0, ['sorting the President\'s mail', ''])],
+  vp_office: [P('military', 'Bodyguard', GUARD, 1, 1, ['guarding the Vice President', 'guarding the office at night'])],
+  parliament: [P('police', 'Guard', GUARD, 1, 1, ['checking visitors at the door', 'night round of the chamber']), P('civil', 'Council clerk', ['law', 'language'], 1, 0, ['keeping the minutes', ''])],
+  const_court: [P('police', 'Bailiff', ['law', 'security'], 1, 0, ['keeping order in the courtroom', '']), P('police', 'Night guard', GUARD, 0, 1, ['', 'guarding the court at night']), P('civil', 'Court clerk', ['law', 'language'], 1, 0, ['filing the case papers', ''])],
+  court: [P('police', 'Bailiff', ['law', 'security'], 1, 0, ['keeping order in the courtroom', '']), P('police', 'Night guard', GUARD, 0, 1, ['', 'guarding the court at night'])],
+  central_bank: [P('police', 'Vault guard', GUARD, 1, 1, ['guarding the vault', 'guarding the vault at night']), P('civil', 'Teller', ['accounting', 'economics'], 1, 0, ['counting the day\'s payments', ''])],
+  election_comm: [P('police', 'Guard', GUARD, 1, 1, ['guarding the ballot room', 'guarding the ballot room at night']), P('civil', 'Election clerk', ['math', 'accounting'], 1, 0, ['checking the voter rolls', ''])],
+  ministry: [P('police', 'Guard', GUARD, 1, 1, DOOR), P('civil', 'Ministry clerk', ['management', 'accounting'], 1, 0, ['processing the minister\'s files', ''])],
+  city_hall: [P('police', 'Guard', GUARD, 1, 1, DOOR), P('civil', 'City clerk', ['management', 'accounting'], 1, 0, ['serving citizens at the counter', ''])],
+};
+export const CORPS = { police: 'Auxiliary police', military: 'Reserve guard', civil: 'Civil staff' };
+const CORPS_HEAD = { police: 'police_chief', military: 'military_chief', civil: 'president' };
+// where each building stands (the map's city plan, public/map/gen.js): the town-square four in every city, the
+// national buildings in the capital, a second prison in the industry city, a second border post in the port city
+const EVERY_CITY = ['city_hall', 'police_station', 'court', 'jail'];
+const EXTRA_SITES: Record<string, string[]> = { prison: ['neura', 'kernelfalls'], border_post: ['neura', 'portoken'], police_academy: ['datahaven'] };
+// soldiers serve where the forces have a base: the capital (army base, border post), the port (border post, naval
+// base) and the resort (air base); police serve in every city's station
+const MILITARY_CITIES = ['neura', 'portoken', 'lumenbay'];
+export function capitalOf(S: State) { const ids = Object.keys(S.cities || {}); return ids.includes('neura') ? 'neura' : ids[0] || null; }
+export function sitesOf(S: State, type: string) {
+  const ids = Object.keys(S.cities || {});
+  if (EVERY_CITY.includes(type)) return ids;
+  const extra = (EXTRA_SITES[type] || []).filter(c => ids.includes(c));
+  if (extra.length) return extra;
+  const cap = capitalOf(S); return cap ? [cap] : [];
+}
+// the building a view of (type, city) shows: that city's own, or the one that stands elsewhere (the national ones)
+export function siteFor(S: State, type: string, city: string | null) { const s = sitesOf(S, type); return city && s.includes(city) ? city : s[0] || null; }
+
+let DAY_MS = 86400000; // taken from the server's config on every tick
+export function dutyShift(S: State, now = Date.now()): 'day' | 'night' {
+  const h = ((((now - (S.foundedAt || now)) % DAY_MS) + DAY_MS) % DAY_MS) / DAY_MS * 24;
+  return h >= 20 || h < 6 ? 'night' : 'day';
+}
+const convicted = (a: Citizen) => (a.record || []).some(r => /convicted of/.test(r) && !/PARDONED/.test(r));
+export const canGuard = (a: Citizen) => !!a && a.status === 'free' && !a.office && !a.brain && (a.faction || 'civilian') !== 'underworld' && !(Number(a.age) < 18) && !convicted(a);
+const unfitWhy = (a: Citizen) => !a ? 'left the republic' : a.status !== 'free' ? a.status : a.office ? 'took an office' : a.brain ? 'has an own brain' : (a.faction || 'civilian') === 'underworld' ? 'joined the underworld' : convicted(a) ? 'convicted' : 'unfit';
+const hashOf = (s: string) => { let h = 2166136261; for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619); return h >>> 0; };
+const D = (S: State) => { const cmd = C(S); cmd.duty ||= { posts: {}, hired: 0, dismissed: 0 }; cmd.duty.posts ||= {}; cmd.postings ||= {}; return cmd.duty; };
+const unitsOf = (type: string) => (type === 'ministry' ? Object.keys(PORTFOLIO_FIELDS) : ['']);
+// every post the plan wants now: key "type|city|unit|post#|shift|n"
+export function dutySlots(S: State) {
+  const out = [];
+  for (const [type, posts] of Object.entries(DUTY_PLAN)) for (const city of sitesOf(S, type)) for (const unit of unitsOf(type))
+    posts.forEach((post, i) => { for (const shift of ['day', 'night'] as const) for (let n = 0; n < post[shift]; n++) out.push({ key: `${type}|${city}|${unit}|${i}|${shift}|${n}`, type, city, unit, i, shift, post }); });
+  return out;
+}
+const authorityFor = (S: State, corps: string) => {
+  const ok = (id: string) => { const a = id && citizenById(S, id); return a && a.status === 'free' ? a : null; };
+  return ok(S.seats?.[CORPS_HEAD[corps]]?.[0]) || ok(S.seats?.president?.[0]) || null;
+};
+
+// release unfit holders and fill every empty post; cheap when nothing changed (runs every tick)
+export function fillDuty(ctx: Ctx) {
+  const { S } = ctx; const d = D(S); const slots = dutySlots(S); const want = new Set(slots.map(s => s.key));
+  const out: Record<string, { hired: any[]; dismissed: any[] }> = {};
+  const note = (corps: string) => (out[corps] ||= { hired: [], dismissed: [] });
+  for (const [k, p] of Object.entries<any>(d.posts)) {
+    if (!want.has(k)) { delete d.posts[k]; continue; } // the plan no longer has this post
+    const a = citizenById(S, p.id);
+    if (canGuard(a) && a.city === p.city) continue;
+    note(p.corps).dismissed.push({ id: p.id, name: a?.name || p.id, role: p.role, type: p.type, city: p.city, why: a && a.city !== p.city ? 'moved city' : unfitWhy(a) });
+    delete d.posts[k];
+  }
+  const vacant = slots.filter(s => !d.posts[s.key]);
+  if (vacant.length) {
+    const holding = new Set(Object.values<any>(d.posts).map(p => p.id));
+    const byCity = new Map<string, Citizen[]>();
+    for (const a of S.citizens || []) if (canGuard(a)) (byCity.get(a.city) || byCity.set(a.city, []).get(a.city)).push(a);
+    const lvl = new Map<string, number>();
+    const score = (a: Citizen, fields: string[]) => { let m = 0; for (const f of fields) { const k = `${a.id}|${f}`; let v = lvl.get(k); if (v == null) { v = fieldLevelOf(a, f); lvl.set(k, v); } if (v > m) m = v; } return m; };
+    for (const s of vacant) {
+      const all = byCity.get(s.city) || [];
+      // free hands first; a small town (or a test) lets a civil-post holder, then a second duty post, cover it
+      let pool = all.filter(a => !holding.has(a.id) && !civilPostOf(S, a));
+      if (!pool.length) pool = all.filter(a => !holding.has(a.id));
+      if (!pool.length) pool = all;
+      if (!pool.length) continue; // nobody fit in the city: the view stands someone in (see onDuty)
+      let best = pool[0], bs = -1, bh = 0;
+      for (const a of pool) { const v = score(a, s.post.fields), h = hashOf(`${s.key}|${a.id}`); if (v > bs || (v === bs && h < bh)) { best = a; bs = v; bh = h; } }
+      const by = authorityFor(S, s.post.corps);
+      d.posts[s.key] = { id: best.id, type: s.type, city: s.city, unit: s.unit || null, corps: s.post.corps, role: s.post.role, shift: s.shift, since: S.day, by: by?.id || 'state' };
+      holding.add(best.id);
+      note(s.post.corps).hired.push({ id: best.id, name: best.name, role: s.post.role, type: s.type, city: s.city, shift: s.shift, level: bs, by });
+    }
+  }
+  // on the record: one decision per corps for what changed (who appointed whom, who was let go and why)
+  for (const [corps, r] of Object.entries(out)) {
+    if (!r.hired.length && !r.dismissed.length) continue;
+    d.hired += r.hired.length; d.dismissed += r.dismissed.length;
+    const by = authorityFor(S, corps); const head = ROLES[CORPS_HEAD[corps]]?.title || 'President';
+    const line = (x: any) => `${x.name} ${x.role}, ${x.type.replace(/_/g, ' ')} ${x.city}${x.shift ? ` (${x.shift})` : ''}`;
+    ctx.decide({
+      agentId: by?.id || 'state', role: by?.office || 'state', type: 'duty', engine: 'offline',
+      title: `${CORPS[corps]}: duty roster, day ${S.day}`,
+      inputs: [['Appointing authority', by ? `${by.name} (${by.office === CORPS_HEAD[corps] ? head : 'President, for a vacant head'})` : 'the state (no head and no President)'], ['Rule', 'Best level in the post\'s fields among free adult citizens of the city with a clean record and no office, then a fixed draw'], ['Let go', r.dismissed.map(x => `${x.name} (${x.why})`).join(', ').slice(0, 300) || 'nobody']],
+      options: ['fill the empty posts', 'leave them empty'], chosen: 'fill the empty posts',
+      reason: 'No important building stands empty: every post has a holder on the day and the night shift.',
+      checks: [['No seat and no power to arrest', true], ['Clean record, no office', r.hired.every(x => canGuard(citizenById(S, x.id)))]],
+      outcome: cleanText(`${r.hired.length} appointed${r.hired.length ? `: ${r.hired.slice(0, 6).map(line).join('; ')}${r.hired.length > 6 ? ` and ${r.hired.length - 6} more` : ''}` : ''}; ${r.dismissed.length} let go`, 600),
+    });
+    // (the ledger, not the citizen's record: a record line counts against conduct)
+    ctx.record('duty_roster', by?.id || 'state', { corps, hired: r.hired.map(x => ({ id: x.id, role: x.role, type: x.type, city: x.city, shift: x.shift })), dismissed: r.dismissed.map(x => ({ id: x.id, role: x.role, type: x.type, city: x.city, why: x.why })) });
+  }
+}
+// the head of a corps lets a holder go (the post is filled again on the next tick); false if not theirs to dismiss
+export function dismissDuty(ctx: Ctx, byId: string, citizenId: string, why = 'dismissed') {
+  const { S } = ctx; const d = D(S); let n = 0;
+  for (const [k, p] of Object.entries<any>(d.posts)) {
+    if (p.id !== citizenId) continue;
+    const by = authorityFor(S, p.corps); if (!by || by.id !== byId) continue;
+    delete d.posts[k]; n++;
+    ctx.record('duty_dismissed', byId, { id: citizenId, role: p.role, type: p.type, city: p.city, why: cleanText(why, 120) });
+  }
+  if (n) d.dismissed += n;
+  return n > 0;
+}
+// a citizen's duty posts (for the people's roster, so nobody holds two jobs), [] when none
+export const dutyPostOf = (S: State, a: Citizen | string) => { const id = typeof a === 'string' ? a : a?.id; return Object.values<any>(S.command?.duty?.posts || {}).filter(p => p.id === id); };
+// who is on duty now in one building: [{ a, p, doing, standIn }]; if a shift has nobody fit (a holder held since the
+// last tick, a roster not filled yet) the first fit citizen of the city by a fixed draw stands in for it
+export function onDuty(S: State, type: string, city: string | null, unit: string | null = null, now = Date.now()) {
+  if (!Object.hasOwn(DUTY_PLAN, type)) return [];
+  const site = siteFor(S, type, city); if (!site) return [];
+  const shift = dutyShift(S, now); const units = unit != null && unitsOf(type).includes(unit) ? [unit] : unitsOf(type);
+  const out = [];
+  for (const u of units) {
+    const before = out.length;
+    DUTY_PLAN[type].forEach((post, i) => {
+      for (let n = 0; n < post[shift]; n++) {
+        const p = S.command?.duty?.posts?.[`${type}|${site}|${u}|${i}|${shift}|${n}`]; const a = p && citizenById(S, p.id);
+        if (a && canGuard(a)) out.push({ a, p, doing: post.doing[shift === 'day' ? 0 : 1], unit: u || null, standIn: false });
+      }
+    });
+    if (out.length > before) continue;
+    const post = DUTY_PLAN[type].find(x => x[shift] > 0); if (!post) continue;
+    let stand = null, sh = 0;
+    for (const a of S.citizens || []) if (a.city === site && canGuard(a)) { const h = hashOf(`${type}|${u}|${shift}|${a.id}`); if (!stand || h < sh) { stand = a; sh = h; } }
+    if (stand) out.push({ a: stand, p: { id: stand.id, type, city: site, unit: u || null, corps: post.corps, role: post.role, shift, since: S.day, by: null }, doing: post.doing[shift === 'day' ? 0 : 1], unit: u || null, standIn: true });
+  }
+  return out;
+}
+
+// the academies are staffed by the people's civil staff (src/daily.ts STAFF_PLAN); if that roster is not there,
+// one fit citizen of the city stands in as the guard so the building is still never empty
+export function standInGuard(S: State, type: string, city: string | null, now = Date.now()) {
+  const site = siteFor(S, type, city); if (!site) return null;
+  const shift = dutyShift(S, now); let stand = null, sh = 0;
+  for (const a of S.citizens || []) if (a.city === site && canGuard(a)) { const h = hashOf(`${type}||${shift}|${a.id}`); if (!stand || h < sh) { stand = a; sh = h; } }
+  return stand && { a: stand, p: { id: stand.id, type, city: site, unit: null, corps: 'police', role: 'Guard', shift, since: S.day, by: null }, doing: shift === 'day' ? 'checking visitors at the door' : 'night round of the building', unit: null, standIn: true };
+}
+
+// the official police and soldiers serve spread over the cities, not piled in the capital: each member gets a
+// posting (the city with the fewest of their force, their home city on a tie), kept until they leave the force
+export function postOfficials(S: State) {
+  const cmd = C(S); cmd.postings ||= {}; const ids = Object.keys(S.cities || {}); if (!ids.length) return;
+  const seated = new Set<string>();
+  for (const force of ['police', 'military']) {
+    const where = force === 'military' ? (MILITARY_CITIES.filter(c => ids.includes(c)).length ? MILITARY_CITIES.filter(c => ids.includes(c)) : ids) : ids;
+    const count: Record<string, number> = Object.fromEntries(where.map(c => [c, 0]));
+    const mem = members(S, force);
+    for (const a of mem) { seated.add(a.id); const p = cmd.postings[a.id]; if (p && Object.hasOwn(count, p)) count[p]++; }
+    for (const a of mem) {
+      if (Object.hasOwn(count, cmd.postings[a.id] || '')) continue;
+      const min = Math.min(...where.map(c => count[c]));
+      const city = count[a.city] === min ? a.city : where.find(c => count[c] === min);
+      cmd.postings[a.id] = city; count[city]++;
+    }
+  }
+  for (const id of Object.keys(cmd.postings)) if (!seated.has(id)) delete cmd.postings[id];
+}
+export const postingOf = (S: State, a: Citizen) => S.command?.postings?.[a.id] || a.city;
+
 export const institution = {
   id: 'command',
   channels: [],
-  fresh: () => ({ command: { procs: {}, acting: {}, officerPicks: {}, lastPromotion: {}, seq: 0 } }),
+  fresh: () => ({ command: { procs: {}, acting: {}, officerPicks: {}, lastPromotion: {}, seq: 0, postings: {}, duty: { posts: {}, hired: 0, dismissed: 0 } } }),
   async tick(ctx) {
+    DAY_MS = ctx.cfg?.dayMs || DAY_MS;
     migrate(ctx);
     for (const f of FORCES) { await headChain(ctx, f); await appointOfficers(ctx, f); }
+    postOfficials(ctx.S);
+    await loadExpertise(); fillDuty(ctx);
   },
   day(ctx) { for (const f of FORCES) promotions(ctx, f); },
   publicState: S => {
-    const cmd = C(S);
-    return { command: { acting: cmd.acting, procs: Object.fromEntries(Object.entries(cmd.procs).map(([k, p]) => [k, p && { stage: p.stage, list: p.list, deadline: p.deadline || null, rejected: p.rejected, ballots: Object.keys(p.ballots).length }])), officerPicks: cmd.officerPicks, rankTitles: RANK_TITLES } };
+    const cmd = C(S); const d = D(S);
+    const posts = Object.values<any>(d.posts); const count = (corps: string) => posts.filter(p => p.corps === corps).length;
+    return { command: { acting: cmd.acting, procs: Object.fromEntries(Object.entries(cmd.procs).map(([k, p]) => [k, p && { stage: p.stage, list: p.list, deadline: p.deadline || null, rejected: p.rejected, ballots: Object.keys(p.ballots).length }])), officerPicks: cmd.officerPicks, rankTitles: RANK_TITLES,
+      postings: cmd.postings, duty: { shift: dutyShift(S), posts: posts.length, police: count('police'), military: count('military'), civil: count('civil'), hired: d.hired, dismissed: d.dismissed, corps: CORPS } } };
   },
 };

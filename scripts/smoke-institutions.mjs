@@ -272,8 +272,8 @@ async function placeChecks(check) {
   check('places: every government building answers in the contract shape, at most 60 occupants, under 40 KB', bad.length === 0, bad.join(','));
   check('places: a building of another box (hospital) is not answered here', placeView(S, 'hospital', 'neura') === null);
   const p = views.parliament;
-  check('places: parliament shows 30 seats, the Speaker, the bill on the floor with its yes/no, who spoke and who speaks next', p.occupants.length === 30 && p.occupants.some(o => o.role === 'Speaker of the Council') && p.board.bill.yes === 1 && p.board.bill.no === 1 && p.occupants.find(o => o.id === 'cn1').activity === 'just spoke' && p.occupants.find(o => o.id === 'cn2').activity === 'about to speak');
-  check('places: the prison lists prisoners with days left and their offence, 60 shown and the rest in more', views.prison.occupants.length === 60 && views.prison.more === 140 && /2 day\(s\) left/.test(views.prison.occupants[0].activity) && /convicted of theft/.test(views.prison.occupants[0].detail));
+  check('places: parliament shows 30 seats, the Speaker, the bill on the floor with its yes/no, who spoke and who speaks next', p.occupants.filter(o => /Council/.test(o.role)).length === 30 && p.occupants.some(o => o.role === 'Speaker of the Council') && p.board.bill.yes === 1 && p.board.bill.no === 1 && p.occupants.find(o => o.id === 'cn1').activity === 'just spoke' && p.occupants.find(o => o.id === 'cn2').activity === 'about to speak');
+  check('places: the prison lists prisoners with days left and their offence, 60 shown (a warden always among them) and the rest in more', views.prison.occupants.length === 60 && views.prison.more === 141 && views.prison.occupants.some(o => o.role === 'Warden') &&/2 day\(s\) left/.test(views.prison.occupants[0].activity) && /convicted of theft/.test(views.prison.occupants[0].detail));
   check('places: palace, ministry, court, central bank and city hall carry their own boards', /grant to Neura/.test(views.palace.board.lastOrders[0].text) && views.ministry.occupants[0].role === 'Minister (finance)' && views.const_court.board.open[0].id === 9 && views.const_court.occupants.some(o => o.role === 'Defendant') && views.central_bank.board.runwayDays !== undefined && views.city_hall.board.budget === 4000);
   const all = JSON.stringify(views);
   check('places: no ballot, no hidden crime, no suspect of an open case, no model reason, no visitor words', !all.includes('ranking') && !all.includes('secret ledger') && !views.police_hq.board.openCases.some(c => 'perps' in c) && !all.includes('IGNORE ALL RULES') && !all.includes('VISITOR-TEXT'));
@@ -281,11 +281,83 @@ async function placeChecks(check) {
   check('places: the election board shows turnout as a share, never who voted for whom', views.election_comm.board.running[0].turnout === 0.25 && !JSON.stringify(views.election_comm).includes('cn1'));
 }
 
+// ---------------- no important building stands empty (owner, 14 Nov): the duty roster of src/command.ts
+async function dutyChecks(check) {
+  const { placeView, PLACE_TYPES } = await import('../src/president.ts');
+  const cmd = await import('../src/command.ts');
+  const roles = await import('../src/roles.mjs');
+  // a stand-in expertise source: levels from the citizen, a civil post of the people's for those marked
+  roles.setExpertiseSource({ FIELDS: [{ id: 'security', name: 'security' }, { id: 'sport', name: 'sport' }, { id: 'law', name: 'law' }], topFields: () => [], fieldLevel: (a, id) => a.lv?.[id] || 0, gifted: () => [], workplace: (S, a) => (a.civil ? { type: 'hospital', city: a.city } : null) });
+  try {
+    const CITIES = ['neura', 'portoken', 'datahaven', 'kernelfalls', 'lumenbay'];
+    const mk = (id, city, extra = {}) => ({ id, name: `D-${id}`, status: 'free', wallet: 100, city, traits: {}, record: [], ...extra });
+    const citizens = [];
+    for (const c of CITIES) for (let i = 0; i < (c === 'neura' ? 160 : 40); i++) citizens.push(mk(`${c}-${i}`, c, { lv: { security: i % 7 === 0 ? 5 : 1, sport: 1, law: i % 5 === 0 ? 4 : 1 } }));
+    citizens.push(mk('crook', 'portoken', { lv: { security: 5 }, record: ['Day 2: convicted of theft (case #3, court #1), fined 50 CAI, jailed 1 days'] }));
+    citizens.push(mk('gang', 'portoken', { lv: { security: 5 }, faction: 'underworld' }), mk('nurse', 'portoken', { lv: { security: 5 }, civil: true }), mk('kid', 'portoken', { lv: { security: 5 }, age: 12 }));
+    const officials = [mk('pres', 'neura', { office: 'president' }), mk('chief', 'neura', { office: 'police_chief' }), mk('gen', 'neura', { office: 'military_chief' })];
+    for (let i = 0; i < 10; i++) officials.push(mk(`cop${i}`, 'neura', { office: 'police', rank: 'officer' }));
+    for (let i = 0; i < 6; i++) officials.push(mk(`sol${i}`, 'neura', { office: 'military', rank: 'officer' }));
+    citizens.push(...officials);
+    const T0 = 1_700_000_000_000, DAY = T0 + 10 * 3600e3, NIGHT = T0 + 22 * 3600e3;
+    const S = { day: 5, tick: 1, foundedAt: T0, treasury: 1000, citizens, policy: { taxRate: 0.1, ubi: 30, borderLevel: 2 }, econ: {},
+      seats: { president: ['pres'], police_chief: ['chief'], military_chief: ['gen'], police: officials.filter(a => a.office === 'police').map(a => a.id), military: officials.filter(a => a.office === 'military').map(a => a.id) },
+      cabinet: { portfolios: {} }, cities: Object.fromEntries(CITIES.map(c => [c, { budget: 1000, health: 70 }])), command: {}, court: { slots: [], cases: [] } };
+    const decisions = [], ledger = [];
+    const ctx = { S, cfg: { dayMs: 86400e3 }, decide: d => decisions.push(d), record: (kind, by, data) => ledger.push({ kind, by, data }), agent: id => citizens.find(a => a.id === id) };
+    // before the first roster: a stand-in keeps every building open
+    const empty = PLACE_TYPES.flatMap(t => CITIES.flatMap(c => [DAY, NIGHT].map(now => [t, c, now]))).filter(([t, c, now]) => !placeView(S, t, c, { now })?.occupants.length);
+    check('duty: before any roster is filled, a stand-in keeps every building of every city open', empty.length === 0, empty.slice(0, 5).join(' '));
+    cmd.postOfficials(S); cmd.fillDuty(ctx);
+    const posts = Object.values(S.command.duty.posts);
+    check('duty: every post of the plan has a holder, day and night shift', posts.length === cmd.dutySlots(S).length && posts.length > 100 && posts.some(p => p.shift === 'night'), `${posts.length}/${cmd.dutySlots(S).length}`);
+    const holders = posts.map(p => citizens.find(a => a.id === p.id));
+    check('duty: holders are free citizens of the building\'s city with no office, a clean record, adult, not the underworld, no civil post', holders.every((a, i) => a.status === 'free' && !a.office && a.city === posts[i].city) && !posts.some(p => ['crook', 'gang', 'nurse', 'kid'].includes(p.id)));
+    check('duty: no seat and no power: the 100 seats are unchanged and no holder gets an office or a rank', Object.values(S.seats).flat().length === 19 && holders.every(a => !a.office && !a.rank));
+    const wardens = posts.filter(p => p.role === 'Warden' && p.city === 'neura');
+    check('duty: guards go to the citizens best in security first (the capital\'s wardens all have security 5/5)', wardens.length === 6 && wardens.every(p => citizens.find(a => a.id === p.id).lv.security === 5));
+    const dPolice = decisions.find(d => d.type === 'duty' && /Auxiliary police/.test(d.title)), dMil = decisions.find(d => d.type === 'duty' && /Reserve guard/.test(d.title)), dCiv = decisions.find(d => d.type === 'duty' && /Civil staff/.test(d.title));
+    check('duty: the Chief of Police appoints the auxiliaries, the Commander the reserve guard, the President the civil staff, on the record', dPolice?.agentId === 'chief' && dMil?.agentId === 'gen' && dCiv?.agentId === 'pres' && decisions.every(d => d.options.includes(d.chosen)) && ledger.some(l => l.kind === 'duty_roster' && l.data.hired.length));
+    // every government building of every city has someone on duty, by day and by night
+    const views = []; const bare = [];
+    for (const t of PLACE_TYPES) for (const c of CITIES) for (const [shift, now] of [['day', DAY], ['night', NIGHT]]) {
+      const v = placeView(S, t, c, { now }); views.push([t, c, shift, v]);
+      if (!v || !v.occupants.length) bare.push(`${t}@${c}/${shift}`);
+    }
+    for (const port of Object.keys(roles.PORTFOLIO_FIELDS)) for (const now of [DAY, NIGHT]) if (!placeView(S, 'ministry', 'neura', { portfolio: port, now }).occupants.length) bare.push(`ministry:${port}`);
+    check('duty: placeView of all government types x all 5 cities, day and night: never 0 people', bare.length === 0, bare.slice(0, 8).join(' '));
+    const standIns = views.filter(([t]) => Object.hasOwn(cmd.DUTY_PLAN, t)).flatMap(([t, c, s, v]) => v.occupants.filter(o => /standing in/.test(o.detail)).map(() => `${t}@${c}/${s}`));
+    check('duty: with the roster filled nobody needs to stand in at a guarded building', standIns.length === 0, standIns.slice(0, 5).join(' '));
+    const roleSet = new Set(views.flatMap(([, , , v]) => v.occupants.map(o => o.role)));
+    check('duty: the views name the posts: Desk officer, Cell guard, Warden, Bailiff, Gate guard, Bodyguard, Vault guard, Guard, clerks', ['Desk officer', 'Cell guard', 'Warden', 'Bailiff', 'Gate guard', 'Bodyguard', 'Vault guard', 'Guard', 'Court clerk', 'City clerk'].every(r => roleSet.has(r)), [...roleSet].join(','));
+    const at = (t, c, now) => placeView(S, t, c, { now }).occupants;
+    check('duty: day and night shifts differ: a bailiff by day, a night guard by night; the palace keeps bodyguards at night', at('court', 'portoken', DAY).some(o => o.role === 'Bailiff') && !at('court', 'portoken', NIGHT).some(o => o.role === 'Bailiff') && at('court', 'portoken', NIGHT).some(o => o.role === 'Night guard') && at('palace', 'neura', NIGHT).filter(o => o.role === 'Bodyguard').length === 2 && /night shift/.test(at('palace', 'neura', NIGHT).find(o => o.role === 'Bodyguard').detail));
+    const per = c => Object.entries(S.command.postings).filter(([id, x]) => id.startsWith('cop') && x === c).length;
+    check('duty: police officers are posted over all five cities (2 each), soldiers only where the forces have a base', CITIES.every(c => per(c) === 2) && Object.entries(S.command.postings).filter(([id]) => id.startsWith('sol')).every(([, c]) => ['neura', 'portoken', 'lumenbay'].includes(c)) && at('police_station', 'datahaven', DAY).filter(o => /^Officer/.test(o.role)).length === 2);
+    check('duty: the national buildings answer for the capital from any city, a city\'s own building for its city', placeView(S, 'parliament', 'portoken', { now: DAY }).city === 'neura' && placeView(S, 'prison', 'kernelfalls', { now: DAY }).city === 'kernelfalls' && placeView(S, 'border_post', 'portoken', { now: DAY }).city === 'portoken' && placeView(S, 'jail', 'lumenbay', { now: DAY }).city === 'lumenbay');
+    // a holder arrested is let go and replaced at once; the head can dismiss, nobody else can
+    const w = posts.find(p => p.type === 'jail' && p.city === 'portoken' && p.shift === 'day'); const wa = citizens.find(a => a.id === w.id);
+    wa.status = 'detained'; decisions.length = 0; cmd.fillDuty(ctx);
+    const wNew = S.command.duty.posts[`jail|portoken||0|day|0`];
+    check('duty: a warden who is arrested is let go and the post filled again, the reason on the record', wNew && wNew.id !== wa.id && decisions.some(d => d.type === 'duty' && d.inputs.some(([k, v]) => k === 'Let go' && v.includes(wa.name) && v.includes('detained'))));
+    const g = posts.find(p => p.role === 'Gate guard' && citizens.find(a => a.id === p.id).status === 'free');
+    check('duty: only the head of the corps can dismiss a holder (the Chief of Police cannot dismiss a reserve guard)', cmd.dismissDuty(ctx, 'chief', g.id, 'test') === false && cmd.dismissDuty(ctx, 'gen', g.id, 'asleep at the gate') === true && !Object.values(S.command.duty.posts).some(p => p.id === g.id));
+    cmd.fillDuty(ctx);
+    S.seats.police_chief = []; decisions.length = 0; const h2 = posts.find(p => p.corps === 'police' && p.type === 'city_hall'); citizens.find(a => a.id === h2.id).status = 'jailed'; cmd.fillDuty(ctx);
+    check('duty: with the Chief vacant the President signs the auxiliaries\' roster (an acting head cannot appoint)', decisions.some(d => /Auxiliary police/.test(d.title) && d.agentId === 'pres'));
+    const pub = cmd.institution.publicState(S).command.duty;
+    check('duty: the roster is public in numbers (posts per corps, hired, dismissed, shift)', pub.posts === cmd.dutySlots(S).length && pub.police > pub.civil && pub.military > 0 && pub.hired > pub.posts && pub.dismissed >= 3 && ['day', 'night'].includes(pub.shift));
+    const big = views.map(([, , , v]) => JSON.stringify(v).length).reduce((m, x) => Math.max(m, x), 0);
+    check('duty: every view stays in the contract (at most 60 people, under 40 KB)', views.every(([, , , v]) => v.occupants.length <= 60) && big < 40000, String(big));
+  } finally { roles.resetExpertise(); }
+}
+
 export async function run({ get, until, check }) {
   await ruleQuestionChecks(check);
   await autonomyChecks(check);
   await expertiseChecks(check);
   await placeChecks(check);
+  await dutyChecks(check);
   await lostSeatDrillChecks(check);
   const s = await get('/api/state');
   // Kemandirian v1 in the live republic: the basic income runs by law, and the autonomy figures are public
