@@ -268,7 +268,7 @@ export const BANKS: Record<string, Bank> = {
     [3, 'Why keep receipts?', 'To prove spending and catch errors or fraud', ['To decorate the office', 'Paper is valuable', 'They are not needed'], 'Records let anyone check the books.'],
   ], case: ['The city ledger shows 500 CAI spent on "repairs" with no receipt. As the accountant, what do you do and why?', ['receipt', 'ask', 'record', 'audit', 'report', 'check']] },
   trade: { calc: [
-    C(1, 2, 'A discount of x% takes x/100 of the price off.', () => { const p = ri(2, 20) * 10, d = pick([10, 20, 25, 50]); return [`A coat costs ${p} CAI with ${d}% off. What do you pay?`, `${dec(p * (1 - d / 100))} CAI`, [`${p - d} CAI`, `${dec(p * d / 100)} CAI`, `${p} CAI`]]; }),
+    C(1, 2, 'A discount of x% takes x/100 of the price off.', () => { const p = ri(2, 20) * 10, d = pick([10, 20, 25, 50]); return [`A coat costs ${p} CAI with ${d}% off. What do you pay?`, `${dec(p * (1 - d / 100))} CAI`, [`${p - d} CAI`, `${dec(p * d / 100)} CAI`, `${p} CAI`, `${dec(p * (1 - d / 200))} CAI`, `${p + d} CAI`]]; }),
     C(1, 3, 'Selling price = cost × (1 + markup).', L => { const c = ri(10, 100) * L, m = pick([10, 20, 25, 50]); return [`You buy at ${c} CAI and add ${m}% markup. What is your price?`, `${dec(c * (1 + m / 100))} CAI`, [`${c + m} CAI`, `${dec(c * m / 100)} CAI`, `${dec(c / (1 - m / 100))} CAI`]]; }),
     C(3, 5, 'Break-even units = fixed costs ÷ (price - cost per unit), rounded up.', () => { const f = ri(5, 50) * 100, p = ri(8, 20), v = ri(2, p - 3); return [`Your stall costs ${fmt(f)} CAI a month; each item sells for ${p} and costs ${v} CAI. How many to break even?`, String(Math.ceil(f / (p - v))), [String(Math.ceil(f / p)), String(Math.ceil(f / v)), String(Math.ceil(f / (p - v)) + 10)]]; }),
   ], facts: [
@@ -590,8 +590,15 @@ export function updateField(a: Citizen, f: string, score: number, level: number,
 // feedback; everyone else keeps the local school and a share of the teachers.
 const GIFTED_SHARE = env('SCHOOL_GIFTED_SHARE', 0.08, 0.01, 0.25);
 const GIFTED_MAX = Math.round(env('SCHOOL_GIFTED_MAX', 25, 1, 500));
-const GIFTED_MIN_LESSONS = 6, GIFTED_MIN_POT = 0.55, GIFTED_IDLE_DAYS = 3, GIFTED_TEACH = 0.6, GIFTED_KEEP_BONUS = 0.03;
-const GIFTED_RESELECT_MS = env('SCHOOL_GIFTED_RESELECT_HOURS', 3, 0.05, 48) * 3600000;
+// at least this many lessons in a field to be considered (3: a citizen re-chooses their field each day, so lessons
+// spread; on 14 Nov production had 1.1 lessons per citizen and field after 5,883 field lessons, and nobody had 6)
+const GIFTED_MIN_LESSONS = Math.round(env('SCHOOL_GIFTED_MIN_LESSONS', 3, 1, 50));
+// the programme is relative: the top SCHOOL_GIFTED_SHARE of each field's candidates, above a floor of potential.
+// The floor is low (0.35) because on day one nobody can score well: no level 4-5 questions yet (hi = 0), little
+// growth; a typical good student after 10 lessons at 70% sits near 0.49 (14 Nov: 0.55 kept the programme empty).
+// It gets stricter by itself as skills rise, since only the top share of each field gets in.
+const GIFTED_MIN_POT = (x => (Number.isFinite(x) ? clamp(x, 0, 1) : 0.35))(Number(process.env.SCHOOL_GIFTED_MIN_POT ?? 0.35)), GIFTED_IDLE_DAYS = 3, GIFTED_TEACH = 0.6, GIFTED_KEEP_BONUS = 0.03;
+const GIFTED_RESELECT_MS = env('SCHOOL_GIFTED_RESELECT_HOURS', 1, 0.05, 48) * 3600000;
 // a field taught today (it has lessons) with no gifted student yet, or no gifted at all
 const giftedGap = (S: State) => { const by = S.school?.gifted?.byField || {}; const taught = Object.keys(S.school?.byField || {}); return !Object.keys(by).length || taught.some(f => !by[f]?.length); };
 const NORMAL_TEACHER_FLOOR = 10; // ordinary students keep at least this many teacher calls a day beyond the gifted count
@@ -621,10 +628,13 @@ export function selectGifted(S: State, now = Date.now(), opts: { addOnly?: boole
       (cands[f] ||= []).push({ a, pot: pot + (was.has(`${f}|${a.id}`) ? GIFTED_KEEP_BONUS : 0) });
     }
   }
-  const byField: Record<string, any[]> = {}; const top: Record<string, any> = {};
+  const byField: Record<string, any[]> = {}; const top: Record<string, any> = {}; const fieldStats: Record<string, any> = {};
   for (const [f, list] of Object.entries(cands)) {
     list.sort((x, y) => y.pot - x.pot || String(x.a.id).localeCompare(String(y.a.id)));
     top[f] = { id: list[0].a.id, name: list[0].a.name, potential: round(potential(list[0].a, f, now), 3) };
+    // for the audit: how many candidates, the best potential, and the potential at the cut (the share's last place)
+    const kk = Math.min(GIFTED_MAX, Math.max(1, Math.ceil(list.length * GIFTED_SHARE)));
+    fieldStats[f] = { candidates: list.length, topPotential: round(potential(list[0].a, f, now), 3), cutPotential: round(potential(list[Math.min(kk, list.length) - 1].a, f, now), 3) };
     const k = Math.min(GIFTED_MAX, Math.max(1, Math.ceil(list.length * GIFTED_SHARE)));
     if (addOnly) {
       // today's members stay as they are; free places in the field go to the best of the others
@@ -645,7 +655,9 @@ export function selectGifted(S: State, now = Date.now(), opts: { addOnly?: boole
   for (const [f, l] of Object.entries(byField)) for (const x of l) { const a = byId.get(x.id); if (a) { const p = profile(a); p.gifted ||= {}; p.gifted[f] ??= S.day; } }
   const joined = [...now_].filter(k => !was.has(k)).length, left = [...was].filter(k => !now_.has(k)).length;
   // joined/left count the day: a top-up adds to the day's numbers
-  s.gifted = { day: S.day, at: now, byField, top, joined: addOnly ? (s.gifted.joined || 0) + joined : joined, left: addOnly ? s.gifted.left || 0 : left, topUps: addOnly ? (s.gifted.topUps || 0) + 1 : 0 };
+  // candidates: citizen-field pairs that met the minimum (lessons, recent study) at this selection, for monitoring
+  const candidates = Object.values(cands).reduce((n, l) => n + l.length, 0);
+  s.gifted = { day: S.day, at: now, candidates, fieldStats, byField, top, joined: addOnly ? (s.gifted.joined || 0) + joined : joined, left: addOnly ? s.gifted.left || 0 : left, topUps: addOnly ? (s.gifted.topUps || 0) + 1 : 0 };
   giftedCache = { ref: null, map: new Map() };
   return s.gifted;
 }
@@ -980,9 +992,13 @@ function morningReport(ctx: Ctx) {
 // a number only); today's teacher calls for the gifted and for everyone else
 function giftedView(S: State) {
   const g = S.school?.gifted || {}; const st = S.school?.stats || {};
+  // per field, numbers only: candidates, the best potential and the potential at the cut (why a field may be empty)
   const byField = Object.keys({ ...(g.top || {}), ...(g.byField || {}) }).filter(isField).sort().map(f => ({ id: f, name: fieldName(f), gifted: (g.byField?.[f] || []).length,
+    candidates: Number(g.fieldStats?.[f]?.candidates) || 0, topPotential: Number(g.fieldStats?.[f]?.topPotential) || 0, cutPotential: Number(g.fieldStats?.[f]?.cutPotential) || 0,
     top: g.top?.[f] ? { id: g.top[f].id, name: g.top[f].name, potential: Number(g.top[f].potential) || 0 } : null }));
   return { day: g.day ?? null, total: byField.reduce((n, f) => n + f.gifted, 0), joined: g.joined || 0, left: g.left || 0, share: GIFTED_SHARE, maxPerField: GIFTED_MAX,
+    // why it may be empty: how many citizen-field pairs qualified, when it was last chosen, how often topped up today
+    candidates: g.candidates ?? null, minLessons: GIFTED_MIN_LESSONS, minPotential: GIFTED_MIN_POT, selectedAt: g.at ?? null, topUps: g.topUps || 0, reselectHours: GIFTED_RESELECT_MS / 3600000,
     teacherToday: st.tday?.day === S.day ? { gifted: st.tday.gifted, others: st.tday.normal } : { gifted: 0, others: 0 }, byField };
 }
 // The contract the government reads (src/roles.mjs, ticket #376): fields, a citizen's best fields and the level in
