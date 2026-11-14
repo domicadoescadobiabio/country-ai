@@ -87,7 +87,7 @@ try {
   // --- the school's teachers: teach() mixes providers by TRAIN_TEACHER_MIX, has its own paced budget inside the day's total
   check('/api/state publishes budget.train (spent, calls per provider, denied)', s.budget?.train && typeof s.budget.train.spent === 'number' && 'claude' in (s.budget.train.calls || {}) && 'openrouter' in s.budget.train.calls && typeof s.budget.train.denied === 'number', JSON.stringify(s.budget?.train));
   process.env.ANTHROPIC_BASE_URL = MOCK; // the SDK in this process talks to the same mock
-  const { teach, trainBudgetState, budgetState, workerPull, localStatus, saveExample, parseTeacherMix, _resetLocal, trainPaceView, teachRoomNow } = await import('../src/brains.ts');
+  const { teach, trainBudgetState, budgetState, workerPull, localStatus, saveExample, parseTeacherMix, _resetLocal, trainPaceView, teachRoomNow, questionHash } = await import('../src/brains.ts');
   const { makeLLM } = await import('../src/llm.ts');
   const llmT = makeLLM({ anthropicKey: 'test-claude', orKey: 'test-or', orBase: MOCK, llmPerMin: 5000, claudeModel: 'claude-opus-5-5' }, () => {});
   const OR_T = 'deepseek/deepseek-v4-pro-0813', CL_T = 'claude-sonnet-5-5';
@@ -204,6 +204,20 @@ try {
     && lifeOver.pending !== true && trainBefore === 120 && vote.pending === true && localStatus().queuedTrain === 119 && localStatus().queued === 400, JSON.stringify({ tPending, full, lifeOver, vote, st: localStatus() }));
   _resetLocal();
 
+  // --- the field of a school question travels with the job to the runner (its LoRA adapter); odd ids are dropped
+  _resetLocal(); workerPull(0);
+  await think(qctx, cit('d1'), 'q-dom-ok', { system: 's', user: 'u', kind: 'train', domain: 'math' });
+  await think(qctx, cit('d2'), 'q-dom-bad', { system: 's', user: 'u', kind: 'train', domain: '../etc' });
+  await think(qctx, cit('d3'), 'q-dom-caps', { system: 's', user: 'u', kind: 'train', domain: 'Math' });
+  await think(qctx, cit('d4'), 'q-dom-none', { system: 's', user: 'u', kind: 'train' });
+  const dj = Object.fromEntries(workerPull(16).map(j => [j.id, j]));
+  check('local queue: a school job carries its field (domain) to the runner; malformed or missing fields are left out', dj['q-dom-ok']?.domain === 'math' && !('domain' in (dj['q-dom-bad'] || {})) && !('domain' in (dj['q-dom-caps'] || {})) && !('domain' in (dj['q-dom-none'] || {})), JSON.stringify(Object.values(dj).map(j => [j.id, j.domain])));
+  _resetLocal();
+  const { cleanRunner: cr } = await import('../src/brains.ts');
+  const rOk = cr({ version: 3, backend: 'llamacpp', adapter: 'philosophy', loraScale: 3.7 }), rNone = cr({ version: 3, backend: 'ollama', adapter: 'none', loraScale: 0.5 });
+  const rBad = cr({ version: 3, backend: 'vllm; rm -rf', adapter: '../../etc/passwd', loraScale: 'high' });
+  check('runner info keeps backend (ollama|llamacpp), adapter (a field id or none) and loraScale (0..2); anything else is dropped', rOk.backend === 'llamacpp' && rOk.adapter === 'philosophy' && rOk.loraScale === 2 && rNone.adapter === 'none' && rNone.loraScale === 0.5
+    && !('backend' in rBad) && !('adapter' in rBad) && !('loraScale' in rBad) && rBad.version === 3, JSON.stringify({ rOk, rNone, rBad }));
   // --- the distillation set: masked text, no agent ids
   // a stand-in for the store: one row per question hash (0 = duplicate), like train_examples' unique qhash
   const saved = []; const seenQ = new Set();
@@ -226,6 +240,7 @@ try {
   check('quality gate: kept only when the teacher matches the server key or a rubric graded it; refusals are counted', okKey && !wrongKey && !noCheck && rubric && !rubricNoScore
     && st1.wrong - (st0.wrong || 0) === 1 && st1.unverified - (st0.unverified || 0) === 2 && math.verified === 'key' && law.verified === 'rubric', JSON.stringify({ okKey, wrongKey, noCheck, rubric, rubricNoScore, st1 }));
   check('quality gate: the same question again (case, spacing or option order changed) is refused as a duplicate', !dup && st1.duplicate - (st0.duplicate || 0) === 1, JSON.stringify(st1));
+  check('the exported questionHash is the hash saveExample stores (ctx.trainKnown asks with it before a teacher is paid)', math.qhash === questionHash(mcq('What is 7 x 6?', ['42', '36', '48', '40'])), JSON.stringify({ saved: math.qhash?.slice(0, 12) }));
   check('dataset rows carry the field of study (from domain or purpose school:<field>) and which teacher wrote them', math.domain === 'math' && math.teacherKind === 'claude' && law.domain === 'civics' && law.teacherKind === 'openrouter' && gen.domain === 'general' && gen.teacherKind === 'other' && /^[0-9a-f]{64}$/.test(math.qhash), JSON.stringify({ math: [math.domain, math.teacherKind], law: [law.domain, law.teacherKind], gen: [gen.domain, gen.teacherKind] }));
 
   // pacing: TRAIN_BUDGET_USD is spread over the republic day (spent <= daily x (share of the day gone + 1/24)), and a

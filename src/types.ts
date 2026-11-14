@@ -191,6 +191,8 @@ export interface Ctx {
     teacherEngine: string; teacherKind: string; studentEngine: string; verified: string; qhash: string }): number; // the new id, 0 = duplicate question
   /** examples kept in the distillation set, in all and per field of study (cached 30 s) */
   trainCounts?(): { total: number; byDomain: Record<string, number> };
+  /** is this question already kept in the distillation set (same hash as saveExample)? ask before paying a teacher */
+  trainKnown?(question: string): boolean;
   pendingGuest: unknown;
 }
 

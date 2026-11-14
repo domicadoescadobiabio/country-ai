@@ -79,6 +79,7 @@ export function openStore(dataDir: string) {
     trainRotate: db.prepare('DELETE FROM train_examples WHERE id <= ?'),
     trainCount: db.prepare('SELECT COUNT(*) AS n FROM train_examples'),
     trainByDomain: db.prepare('SELECT domain, COUNT(*) AS n FROM train_examples GROUP BY domain'),
+    trainHas: db.prepare('SELECT 1 FROM train_examples WHERE qhash = ? LIMIT 1'), // the unique qhash index
     trainPage: db.prepare('SELECT * FROM train_examples WHERE id > ? ORDER BY id LIMIT ?'),
     trainPageDomain: db.prepare('SELECT * FROM train_examples WHERE domain = ? AND id > ? ORDER BY id LIMIT ?'),
   };
@@ -174,6 +175,8 @@ export function openStore(dataDir: string) {
       return id;
     },
     trainCount: () => q.trainCount.get().n,
+    // is a question (by its hash) already in the set? read-only, through the unique index
+    trainHas: qhash => typeof qhash === 'string' && qhash.length > 0 && !!q.trainHas.get(qhash),
     trainByDomain: () => Object.fromEntries(q.trainByDomain.all().map(r => [r.domain, r.n])),
     trainPage(after = 0, limit = 1000, domain = null) {
       const n = Math.min(5000, Math.max(1, Math.floor(Number(limit)) || 1000));
@@ -234,6 +237,7 @@ function jsonStore(file: string) {
       const id = (train.at(-1)?.id || 0) + 1; train.push({ id, ts: Date.now(), domain: 'general', ...e }); if (train.length > max) train.splice(0, train.length - max); return id;
     },
     trainCount: () => train.length,
+    trainHas: qhash => typeof qhash === 'string' && qhash.length > 0 && train.some(r => r.qhash === qhash),
     trainByDomain: () => train.reduce((o, r) => { o[r.domain] = (o[r.domain] || 0) + 1; return o; }, {}),
     trainPage(after = 0, limit = 1000, domain = null) { return train.filter(r => r.id > after && (!domain || r.domain === domain)).slice(0, Math.min(5000, Math.max(1, Math.floor(Number(limit)) || 1000))); },
     close() {},

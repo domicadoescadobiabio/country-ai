@@ -204,6 +204,9 @@ export function localStatus() { return { online: localOnline(), model: LOCAL.mod
 // known fields survive, each a clamped number or a boolean; anything else (strings, nested objects) is dropped.
 // A pull without it (a runner older than version 2) clears it, so the state always describes the live runner.
 const RUNNER_FIELDS = { version: [0, 1000, true], lifeTemperature: [0, 2, false], examTemperature: [0, 2, false], parallel: [1, 64, true], context: [0, 1048576, true] };
+// a field of study handed to the runner with a job (it picks that field's LoRA adapter): plain ids only
+const LOCAL_DOMAIN_RE = /^[a-z0-9_]{1,32}$/;
+const localDomain = d => (typeof d === 'string' && LOCAL_DOMAIN_RE.test(d) ? d : null);
 export function cleanRunner(r) {
   if (!r || typeof r !== 'object' || Array.isArray(r)) return null;
   const out = {};
@@ -214,6 +217,10 @@ export function cleanRunner(r) {
     out[k] = int ? Math.round(c) : Math.round(c * 100) / 100;
   }
   if (typeof r.supervised === 'boolean') out.supervised = r.supervised;
+  // what the runner really answers with: its backend, the LoRA adapter in use (a field id or 'none') and its scale
+  if (r.backend === 'ollama' || r.backend === 'llamacpp') out.backend = r.backend;
+  if (typeof r.adapter === 'string' && (r.adapter === 'none' || LOCAL_DOMAIN_RE.test(r.adapter))) out.adapter = r.adapter;
+  if (typeof r.loraScale === 'number' && Number.isFinite(r.loraScale)) out.loraScale = Math.round(Math.min(2, Math.max(0, r.loraScale)) * 100) / 100;
   return Object.keys(out).length ? out : null;
 }
 export function workerPull(max = 4, model = null, runner = undefined) {
@@ -234,7 +241,7 @@ export function workerPull(max = 4, model = null, runner = undefined) {
       } else j = rest.shift() || train.shift(); // one group is empty: the other takes its share
     }
     if (!j) break;
-    j.leasedAt = now; out.push({ id: j.id, system: j.system, user: j.user, format: j.format, options: j.options });
+    j.leasedAt = now; out.push({ id: j.id, system: j.system, user: j.user, format: j.format, options: j.options, ...(j.domain ? { domain: j.domain } : {}) });
   }
   return out;
 }
@@ -245,7 +252,7 @@ export function workerAnswer(id, text, model = null) {
   j.answer = cleanText(text, 900); j.model = model ? String(model).slice(0, 60) : LOCAL.model; LOCAL.answered++;
   return true;
 }
-function askLocal(qid, a, { system, user, kind, format, options }, priority) {
+function askLocal(qid, a, { system, user, kind, format, options, domain = null }, priority) {
   let j = LOCAL.jobs.get(qid);
   if (!j) {
     const train = priority >= TRAIN_PRIORITY;
@@ -258,7 +265,7 @@ function askLocal(qid, a, { system, user, kind, format, options }, priority) {
       if (!victim) return null; // use another path
       LOCAL.jobs.delete(victim.id);
     }
-    j = { id: qid, agent: a.id, system, user, format, options, kind, priority, createdAt: Date.now(), leasedAt: 0, answer: null };
+    j = { id: qid, agent: a.id, system, user, format, options, kind, priority, domain: localDomain(domain), createdAt: Date.now(), leasedAt: 0, answer: null };
     LOCAL.jobs.set(qid, j);
     return { pending: true };
   }
@@ -432,7 +439,8 @@ const scrub = (s, max) => cleanText(String(s ?? '').replace(SECRETISH, '[redacte
 // "school:<field>"; letters, digits and _ only, else 'general'. teacher_kind (claude / openrouter) comes from teacherEngine.
 const DOMAIN_RE = /^[a-z][a-z0-9_]{0,23}$/;
 export const cleanDomain = d => { const s = String(d ?? '').trim().toLowerCase(); return DOMAIN_RE.test(s) ? s : null; };
-const questionHash = q => crypto.createHash('sha256').update(String(q).split(/\n\s*[A-D]\)\s/)[0].toLowerCase().replace(/\s+/g, ' ').trim()).digest('hex');
+// exported for ctx.trainKnown (server.mjs): the school asks before paying a teacher whether the question is kept already
+export const questionHash = q => crypto.createHash('sha256').update(String(q).split(/\n\s*[A-D]\)\s/)[0].toLowerCase().replace(/\s+/g, ' ').trim()).digest('hex');
 function datasetStats(ctx) { const T = trainBudgetState(ctx); return (T.dataset ||= { kept: 0, unverified: 0, wrong: 0, duplicate: 0 }); }
 export function saveExample(ctx, { question, teacher, explanation = '', student = '', score = null, teacherEngine = '', studentEngine = '', purpose = 'train', domain = null, answerKey = null, verified = null } = {} as any) {
   const q = scrub(question, 4000), t = scrub(teacher, 4000);
@@ -463,7 +471,8 @@ export function saveExample(ctx, { question, teacher, explanation = '', student 
 // qid must be stable across ticks for the same question.
 export const REMOTE_WAIT_MS = 150000; // a self-run agent has 2.5 minutes to answer
 // paid: false = this thought may only use the free local brain (daily life); no API, no memory, no cost
-export async function think(ctx, a, qid, { system, user, kind = 'question', format = 'text', options = null, claudeModel = null, wait = true, paid = true }) {
+// domain: the field of study of a school question, handed to the local runner with the job (its LoRA adapter)
+export async function think(ctx, a, qid, { system, user, kind = 'question', format = 'text', options = null, claudeModel = null, wait = true, paid = true, domain = null }) {
   // school (kind 'train') and night school (kind 'night'): the student answers with the free local brain only;
   // the paid teachers are teach()
   if (kind === 'train' || kind === 'night') paid = false;
@@ -503,7 +512,7 @@ export async function think(ctx, a, qid, { system, user, kind = 'question', form
   // seat moves up to their own model on OpenRouter; the leadership thinks with Claude Opus.
   // 1. the local brain, free: every citizen and aspirant while it is online and its queue has room
   // school and night-school study (kind 'train' / 'night') is always last, an aspirant's included: exams and votes go first
-  const local = () => askLocal(qid, a, { system, user, kind, format, options }, kind === 'train' || kind === 'night' ? TRAIN_PRIORITY : aspirant ? 0 : kind === 'vote' ? 1 : kind === 'life' ? 3 : 2);
+  const local = () => askLocal(qid, a, { system, user, kind, format, options, domain }, kind === 'train' || kind === 'night' ? TRAIN_PRIORITY : aspirant ? 0 : kind === 'vote' ? 1 : kind === 'life' ? 3 : 2);
   if (!paid) {
     if (!wait || !localOnline()) return { text: null, engine: 'offline' };
     const r = local();

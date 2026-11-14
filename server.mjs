@@ -13,7 +13,7 @@ import { ROLES, ROLE_ORDER } from './src/roles.mjs';
 import { FOUNDERS, makeCitizen, randomTraits } from './src/citizens.mjs';
 import { growPopulation } from './src/population.mjs';
 import { CITIES, assignCity } from './src/cities.ts';
-import { tierOf, budgetState, trainBudgetState, trainPaceView, cleanDomain, workerPull, workerAnswer, localStatus, localOnline, ladderTick, localQueueView } from './src/brains.ts';
+import { tierOf, budgetState, trainBudgetState, trainPaceView, questionHash, cleanDomain, workerPull, workerAnswer, localStatus, localOnline, ladderTick, localQueueView } from './src/brains.ts';
 import { borderCheck } from './src/military.ts';
 import { placeView as governmentPlace } from './src/president.ts'; // government buildings (Government box)
 import { placeView as peoplePlace, nowDoing, staffOnDuty } from './src/daily.ts'; // the people's buildings, the robot card and who is on duty (People box)
@@ -196,6 +196,9 @@ const ctx = {
   // examples kept per field of study ({ total, byDomain }, cached 30 s): the school sends teacher-only lessons to the
   // fields with the least data first
   trainCounts: () => trainCounts(),
+  // is this question already in the distillation set? (the same hash as saveExample: the stem without its options,
+  // case and spacing normalised) The school asks before paying a teacher, so a duplicate is never paid for.
+  trainKnown: question => typeof question === 'string' && question.length > 0 && question.length <= 20000 && store.trainHas(questionHash(question)),
   // time helpers: everything that happens "N times a day" is a rate per hour of republic time
   hourMs: () => CFG.dayMs / 24,
   hoursSince: ms => (Date.now() - ms) / (CFG.dayMs / 24),

@@ -86,6 +86,11 @@ try {
     const bd = st.trainByDomain(), onlyMath = st.trainPage(0, 100, 'math');
     check('train_examples: a field per row, counts per field, export per field, and the same question hash is refused', idM > 0 && idDup === 0 && idB > 0 && bd.math === 1 && bd.biology === 1 && bd.general === 3
       && onlyMath.length === 1 && onlyMath[0].domain === 'math' && onlyMath[0].teacherKind === 'claude' && onlyMath[0].verified === 'key', JSON.stringify({ idM, idDup, idB, bd, onlyMath: onlyMath.map(r => r.question) }));
+    // ctx.trainKnown: a question already kept is known before a teacher is paid (same hash as saveExample)
+    const { questionHash } = await import('../src/brains.ts');
+    const kq = 'What is 6 x 7?\nA) 42\nB) 36\nC) 48\nD) 40';
+    st.trainAdd({ ...ex('kept q', 'math', questionHash(kq)), question: kq }, 100);
+    check('trainKnown: a kept question is known again (case, spacing and option order do not matter), another is not', st.trainHas(questionHash('what is 6 X 7?  \nA) 36\nB) 48\nC) 42\nD) 40')) && !st.trainHas(questionHash('What is 6 x 8?\nA) 48')) && !st.trainHas('') && !st.trainHas(null));
     st.close(); try { fs.rmSync(LD, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch { /* windows handle */ }
   }
   // migration: a database made before fields of study opens with the new columns; old rows read as 'general'
