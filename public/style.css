@@ -44,7 +44,7 @@ input, textarea { font: inherit; color: var(--text); }
 .stat b { color: var(--gold); font-family: var(--mono); font-size: 19px; font-weight: 700; line-height: 1.1; white-space: nowrap; }
 .stat span { color: var(--muted); font-size: 10px; letter-spacing: .12em; margin-top: 3px; white-space: nowrap; }
 .controls { display: flex; align-items: center; gap: 10px; flex: none; }
-#enginePill { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+#enginePill { max-width: 380px; overflow: hidden; text-overflow: ellipsis; }
 .utable { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; }
 .utable th { color: var(--dim); font-family: var(--mono); font-size: 10.5px; font-weight: 400; text-align: left; letter-spacing: .06em; padding: 4px 6px 4px 0; border-bottom: 1px solid var(--line); }
 .utable td { padding: 6px 6px 6px 0; border-bottom: 1px solid var(--line); vertical-align: top; overflow-wrap: anywhere; }

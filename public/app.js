@@ -56,8 +56,16 @@ function brainMix() {
   const label = String(st.config.engineLabel || '').toLowerCase(); const parts = [];
   if (label.includes('claude')) parts.push('Claude');
   if (label.includes('openrouter')) parts.push('OpenRouter');
-  if (st.localBrain?.model) parts.push(/ollama/i.test(st.localBrain.model) ? 'Ollama' : 'local');
+  if (st.localBrain?.model) parts.push(localLabel(st.localBrain.model));
   return parts.length ? `mix: ${parts.join(' · ')}` : (st.config.engineLabel || 'llm engine');
+}
+// the citizens' local brain: "ollama/qwen3:8b" -> "Ollama", "llamacpp/qwen3:8b+general" -> "llama.cpp + LoRA (general)"
+const RUNTIME = { ollama: 'Ollama', llamacpp: 'llama.cpp', 'llama.cpp': 'llama.cpp', vllm: 'vLLM', lmstudio: 'LM Studio', mlx: 'MLX' };
+function localLabel(model) {
+  const m = String(model || '').slice(0, 120).match(/^([a-z0-9._-]+)\/([^+]*)(?:\+([A-Za-z0-9._-]{1,40}))?$/i);
+  if (!m) return 'local';
+  const rt = RUNTIME[m[1].toLowerCase()] || 'local';
+  return m[3] ? `${rt} + LoRA (${m[3]})` : rt;
 }
 
 // ------------------------------------------------------------ government chart
