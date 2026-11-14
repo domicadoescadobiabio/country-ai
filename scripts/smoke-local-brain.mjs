@@ -336,6 +336,35 @@ try {
     for (let i = 0; i < 20; i++) { await wait(1000); bs = await get('/api/state'); if (llamaBodies.length >= 3 && bs.localBrain?.model === 'llamacpp/qwen3:8b') break; }
     base.kill();
     check('LLAMA_LORA_SCALE=0 rolls back to the base model: every adapter off, label llamacpp/qwen3:8b', llamaBodies.length > 0 && llamaBodies.every(x => JSON.stringify(x.lora) === '[{"id":0,"scale":0},{"id":1,"scale":0}]') && bs.localBrain?.model === 'llamacpp/qwen3:8b', JSON.stringify({ lora: llamaBodies[0]?.lora, model: bs?.localBrain?.model }));
+    // the real server keeps what the runner says it is (cleanRunner, ticket #562)
+    check('the runner tells the server its backend, adapter and scale (localBrain.runner)', ls.localBrain?.runner?.backend === 'llamacpp' && ls.localBrain.runner.adapter === 'general' && ls.localBrain.runner.loraScale === 1 && ls.localBrain.runner.version === 3, JSON.stringify(ls.localBrain?.runner));
+    // ticket #562: each school job carries its field (job.domain); the runner maps it to an adapter it has checked is
+    // loaded, else general. A small stand-in republic hands out jobs with known fields, so this never depends on the
+    // test republic happening to teach a field lesson in time (ticket #568: 0 field jobs in one run).
+    const DOMAINS = ['law', 'physics', null, '../../adapters/x', 'LAW', 'law'];
+    let pulls = 0; const fakeAnswers = []; let fakeRunner = null;
+    const fake = http.createServer((req, res) => {
+      let b = ''; req.on('data', c => { b += c; }); req.on('end', () => {
+        const body = JSON.parse(b || '{}'); res.writeHead(200, { 'content-type': 'application/json' });
+        if (req.url === '/api/worker/answer') { fakeAnswers.push(...(body.answers || [])); return res.end('{"ok":true}'); }
+        fakeRunner = body.runner; const i = pulls++;
+        if (i >= DOMAINS.length) return res.end('{"jobs":[]}');
+        const d = DOMAINS[i];
+        res.end(JSON.stringify({ jobs: [{ id: `school:f${i}:1`, system: 'You study.', user: `Question: q${i}\nA) yes\nB) no`, format: 'letter', ...(d != null ? { domain: d } : {}) }] }));
+      });
+    });
+    await new Promise(r => fake.listen(0, '127.0.0.1', r));
+    llamaBodies.length = 0; llamaIds = [0, 1];
+    const per = spawn(process.execPath, ['scripts/local-brain.mjs'], { cwd: ROOT, env: llamaEnv({ COUNTRY_URL: `http://127.0.0.1:${fake.address().port}`, PARALLEL: '1', LLAMA_LORAS: 'general:0,law:1' }), stdio: ['ignore', 'pipe', 'pipe'] });
+    for (let i = 0; i < 40 && fakeAnswers.length < DOMAINS.length; i++) await wait(250);
+    per.kill(); fake.close();
+    const on = b => (b.lora || []).filter(x => x.scale > 0).map(x => x.id);
+    const byQ = Object.fromEntries(llamaBodies.map(b => [String(b.messages?.[1]?.content || '').match(/q(\d+)/)?.[1], on(b)]));
+    const labels = Object.fromEntries(fakeAnswers.map(a => [String(a.id).match(/f(\d+)/)?.[1], a.model]));
+    const want = { 0: [1], 1: [0], 2: [0], 3: [0], 4: [1], 5: [1] }; // law, physics (no adapter), none, a path, LAW (case folded), law
+    check('llamacpp: a school job carrying its field uses that field\'s adapter, the rest use general (exactly one adapter on)', llamaBodies.length === DOMAINS.length && Object.entries(want).every(([i, ids]) => JSON.stringify(byQ[i]) === JSON.stringify(ids)), JSON.stringify(byQ));
+    check('llamacpp: each answer is labelled with the adapter that gave it (+law, else +general)', [0, 4, 5].every(i => labels[i] === 'llamacpp/qwen3:8b+law') && [1, 2, 3].every(i => labels[i] === 'llamacpp/qwen3:8b+general'), JSON.stringify(labels));
+    check('llamacpp: the pull carries backend, adapter and scale in runner', fakeRunner?.backend === 'llamacpp' && fakeRunner.adapter === 'general' && fakeRunner.loraScale === 1, JSON.stringify(fakeRunner));
   } finally { llama.close(); }
 
   // ---- local-brain.cmd (owner, 14 Nov): llama.cpp by default, llama-server started when it does not answer

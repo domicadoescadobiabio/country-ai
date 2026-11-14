@@ -601,7 +601,7 @@ for (const phase of ['night', 'day']) {
   school._resetSchool(); _resetLocal();
   const kidsT = Array.from({ length: 120 }, (_, i) => ({ id: `t${i}`, name: `T ${i}`, city: 'neura', status: 'free', wallet: 300, traits, bio: ['Poet', 'Judge', 'Nurse', 'Code reviewer'][i % 4] + ' in Neura City.', diary: [], practice: {}, quals: {}, record: [], lessons: {}, joinedDay: 0, training: [] }));
   const TS = { day: 6, foundedAt: Date.now() - (5 * 24 + 12) * 3600000, policy: { wage: 100, taxRate: 0.1, ubi: 20 }, cities: { neura: { health: 70, budget: 0 } }, treasury: 0, citizens: kidsT, seats: {}, elections: { list: [] }, applications: {}, police: { incidents: [] }, academy: { rooms: [] }, feed: {} };
-  const calls = []; const savedT = []; const knownAsked = { n: 0, set: new Set() };
+  const calls = []; const savedT = []; const knownAsked = { n: 0, set: new Set(), texts: [] };
   const tllm = { enabled: true, hasOR: true, hasClaude: false, json: llm.json,
     askDetailed: async q => { calls.push(q); const qline = (String(q.user).match(/Question: (.*)/) || [])[1] || ''; const key = school.solveFieldQuestion(qline);
       const L = [...school._pending()].find(() => false); void L;
@@ -611,7 +611,7 @@ for (const phase of ['night', 'day']) {
   const counts = { byDomain: Object.fromEntries(pop.FIELD_IDS.map(f => [f, 50])) }; counts.byDomain.philosophy = 9; counts.byDomain.civics = 12; counts.byDomain.law = 14; counts.byDomain.programming = 72;
   const tctx = { S: TS, cfg: { dayMs: 86400000, trainBudgetUsd: 20, trainOrMinUsd: 15, dailyBudgetUsd: 100, trainMix: 'openrouter:100' }, hourMs: () => 3600000, say() {}, agent: id => TS.citizens.find(x => x.id === id), record() {}, log() {}, llm: tllm, trainExample: e => savedT.push(e), trainCounts: () => counts,
     // ticket #540: the dataset already holds some questions (here every third by length); those are never sent to a teacher
-    trainKnown: u => { knownAsked.n++; const k = String(u).length % 3 === 0; if (k) knownAsked.set.add((String(u).match(/Question: (.*)/) || [])[1]); return k; } };
+    trainKnown: u => { knownAsked.n++; knownAsked.texts.push(String(u)); const k = String(u).length % 3 === 0; if (k) knownAsked.set.add((String(u).match(/Question: (.*)/) || [])[1]); return k; } };
   const { trainPaceView } = await import('../src/brains.ts');
   // after a restart the pace is not worked out yet: pacedAt is null until the first school tick (ticket #538)
   check('after a restart school.teacher says its pace is not fresh yet (pacedAt null)', school.schoolState(TS).teacher.pacedAt === null && school.teacherPace().pacedAt === null);
@@ -637,6 +637,10 @@ for (const phase of ['night', 'day']) {
   const asked = calls.map(q => (String(q.user).match(/Question: (.*)/) || [])[1]).filter(Boolean);
   check('a teacher is never paid twice for the same question (the dataset would refuse it as a duplicate)', asked.length > 0 && new Set(asked).size === asked.length, `${asked.length} asked, ${new Set(asked).size} distinct`);
   check('a question the dataset already holds (ctx.trainKnown) is never sent to a teacher (ticket #540)', knownAsked.n > 0 && knownAsked.set.size > 0 && !asked.some(q => knownAsked.set.has(q)),`${knownAsked.n} looked up, ${knownAsked.set.size} known`);
+  // ticket #558: the text looked up is the text later saved, so the server's questionHash (the qhash index) matches
+  const { questionHash } = await import('../src/brains.ts');
+  const lookedUp = new Set(knownAsked.texts.map(questionHash));
+  check('the question looked up in ctx.trainKnown hashes the same as the pair later saved (ticket #558), well under 20,000 characters', savedT.length > 0 && savedT.every(e => e.qhash && lookedUp.has(e.qhash)) && knownAsked.texts.every(t => t.length <= 20000), `${savedT.filter(e => !lookedUp.has(e.qhash)).length} of ${savedT.length} saved pairs were never looked up`);
   check('every teacher-only pair is checked against the server key before it counts as kept', savedT.every(e => e.verified === 'key') && st.teacherOnlyKept === savedT.length && Object.values(st.keptByField).reduce((a, b) => a + b, 0) === savedT.length, JSON.stringify(st.keptByField));
   check('a teacher-only lesson leaves the teacher\'s explanation in the reader\'s notebook', kidsT.some(a => Object.values(a.school?.notes || {}).flat().some(n => /method, step by step/.test(n))));
   // a wrong teacher answer is not kept
