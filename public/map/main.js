@@ -614,7 +614,7 @@ function ingest(s) {
   if (fresh.length) st.lastTs = fresh[fresh.length - 1].ts;
   recs.clear(); // look-ups go stale (people are released): ask again with each fresh state, every 2 minutes
   scenes.sync(s);
-  renderClock();
+  renderClock(); renderLeaders();
 }
 // name tags over scene actors (exam candidates, trials, inmates, arrests, polling)
 const sceneLabels = new Map();
@@ -659,6 +659,141 @@ async function drain() {
   setTimeout(drain, queue.length > 10 ? 300 : 900);
 }
 
+// ------------------------------------------------------------ zoom: buttons, level, help
+const camDist = () => camera.position.distanceTo(controls.target);
+const zoomName = d => (d > 3500 ? 'Country' : d > 900 ? 'City' : d > 260 ? 'District' : 'Street');
+let zoomAnim = 0;
+function zoomTo(dist, ms = 380) {
+  const want = Math.min(controls.maxDistance, Math.max(controls.minDistance, dist));
+  const from = camDist(); const dir = camera.position.clone().sub(controls.target).normalize(); const t0 = performance.now(); const id = ++zoomAnim;
+  const step = now => {
+    if (id !== zoomAnim) return; const k = Math.min(1, (now - t0) / ms); const e = 1 - (1 - k) ** 3;
+    camera.position.copy(controls.target).addScaledVector(dir, from + (want - from) * e); if (k < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+function fitView() { const c = st.city && data.cities[st.city]; if (c) flyTo(c.cx, c.cz, 1300); else flyTo(0, 0, 7200, 1500); }
+let zoomShown = '';
+function showZoom() {
+  const d = camDist(); const t = `${zoomName(d)} · ${d >= 1000 ? `${(d / 1000).toFixed(1)} km` : `${Math.round(d)} m`}`;
+  if (t !== zoomShown) { zoomShown = t; $('#zoomLevel').textContent = t; }
+}
+function zoomUi() {
+  $('#zoomIn').addEventListener('click', () => zoomTo(camDist() / 1.8));
+  $('#zoomOut').addEventListener('click', () => zoomTo(camDist() * 1.8));
+  $('#zoomFit').addEventListener('click', fitView);
+  $('#zoomTip').textContent = mobile ? 'Pinch or use + / − to zoom · drag with one finger to move · twist or drag with two fingers to rotate · ⤢ fits the city' : 'Scroll or use + / − to zoom · drag to move · right-drag (or Ctrl + drag) to rotate · ⤢ fits the selected city or the whole country';
+  $('#zoomHelp').addEventListener('click', () => { const tip = $('#zoomTip'); tip.hidden = !tip.hidden; $('#zoomHelp').setAttribute('aria-expanded', String(!tip.hidden)); });
+}
+
+// ------------------------------------------------------------ a short message at the top of the map
+function mapToast(text, ms = 3200) { const t = $('#mapToast'); t.textContent = text; t.hidden = false; clearTimeout(mapToast.t); mapToast.t = setTimeout(() => { t.hidden = true; }, ms); }
+
+// ------------------------------------------------------------ the marker over a person (or a building) we flew to
+const marker = new THREE.Group(); marker.visible = false; scene.add(marker);
+{
+  const glow = new THREE.MeshBasicMaterial({ color: new THREE.Color('#facc15').multiplyScalar(2.4), toneMapped: false, transparent: true, opacity: 0.95, depthTest: false });
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(7, 0.9, 8, 40).rotateX(Math.PI / 2), glow); ring.renderOrder = 5;
+  const arrow = new THREE.Mesh(new THREE.ConeGeometry(3, 7, 12).rotateX(Math.PI), glow); arrow.renderOrder = 5;
+  marker.add(ring, arrow); marker.userData = { ring, arrow };
+}
+let markTarget = null, markUntil = 0;
+function markOn(target, ms = 6000) { markTarget = target; markUntil = performance.now() + ms; marker.visible = true; }
+function updateMarker(now) {
+  if (!markTarget || now > markUntil) { marker.visible = false; markTarget = null; return; }
+  const t = markTarget; const s = t.size || 1; const k = (now / 1000) % 1;
+  marker.position.set(t.x, 0, t.z);
+  marker.userData.ring.position.y = 1; marker.userData.ring.scale.setScalar(s * (0.8 + k * 0.9)); marker.userData.ring.material.opacity = 1 - k * 0.7;
+  marker.userData.arrow.position.y = (t.y || 18) + Math.abs(Math.sin(now / 260)) * 5; marker.userData.arrow.scale.setScalar(s);
+}
+
+// ------------------------------------------------------------ the leaders panel
+const LEAD_OPEN = 'country-ai.map.leaders';
+const store = { get(k) { try { return localStorage.getItem(k); } catch { return null; } }, set(k, v) { try { localStorage.setItem(k, v); } catch { /* private mode */ } } };
+// where an office holder works when they are not on the map (president at the palace, a mayor at their city hall…)
+const OFFICE_OF = { president: 'palace', vice_president: 'vp_office', minister: 'ministry', council: 'parliament', judge: 'const_court', commissioner: 'election_comm', police_chief: 'police_hq', military_chief: 'military_hq', mayor: 'city_hall' };
+const groupOpen = new Map([['council', false]]); // the Council is long: closed until opened
+function leaderGroups() {
+  const s = st.state; if (!s) return [];
+  const seats = s.seats || {}; const roles = s.config?.roles || []; const cab = s.cabinet || {};
+  const seatsOf = r => roles.find(x => x.id === r)?.seats ?? (seats[r] || []).length;
+  const pf = Object.fromEntries(Object.entries(cab.portfolios || {}).map(([p, id]) => [id, p]));
+  const fill = (r, title, label) => { const ids = seats[r] || []; const rows = ids.map(id => ({ id, seat: r, title: label ? label(id) : title })); for (let i = ids.length; i < seatsOf(r); i++) rows.push({ id: null, seat: r, title }); return rows; };
+  const council = fill('council', 'Councillor', id => (id === cab.speaker ? 'Speaker of the Council' : 'Councillor')).sort((a, b) => (b.title.startsWith('Speaker') ? 1 : 0) - (a.title.startsWith('Speaker') ? 1 : 0));
+  const mayors = (s.cities || []).map(c => ({ id: c.mayor || null, seat: 'mayor', title: `Mayor of ${c.name || c.id}`, city: c.id }));
+  return [
+    ['president', 'President', fill('president', 'President')],
+    ['vice_president', 'Vice President', fill('vice_president', 'Vice President')],
+    ['minister', 'Ministers', fill('minister', 'Minister', id => (pf[id] ? `Minister of ${pretty(pf[id])}` : 'Minister'))],
+    ['council', 'Council', council],
+    ['judge', 'Judges', fill('judge', 'Judge')],
+    ['police_chief', 'Chief of Police', fill('police_chief', 'Chief of Police')],
+    ['military_chief', 'Commander of the Military', fill('military_chief', 'Commander of the Military')],
+    ['mayor', 'Mayors', mayors],
+    ['commissioner', 'Election Commission', fill('commissioner', 'Commissioner')],
+  ].filter(([, , rows]) => rows.length);
+}
+// where a person is right now on the map, in words
+function whereNow(a) {
+  if (!a) return 'not on the map yet';
+  const city = data.cities[a.city]?.name || a.city || '';
+  if (a.state === 'walk') return `walking to ${a.dest ? a.dest.name : 'home'} · ${city}`;
+  if (a.state === 'stay' && a.dest) return `inside ${a.dest.name} · ${city}`;
+  if (a.state === 'pin' || a.state === 'loop') return `${a.b?.name || 'out'} · ${city}`;
+  return `at home${a.home?.name ? ` (${a.home.name})` : ''} · ${city}`;
+}
+function renderLeaders() {
+  const body = $('#leadersBody'); const groups = leaderGroups();
+  const filled = groups.reduce((n, [, , rows]) => n + rows.filter(r => r.id).length, 0), total = groups.reduce((n, [, , rows]) => n + rows.length, 0);
+  $('#leadersCount').textContent = total ? `${filled}/${total}` : '';
+  if (body.hidden) return;
+  body.replaceChildren(...groups.map(([key, title, rows]) => {
+    const d = h('details', { open: groupOpen.has(key) ? groupOpen.get(key) : true, ontoggle: e => groupOpen.set(key, e.currentTarget.open) },
+      h('summary', {}, h('b', { text: title }), h('small', { text: `${rows.filter(r => r.id).length}/${rows.length}` })));
+    d.append(h('ul', {}, rows.map(r => {
+      if (!r.id) return h('li', { class: 'vacant', onclick: () => mapToast(`${r.title}: vacant`) }, h('span', { class: 'role', text: r.title }), h('b', { text: 'vacant' }));
+      const a = agents.byId.get(r.id);
+      return h('li', { onclick: () => showLeader(r) }, h('span', { class: 'role', text: r.title }), h('b', { text: nameOf(r.id) }), h('small', { text: whereNow(a) }));
+    })));
+    return d;
+  }));
+}
+// fly to the person: to the robot when it is out on the map, else to the building they are in (or their office)
+function showLeader(r) {
+  if (!r.id) { mapToast(`${r.title}: vacant`); return; }
+  const a = agents.byId.get(r.id); const name = nameOf(r.id);
+  const out = a && (a.state === 'walk' || a.state === 'pin' || a.state === 'loop' || a.liveUntil > performance.now());
+  if (a && out) { flyTo(a.x, a.z, 260, 1000); markOn(a); showAgent(a); return; }
+  let b = a?.state === 'stay' ? a.dest : null; let athome = false;
+  if (!b && a?.state === 'home') { b = a.home; athome = true; }
+  if (!b) { // not drawn on the map: their office
+    const type = OFFICE_OF[r.seat]; const city = r.city || postedCity(r.id) || 'neura';
+    const port = r.seat === 'minister' ? Object.entries(st.state?.cabinet?.portfolios || {}).find(([, id]) => id === r.id)?.[0] : null;
+    const pool = data.buildings.filter(x => x.type === type);
+    b = pool.find(x => port && x.extra?.portfolio === port) || pool.find(x => x.city === city) || pool[0] || null;
+  }
+  if (!b) { mapToast(`${name}: no place on the map yet`); return; }
+  flyTo(b.x, b.z, 380, 1100); markOn({ x: b.x, z: b.z, y: (b.h || 20) + 12, size: Math.min(4, Math.max(1.5, b.w / 30)) });
+  mapToast(athome ? `${name} (${r.title}) is at home, inside ${b.name}` : `${name} (${r.title}) is inside ${b.name}`, 4200);
+  if (a) showAgent(a); else showBuilding(b);
+}
+function leadersUi() {
+  const body = $('#leadersBody'), btn = $('#leadersToggle');
+  const set = open => { body.hidden = !open; btn.setAttribute('aria-expanded', String(open)); btn.classList.toggle('on', open); store.set(LEAD_OPEN, open ? '1' : '0'); if (open) renderLeaders(); };
+  btn.addEventListener('click', () => set(body.hidden));
+  // on a phone it starts closed (it would cover the city); /map.html?leaders=open opens it
+  const qs = new URLSearchParams(location.search);
+  set(qs.get('leaders') === 'open' || (store.get(LEAD_OPEN) === '1' && !mobile));
+  // /map.html?leader=judge (or =any): fly to the first holder of that office once the map is ready (links and checks)
+  const want = qs.get('leader');
+  if (want && /^[a-z_]{2,20}$/.test(want)) setTimeout(() => {
+    const rows = leaderGroups().flatMap(([k, , r]) => (want === 'any' || k === want ? r : []));
+    const r = rows.find(x => x.id) || rows[0];
+    if (r) showLeader(r); else mapToast('No such office');
+  }, 1500);
+  setInterval(() => { if (!body.hidden && !document.hidden && !inside) renderLeaders(); }, 5000); // where they are now
+}
+
 // ------------------------------------------------------------ boot
 function legend() {
   $('#acts').replaceChildren(...Object.entries(ACT_COLOR).filter(([k]) => k !== 'rest').map(([k, c]) => h('span', {}, h('i', { color: c }), k)), h('span', {}, h('i', { color: '#2563eb' }), 'police'), h('span', {}, h('i', { color: '#4d7c0f' }), 'military'),
@@ -685,7 +820,7 @@ async function boot() {
   scenes = new Scenes(agents, data, { nameOf, roleTitle, citizen, fetchCitizen });
   coverage = buildCoverage(scene, data);
   life = buildLife(scene, data, { traffic: mobile ? 140 : 360 });
-  makeLabels(); cityButtons(); legend();
+  makeLabels(); cityButtons(); legend(); zoomUi(); leadersUi();
   if (st.state) ingest(st.state);
   setTimeout(poll, 120000); stream(); drain();
   setInterval(() => { if (scenes.dirty) scenes.sync(st.state); }, 3000); // citizen look-ups finished: redraw the prison
@@ -721,7 +856,7 @@ async function boot() {
     for (const l of liveLabels.values()) { l.pos.set(l.a.x, 14, l.a.z); if (!(l.a.liveUntil > now)) { l.el.style.display = 'none'; l.dead = true; } else l.dead = false; }
     for (const [id, l] of liveLabels) if (l.dead) { l.el.remove(); labels.splice(labels.indexOf(l), 1); liveLabels.delete(id); }
     for (const [id, l] of bubbles) { l.pos.set(l.a.x, 22 * (l.a.scale || 1), l.a.z); if (now > l.until) { l.el.remove(); labels.splice(labels.indexOf(l), 1); bubbles.delete(id); } }
-    drawArcs(now); sky.position.copy(camera.position);
+    drawArcs(now); sky.position.copy(camera.position); updateMarker(now); showZoom();
     sceneTags(); placeLabels(); composer.render();
   });
 }

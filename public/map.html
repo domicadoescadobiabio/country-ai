@@ -7,7 +7,7 @@
   <meta name="description" content="A live 3D map of COUNTRY AI: five cities, every public building, and citizens walking to what they actually decided to do.">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/vendor/fonts/fonts.css?v=1">
-  <link rel="stylesheet" href="/map/map.css?v=7">
+  <link rel="stylesheet" href="/map/map.css?v=8">
 </head>
 <body>
   <canvas id="scene" aria-label="3D map of the country"></canvas>
@@ -24,6 +24,23 @@
     <button class="close" id="infoClose" type="button" aria-label="Close">×</button>
     <div id="infoBody"></div>
   </aside>
+
+  <!-- the country's leaders: open/close, grouped by office; a click flies to where that person is -->
+  <section class="leaders" id="leaders" aria-label="Leaders">
+    <button class="leaders-toggle" id="leadersToggle" type="button" aria-expanded="false" aria-controls="leadersBody">👑 Leaders <span id="leadersCount"></span></button>
+    <div class="leaders-body" id="leadersBody" hidden></div>
+  </section>
+
+  <!-- zoom: + / − / fit, the current zoom level, and how to move around -->
+  <nav class="zoom" id="zoom" aria-label="Zoom">
+    <button type="button" id="zoomIn" aria-label="Zoom in" title="Zoom in">+</button>
+    <span class="zoom-level" id="zoomLevel" aria-live="polite"></span>
+    <button type="button" id="zoomOut" aria-label="Zoom out" title="Zoom out">−</button>
+    <button type="button" id="zoomFit" aria-label="Fit the city or the country" title="Fit the selected city (or the whole country)">⤢</button>
+    <button type="button" id="zoomHelp" aria-label="How to move the map" aria-expanded="false" title="How to move the map">?</button>
+  </nav>
+  <p class="zoom-tip" id="zoomTip" hidden></p>
+  <div class="map-toast" id="mapToast" role="status" hidden></div>
 
   <section class="feed" id="feedBox" aria-label="Live thoughts">
     <h3>Live · what citizens feel and do</h3>
@@ -46,6 +63,6 @@
   <!-- going inside a building: a short loading screen, then the room (public/map/interior.js) -->
   <div class="enter" id="enter" hidden><div class="enter-box"><p id="enterTitle">Entering…</p><div class="enter-bar"><i id="enterBar"></i></div><small id="enterStep"></small></div></div>
   <button class="inside-back" id="insideBack" type="button">← Back to the map <kbd>Esc</kbd></button>
-  <script src="/map/main.js?v=9" type="module"></script>
+  <script src="/map/main.js?v=10" type="module"></script>
 </body>
 </html>
