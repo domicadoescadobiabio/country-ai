@@ -301,14 +301,24 @@ try {
   check('occupation: every citizen (lite and full) reads student, official or citizen; an office holder reads official',
     occAll.citizens.every(a => OCC.includes(a.occupation) && (!a.office || a.occupation === 'official') && (a.occupation !== 'official' || a.office))
     && occPub.citizens.every(a => OCC.includes(a.occupation) && (!a.office || a.occupation === 'official')), JSON.stringify(occAll.citizens.find(a => !OCC.includes(a.occupation)) || null));
-  const occStu = await get('/api/citizens?lite=1&size=2000&occupation=student'), occOff = await get('/api/citizens?occupation=official&size=200'), occCit = await get('/api/citizens?lite=1&size=1&occupation=citizen');
+  const occStu = await get('/api/citizens?lite=1&size=2000&occupation=student'), occOff = await get('/api/citizens?occupation=official&size=200');
   const occBad = await fetch(BASE + '/api/citizens?occupation=__proto__'), occBad2 = await fetch(BASE + '/api/citizens?lite=1&occupation=Student');
+  // offices change hands while the republic runs (a smoke day is 0.5 s), so the three counts and the whole are read
+  // again (uncached, no ?lite) until they come from one quiet moment
+  let occSum = null;
+  for (let i = 0; i < 8; i++) {
+    const [s, o, c, all] = await Promise.all(['student', 'official', 'citizen', null].map(k => get(`/api/citizens?size=1${k ? `&occupation=${k}` : ''}`)));
+    occSum = { stu: s.total, off: o.total, cit: c.total, all: all.total };
+    if (occSum.stu + occSum.off + occSum.cit === occSum.all) break;
+    await wait(50);
+  }
   check('occupation: ?occupation= filters (student, official, citizen together are everyone) and anything else is 400',
-    occStu.citizens.every(a => a.occupation === 'student') && occOff.citizens.every(a => a.occupation === 'official' && a.office) && occStu.total + occOff.total + occCit.total === occAll.total
-    && occBad.status === 400 && occBad2.status === 400, JSON.stringify({ stu: occStu.total, off: occOff.total, cit: occCit.total, all: occAll.total, bad: [occBad.status, occBad2.status] }));
+    occStu.citizens.every(a => a.occupation === 'student') && occOff.citizens.every(a => a.occupation === 'official' && a.office) && occSum.stu + occSum.off + occSum.cit === occSum.all
+    && occBad.status === 400 && occBad2.status === 400, JSON.stringify({ ...occSum, bad: [occBad.status, occBad2.status] }));
   if (occStu.citizens[0]) {
+    // (a student who has just taken an office reads official: a student is never shown in an office)
     const occOne = (await get(`/api/citizens/${occStu.citizens[0].id}`)).citizen;
-    check('occupation: a student\'s own card reads student (not a plain citizen)', occOne.occupation === 'student' && !occOne.office, JSON.stringify({ id: occOne.id, occupation: occOne.occupation }));
+    check('occupation: a student\'s own card reads student (not a plain citizen)', (occOne.occupation === 'student' && !occOne.office) || (occOne.occupation === 'official' && occOne.office), JSON.stringify({ id: occOne.id, occupation: occOne.occupation, office: occOne.office }));
   }
   const occSt = await get('/api/state'); const ps = occSt.population;
   check('occupation: population counts the students (population.students, byOccupation summing to the total), stats.students and /api/map too',
@@ -433,9 +443,10 @@ try {
   // people are listed in the city where they are now (a minister from another city sits in the capital), so the
   // cities together hold every citizen exactly once
   const allCities = (full.cities || []).map(c => c.id), everyone = (await get('/api/citizens?lite=1&size=1')).total;
-  const seenWb = new Map(); let wbMore = 0;
-  for (const c of allCities) { const v = await get(`/api/whereabouts?city=${c}`); wbMore += v.more || 0; for (const p of v.people) seenWb.set(p[0], (seenWb.get(p[0]) || 0) + 1); }
-  check('whereabouts: all cities together list every citizen exactly once (each where they are now)', seenWb.size + wbMore === everyone && [...seenWb.values()].every(n => n === 1), JSON.stringify({ listed: seenWb.size, more: wbMore, everyone, twice: [...seenWb].filter(([, n]) => n > 1).slice(0, 3) }));
+  const seenWb = new Map(); let wbMore = 0; const wbAt = new Set();
+  for (const c of allCities) { const v = await get(`/api/whereabouts?city=${c}`); wbAt.add(v.at); wbMore += v.more || 0; for (const p of v.people) seenWb.set(p[0], (seenWb.get(p[0]) || 0) + 1); }
+  // all cities are worked out at one instant (an official is in the capital by day and at home at night)
+  check('whereabouts: all cities together list every citizen exactly once (each where they are now), all at the same instant', wbAt.size === 1 && seenWb.size + wbMore === everyone && [...seenWb.values()].every(n => n === 1), JSON.stringify({ at: [...wbAt], listed: seenWb.size, more: wbMore, everyone, twice: [...seenWb].filter(([, n]) => n > 1).slice(0, 3) }));
   const wb2 = await get(`/api/whereabouts?city=${city0}`);
   check('whereabouts: cached 30 s per city', wb2.at === wb.at && wb2.people.length === wb.people.length);
   const wbBurst = []; for (let i = 0; i < 31; i++) wbBurst.push(await fetch(`${BASE}/api/whereabouts?city=${city0}`, { headers: { 'x-forwarded-for': '203.0.113.90' } }));

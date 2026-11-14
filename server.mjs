@@ -558,8 +558,8 @@ function nowCard(id) {
 const WHERE_PLACES = new Set([...Object.keys(PLACE_TYPES), 'home', 'asleep', 'street', 'outside', 'unknown']);
 const WHEREABOUTS_PER_MIN = clamp(Number(process.env.WHEREABOUTS_PER_MIN) || 30, 1, 6000);
 const whereCache = new Map(), whereHits = new Map();
-function whereaboutsRaw(city) {
-  if (typeof dailyMod.whereabouts === 'function') return dailyMod.whereabouts(S, city);
+function whereaboutsRaw(city, now = Date.now()) {
+  if (typeof dailyMod.whereabouts === 'function') return dailyMod.whereabouts(S, city, now);
   return { at: Date.now(), hour: null, night: false, people: S.citizens.filter(a => a.city === city).map(a => [a.id, a.status === 'jailed' ? 'prison' : a.status === 'detained' ? 'jail' : 'unknown', null]) };
 }
 function whereaboutsLimited(req) {
@@ -573,13 +573,21 @@ function handleWhereabouts(req, res) {
   if (!city || !CITIES.some(c => c.id === city)) return send(res, 400, { error: 'city: one of ' + CITIES.map(c => c.id).join(', ') });
   const wait = whereaboutsLimited(req);
   if (wait) { res.setHeader('retry-after', String(wait)); return send(res, 429, { error: `slow down: ${WHEREABOUTS_PER_MIN} reads a minute`, retryAfter: wait }); }
-  const hit = whereCache.get(city);
-  if (hit && Date.now() - hit.at < 30000) return send(res, 200, hit.view);
-  let raw = null;
-  try { raw = whereaboutsRaw(city); } catch (e) { logActivity('state', `whereabouts ${city}: ${String(e?.message || e).slice(0, 80)}`); raw = { people: [] }; }
-  const view = cleanWhereabouts(raw, { city, places: WHERE_PLACES, text: placeText, maxBytes: 150000 });
-  whereCache.set(city, { at: Date.now(), view });
-  return send(res, 200, view);
+  return send(res, 200, whereaboutsSnapshot().get(city));
+}
+// Every city at the same instant, kept 30 s: an official sits in the capital by day and sleeps at home at night, so
+// cities worked out at different moments could show one person in two cities, or in none (a few ms per city).
+function whereaboutsSnapshot() {
+  const hit = whereCache.get('all');
+  if (hit && Date.now() - hit.at < 30000) return hit.views;
+  const now = Date.now(), views = new Map();
+  for (const { id: city } of CITIES) {
+    let raw = null;
+    try { raw = whereaboutsRaw(city, now); } catch (e) { logActivity('state', `whereabouts ${city}: ${String(e?.message || e).slice(0, 80)}`); raw = { people: [] }; }
+    views.set(city, cleanWhereabouts(raw, { city, places: WHERE_PLACES, text: placeText, maxBytes: 150000 }));
+  }
+  whereCache.set('all', { at: now, views });
+  return views;
 }
 // GET /api/citizens?lite=1 for the map: the same page of a city is asked by every visitor, so it is kept 60 s (only
 // plain listings: no search text, no office filter; at most 300 pages kept)
@@ -590,6 +598,9 @@ function fullState() {
   const feed = {};
   for (const [ch, list] of Object.entries(S.feed)) feed[ch] = list.slice(-120);
   const compact = compactState();
+  // one population count for the whole answer (its 15 s cache could renew between stats() and here)
+  const population = populationSummary();
+  if (compact.stats) compact.stats.students = population.students;
   return {
     ...compact,
     config: {
@@ -603,7 +614,7 @@ function fullState() {
       constitution: CONSTITUTION, constitutionVersion: S.constitutionVersion || 1, amendments: S.amendments || [], appointed: ROLE_ORDER.filter(r => ROLES[r].appointed),
     },
     // 10,000 citizens do not fit in one response: the notable ones here, everyone through /api/citizens
-    citizens: notableCitizens().map(publicCitizen), population: populationSummary(), feed, activity: S.activity.slice(-120), decisions: S.decisions.slice(-120),
+    citizens: notableCitizens().map(publicCitizen), population, feed, activity: S.activity.slice(-120), decisions: S.decisions.slice(-120),
   };
 }
 
