@@ -33,7 +33,24 @@ const mobile = matchMedia('(pointer: coarse)').matches; // touch device: lighter
 const st = { state: null, lastTs: 0, feed: [], selected: null, city: null };
 // citizens outside the 160-odd in /api/state are looked up one by one and cached (undefined = never asked, null = pending/unknown)
 const recs = new Map();
-const citizen = id => st.state?.citizens?.find(c => c.id === id) || recs.get(id);
+const lite = new Map(); // the background robots' citizens (/api/citizens?lite=1): id -> { name, city, home, mood, goal }
+const citizen = id => st.state?.citizens?.find(c => c.id === id) || recs.get(id) || lite.get(id);
+// Real citizens for the background robots: one light request per city when the map opens, a random page of free
+// citizens each visit. Offline or on error: an empty list, and that city keeps anonymous sample walkers.
+async function loadBackground(cities, perCity) {
+  const seed = Math.floor(Math.random() * 1e9); const out = {};
+  await Promise.all(cities.map(async (c, i) => {
+    const pages = Math.max(1, Math.floor((Number(c.residents) || perCity) / perCity));
+    const page = 1 + ((seed + i * 7919) % pages);
+    const ask = async pg => { const r = await fetch(`/api/citizens?lite=1&status=free&city=${encodeURIComponent(c.id)}&size=${perCity}&page=${pg}`); return r.ok ? (await r.json())?.citizens : null; };
+    try {
+      let list = await ask(page); if ((!list || list.length < perCity / 2) && page > 1) list = await ask(1);
+      out[c.id] = Array.isArray(list) ? list : [];
+      for (const p of out[c.id]) if (p && typeof p.id === 'string') lite.set(p.id, p);
+    } catch { out[c.id] = []; }
+  }));
+  return out;
+}
 function fetchCitizen(id) {
   if (recs.has(id)) return Promise.resolve(recs.get(id));
   if (recs.size > 3000) recs.clear();
@@ -573,16 +590,55 @@ canvas.addEventListener('pointerup', e => {
   if (inside || entering) return; // inside a building the interior handles its own clicks
   if (!down || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 6) return;
   ndc.set(e.clientX / innerWidth * 2 - 1, -(e.clientY / innerHeight) * 2 + 1); ray.setFromCamera(ndc, camera);
-  if ($('#lyAgents').checked) { const a = agents.pickAt(ray); if (a) { showAgent(a); pokeAgent(a); return; } }
+  if ($('#lyAgents').checked) { const a = pickRobot(e.clientX, e.clientY); if (a) { showAgent(a); pokeAgent(a); return; } }
   const p = pick(ray, world.pickMap); if (p) { select(null); showBuilding(data.buildings[p.b]); }
 });
+// robots are picked on the screen (near the pointer), not by a ray against their small, fast meshes
+const PICK_PX = mobile ? 26 : 18;
+const pickRobot = (x, y) => agents.pickScreen(x, y, camera, innerWidth, innerHeight, PICK_PX);
 // hovering a robot shows a pointing hand: it is clickable
 let hoverAt = 0;
 canvas.addEventListener('pointermove', e => {
   if (mobile || !agents || inside || performance.now() - hoverAt < 80) return; hoverAt = performance.now();
-  ndc.set(e.clientX / innerWidth * 2 - 1, -(e.clientY / innerHeight) * 2 + 1); ray.setFromCamera(ndc, camera);
-  canvas.style.cursor = $('#lyAgents').checked && agents.pickAt(ray) ? 'pointer' : '';
+  canvas.style.cursor = $('#lyAgents').checked && pickRobot(e.clientX, e.clientY) ? 'pointer' : '';
 });
+// /map.html?selftest=pick: for every robot drawn on the screen, would a click on its head pick it? The old ray
+// (against the meshes, with the bounding sphere as three caches it) and the screen pick, side by side.
+function pickTest() {
+  const W = innerWidth, H = innerHeight; let n = 0, okScreen = 0, anyScreen = 0, okRay = 0, okRayStale = 0, named = 0, offScreen = 0, offRay = 0;
+  for (const m of agents.pickables) m.computeBoundingSphere(); // as three does once, on the first raycast
+  const stale = agents.pickables.map(m => m.boundingSphere.clone());
+  for (const a of agents.list) {
+    const p = agents.screenOf(a, camera, W, H); if (!p || p[0] < 0 || p[1] < 0 || p[0] > W || p[1] > H) continue;
+    n++; if (a.name) named++;
+    const s = pickRobot(p[0], p[1]); if (s) anyScreen++; if (s === a) okScreen++;
+    ndc.set(p[0] / W * 2 - 1, -(p[1] / H) * 2 + 1); ray.setFromCamera(ndc, camera);
+    // the old pick with a sphere cached at boot (all matrices identity): what production does after an early hover
+    agents.pickables.forEach((m, i) => { m.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 2.4); }); let hit = null;
+    for (const m of agents.pickables) { const x = ray.intersectObject(m, false)[0]; if (x && x.instanceId != null && (!hit || x.distance < hit.distance)) hit = x; }
+    if (hit && agents.list[hit.instanceId] === a) okRayStale++;
+    agents.pickables.forEach((m, i) => { m.boundingSphere = stale[i]; }); hit = null;
+    for (const m of agents.pickables) { const x = ray.intersectObject(m, false)[0]; if (x && x.instanceId != null && (!hit || x.distance < hit.distance)) hit = x; }
+    if (hit && agents.list[hit.instanceId] === a) okRay++;
+    // a real tap is rarely dead on: 10 px off the head, in a direction that depends on the robot
+    const ang = (a.phase || 0) * 3, ox = p[0] + Math.cos(ang) * 10, oy = p[1] + Math.sin(ang) * 10;
+    const so = pickRobot(ox, oy); if (so) offScreen++;
+    ndc.set(ox / W * 2 - 1, -(oy / H) * 2 + 1); ray.setFromCamera(ndc, camera); hit = null;
+    for (const m of agents.pickables) { const x = ray.intersectObject(m, false)[0]; if (x && x.instanceId != null && (!hit || x.distance < hit.distance)) hit = x; }
+    if (hit) offRay++;
+  }
+  for (const m of agents.pickables) m.boundingSphere = null;
+  const real = agents.list.filter(a => a.bg && a.name).length, anon = agents.list.filter(a => a.bg && !a.name).length;
+  const pc = (k) => (n ? `${Math.round(k / n * 100)}%` : '-');
+  const out = h('div', { class: 'selftest', text: `pick test · ${n} robots on screen (${named} with a name) · screen pick: exact ${okScreen} (${pc(okScreen)}), some robot ${anyScreen} (${pc(anyScreen)}) · old ray: fresh sphere ${okRay} (${pc(okRay)}), stale sphere ${okRayStale} (${pc(okRayStale)}) · tap 10 px off: screen ${pc(offScreen)}, ray ${pc(offRay)} · background robots: ${real} real citizens, ${anon} anonymous` });
+  document.body.append(out);
+  // and a click, as a visitor makes it: on the head of an ordinary (background) robot that is a real citizen
+  const onScreen = a => { const q = agents.screenOf(a, camera, W, H); return q && q[0] > 0 && q[1] > 0 && q[0] < W && q[1] < H; };
+  const bg = agents.list.find(a => a.bg && a.name && onScreen(a));
+  const p = bg && agents.screenOf(bg, camera, W, H); const got = p && pickRobot(p[0], p[1]);
+  if (got) showAgent(got);
+  return out.textContent;
+}
 
 // ------------------------------------------------------------ live data
 function renderFeed() {
@@ -816,7 +872,11 @@ async function boot() {
     const c = citizen(id); if (!c?.home || !st.state?.homeLayout) return null;
     return { home: c.home, layout: st.state.homeLayout, blocks: st.state.cities?.find(x => x.id === c.home.city)?.blocks };
   });
-  agents.populate(mobile ? 120 : 300);
+  { // every background robot is a real citizen (at most 4 s to fetch them; past that, anonymous walkers)
+    const per = mobile ? 120 : 300;
+    const people = await Promise.race([loadBackground(Object.values(data.cities).map(c => ({ id: c.id, residents: st.state?.cities?.find(x => x.id === c.id)?.residents })), per), new Promise(r => setTimeout(() => r({}), 4000))]);
+    agents.populate(per, people);
+  }
   scenes = new Scenes(agents, data, { nameOf, roleTitle, citizen, fetchCitizen });
   coverage = buildCoverage(scene, data);
   life = buildLife(scene, data, { traffic: mobile ? 140 : 360 });
@@ -841,12 +901,13 @@ async function boot() {
     if (ib) { controls.target.set(ib.x, 0, ib.z); camera.position.set(ib.x + 160, 190, ib.z + 200); setTimeout(() => enterBuilding(ib, false), 50); }
   }
   if (qs.get('selftest') === 'interior') setTimeout(selfTest, 100);
+  if (qs.get('selftest') === 'pick') setTimeout(pickTest, 1200); // after the robots have walked out for a while
   $('#lyShadows').checked = false; setShadows(false);
   $('#lyShadows').addEventListener('change', e => setShadows(e.target.checked));
   $('#lyAgents').addEventListener('change', e => { agents.visible = e.target.checked; });
   lighting(); setInterval(lighting, 60000); setInterval(renderClock, 30000);
   $('#loading').classList.add('done'); setTimeout(() => { $('#loading').hidden = true; }, 600);
-  window.COUNTRY_MAP = { data, agents, scenes, coverage, flyTo, camera, controls, night, pokeAgent, showAgent, composer, renderer, enterBuilding, exitBuilding }; // for debugging in the console
+  window.COUNTRY_MAP = { data, agents, scenes, coverage, flyTo, camera, controls, night, pokeAgent, showAgent, composer, renderer, enterBuilding, exitBuilding, pickRobot, pickTest }; // for debugging in the console
   let last = performance.now();
   renderer.setAnimationLoop(mapLoop = now => {
     if (now - last > 1000) last = now - 16; // back from inside a building: no jump

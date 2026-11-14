@@ -7,7 +7,7 @@ import { ACT_DEST, ACT_COLOR, MOODS, ACT_MOOD } from './catalog.js';
 import { PITCH, BLOCK, hash, rng } from './gen.js';
 
 const SPEED = 46; // metres per second on screen (time-lapse)
-const tmp = new THREE.Object3D(); const col = new THREE.Color(); const m4 = new THREE.Matrix4();
+const tmp = new THREE.Object3D(); const col = new THREE.Color(); const m4 = new THREE.Matrix4(); const pv = new THREE.Vector3();
 const HOUSING = ['houses', 'rowhouses', 'apartments', 'public_housing', 'kampung', 'villas'];
 const SEAT_PLACE = {
   president: ['palace'], vice_president: ['vp_office'], minister: ['ministry'], council: ['parliament'], judge: ['const_court'],
@@ -88,12 +88,22 @@ export class Agents {
   loop(a, track, phase) { a.state = 'loop'; a.track = track; a.t = phase; }
   walkTo(a, x, z, after) { a.path = route(this.cityOf(a.city), a.x, a.z, x, z, 0); a.seg = 0; a.state = 'walk'; a.target = { x, z }; a.after = after; }
 
-  // background population: n per city
-  populate(perCity) {
-    for (const c of Object.values(this.data.cities)) for (let k = 0; k < perCity; k++) {
-      const id = `${c.id}#${k}`; const home = this.homeFor(id, c.id);
-      if (!home) continue;
-      this.add({ id, name: null, city: c.id, home, x: home.x, z: home.z, state: 'home', wait: this.r() * 20, act: 'rest', color: ACT_COLOR.rest, scale: 1 });
+  // background population: n per city. people[cityId] = real citizens from /api/citizens?lite=1 (id, name, home,
+  // mood): each robot is one of them, so every robot opens a real card. A city with no list (offline, error) falls
+  // back to anonymous sample walkers, as before.
+  populate(perCity, people = {}) {
+    for (const c of Object.values(this.data.cities)) {
+      const real = (people[c.id] || []).filter(p => p && typeof p.id === 'string' && /^[a-z0-9-]{1,40}$/.test(p.id) && typeof p.name === 'string' && !p.office && p.status === 'free' && !this.byId.has(p.id)).slice(0, perCity);
+      for (const p of real) {
+        const home = this.homeFor(p.id, c.id); if (!home) continue;
+        const mood = typeof p.mood === 'object' ? p.mood?.label : p.mood;
+        this.add({ id: p.id, name: p.name.slice(0, 40), city: c.id, home, x: home.x, z: home.z, state: 'home', wait: this.r() * 20, act: 'rest', color: ACT_COLOR.rest, scale: 1, mood: MOODS[mood] ? mood : undefined, bg: true });
+      }
+      for (let k = real.length; k < perCity; k++) {
+        const id = `${c.id}#${k}`; const home = this.homeFor(id, c.id);
+        if (!home) continue;
+        this.add({ id, name: null, city: c.id, home, x: home.x, z: home.z, state: 'home', wait: this.r() * 20, act: 'rest', color: ACT_COLOR.rest, scale: 1, bg: true });
+      }
     }
   }
   // office holders from /api/state seats
@@ -121,9 +131,12 @@ export class Agents {
       const home = this.homeFor(e.agent, e.city);
       if (!home) return null;
       a = this.add({ id: e.agent, name: e.name || nameOf(e.agent), city: e.city, home, x: home.x, z: home.z, state: 'home', wait: 0, scale: 1.15 });
-      if (!a) { // full: reuse a background walker (never a scene actor or an office holder)
-        for (let k = 0; k < 20 && (!a || a.scene || a.seat || a.name); k++) a = this.list[Math.floor(this.r() * this.list.length)];
-        if (!a || a.scene || a.seat) return null;
+      if (!a) { // full: a background robot becomes this citizen (never a scene actor, an office holder or the selected one)
+        for (let k = 0; k < 30 && (!a || !a.bg || a.selected); k++) a = this.list[Math.floor(this.r() * this.list.length)];
+        if (!a || !a.bg || a.selected) return null;
+        const h = this.homeFor(e.agent, e.city);
+        this.byId.delete(a.id); a.id = e.agent; a.city = e.city; a.bg = false; a.mood = undefined; a.door = null; a.address = null;
+        if (h) { a.home = h; } this.byId.set(a.id, a);
       }
     }
     a.liveUntil = performance.now() + 45000; a.thought = e; a.name = e.name || a.name;
@@ -186,6 +199,7 @@ export class Agents {
       const live = a.liveUntil > now; const poked = a.pokeT && now - a.pokeT < 1600;
       const visible = a.state === 'walk' || a.state === 'pin' || a.state === 'loop' || live || a.selected;
       const s = visible ? a.scale * (live || a.selected ? 1.35 : 1) : 0;
+      a.vs = s; // drawn size, 0 = not on screen (screen picking uses it)
       // walking bob, idle sway, and the poke: a hop with a squash and a full spin
       let y = 0, sy = 1, spin = 0;
       if (a.state === 'walk') y = Math.abs(Math.sin(t * 9 + a.phase)) * 0.9;
@@ -201,12 +215,36 @@ export class Agents {
     }
     for (const m of [this.body, this.head, this.visor, this.tip]) { m.instanceMatrix.needsUpdate = true; if (m.instanceColor) m.instanceColor.needsUpdate = true; }
   }
+  // the old way, kept for comparison: a ray against the meshes. InstancedMesh caches its bounding sphere on the
+  // first raycast (three r187) and never refreshes it, so it is cleared on every pick.
   pickAt(ray) {
     if (!this.group.visible) return null;
     let best = null;
-    for (const m of this.pickables) { const h = ray.intersectObject(m, false)[0]; if (h && h.instanceId != null && (!best || h.distance < best.distance)) best = h; }
+    for (const m of this.pickables) { m.boundingSphere = null; const h = ray.intersectObject(m, false)[0]; if (h && h.instanceId != null && (!best || h.distance < best.distance)) best = h; }
     return best ? this.list[best.instanceId] : null;
   }
+  // Picking on the screen: every robot that is drawn has its head projected to the screen; the one nearest the
+  // pointer within radius px wins, and where several crowd under it (within half the radius) the one nearest the
+  // camera. Small and fast robots are easy to hit this way.
+  pickScreen(px, py, camera, W, H, radius = 18) {
+    if (!this.group.visible) return null;
+    const r2 = radius * radius; const hits = [];
+    for (const a of this.list) {
+      if (!(a.vs > 0)) continue;
+      pv.set(a.x, 5.5 * a.vs, a.z).project(camera);
+      if (pv.z > 1 || pv.z < -1) continue;
+      const dx = (pv.x + 1) / 2 * W - px, dy = (1 - pv.y) / 2 * H - py; const d2 = dx * dx + dy * dy;
+      if (d2 <= r2) hits.push([Math.sqrt(d2), a]);
+    }
+    if (!hits.length) return null;
+    // the nearest to the pointer; when others are almost as near (within 4 px), the one nearest the camera
+    let min = Infinity; for (const [d] of hits) if (d < min) min = d;
+    let best = null, cam = Infinity;
+    for (const [d, a] of hits) if (d <= min + 4) { const c = camera.position.distanceToSquared(pv.set(a.x, 0, a.z)); if (c < cam) { cam = c; best = a; } }
+    return best;
+  }
+  // where a robot's head is on the screen (null when not drawn): for checks
+  screenOf(a, camera, W, H) { if (!(a.vs > 0)) return null; pv.set(a.x, 5.5 * a.vs, a.z).project(camera); return pv.z > 1 || pv.z < -1 ? null : [(pv.x + 1) / 2 * W, (1 - pv.y) / 2 * H]; }
   at(instanceId) { return this.list[instanceId]; }
 }
 
