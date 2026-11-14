@@ -11,6 +11,7 @@ import { RenderPass } from '../vendor/three/RenderPass.js';
 import { UnrealBloomPass } from '../vendor/three/UnrealBloomPass.js';
 import { OutputPass } from '../vendor/three/OutputPass.js';
 import { MOODS } from './catalog.js';
+import { fmtTime } from '../clock.js'; // the republic's clock (ET)
 
 const MAX_BOTS = 60;
 const SHELLS = ['#f1f5f9', '#fce7f3', '#e0f2fe', '#ede9fe', '#dcfce7', '#fef9c3', '#ffe4e6', '#e0e7ff'];
@@ -28,6 +29,19 @@ const ROOM = {
   office: 'work', factory: 'work', community_hall: 'hall',
 };
 export const INTERIOR_TYPES = Object.keys(ROOM);
+// Where a person stands follows their role from /api/place, as in a real building: guards at the entrance, the desk
+// officer behind the front desk, wardens in front of the cells, bailiffs beside the bench, nurses at the station.
+// Only people the server lists are drawn; an empty building says so.
+const ROLE_POST = [
+  [/defendant|accused|on trial/i, 'dock'], [/judge|justice/i, 'judge'], [/arrested|detainee|\bheld\b/i, 'held'],
+  [/warden|jailer|turnkey|corrections|cell guard/i, 'cell'], [/bailiff|usher|court officer/i, 'bench'], [/nurse|doctor|medic/i, 'care'],
+  [/vault guard/i, 'vault'], [/gate guard|sentry/i, 'gate'],
+  [/desk|duty officer|reception|teller|clerk|cashier|stall|shopkeeper|librarian|registrar/i, 'desk'], [/bodyguard|escort|protection/i, 'escort'],
+  [/guard|security|gate|watchman|doorman|patrol/i, 'door'],
+  [/speaker|^president|vice president|^mayor|minister|commander|chief|teacher|lecturer|instructor|proctor|examiner|head\b|director|manager|commissioner/i, 'lead'],
+];
+const STAFF = new Set(['cell', 'bench', 'care', 'desk', 'escort', 'door', 'vault', 'gate']); // with no such post in the room: at the door
+const postOf = role => { for (const [re, k] of ROLE_POST) if (re.test(String(role || ''))) return k; return null; };
 
 // ------------------------------------------------------------ small builders
 function kit(scene) {
@@ -97,33 +111,38 @@ const ROOMS = {
     K.box(16, 5, 7, '#3b2a7a', 0, 0, -16); K.neon(16.4, 0.4, 0.4, '#f472b6', 0, 5, -12.4);
     const speaker = { x: 0, z: -19, rot: 0, sit: false, y: 5 }; // the podium
     const board = screen(K, s, 60, 26, 0, 30, -50, 0, '#f472b6');
-    return { slots: [speaker, ...slots], screens: { main: board }, cam: [0, 70, 105], look: [0, 6, 0] };
+    return { slots, posts: { lead: [speaker], bench: [{ x: -14, z: -16, rot: 0 }, { x: 14, z: -16, rot: 0 }] }, screens: { main: board }, cam: [0, 70, 105], look: [0, 6, 0] };
   },
   cabinet(K, s) { // Palace: the President's desk and the Cabinet room with a long table of 10 chairs
     floor(K, s, 140, 90, '#140b2c'); walls(K, s, 140, 90, '#1d1240');
     K.box(18, 4, 8, '#7c5a1e', -40, 0, -22); K.neon(18.2, 0.3, 0.3, '#fde047', -40, 4.2, -18);
     K.box(70, 3.4, 12, '#3b2a7a', 15, 0, 6); K.neon(70, 0.3, 0.3, '#22d3ee', 15, 3.6, 12.2); K.neon(70, 0.3, 0.3, '#22d3ee', 15, 3.6, -0.2);
-    const slots = [{ x: -40, z: -28, rot: 0, sit: true }];
+    const slots = [];
     for (let i = 0; i < 5; i++) for (const side of [-1, 1]) { const x = -10 + i * 13, z = 6 + side * 10; K.chair(x, z, side > 0 ? Math.PI : 0); slots.push({ x, z, rot: side > 0 ? Math.PI : 0, sit: true }); }
     for (let i = 0; i < 12; i++) slots.push({ x: -55 + (i % 6) * 7, z: 30 + Math.floor(i / 6) * 8, rot: Math.PI, sit: false });
-    return { slots, screens: { main: screen(K, s, 46, 20, 15, 22, -40, 0, '#fde047') }, cam: [10, 62, 92], look: [0, 4, 0] };
+    return { slots, posts: { lead: [{ x: -40, z: -28, rot: 0, sit: true }], escort: [{ x: -54, z: -24, rot: 0 }, { x: -26, z: -24, rot: 0 }, { x: -54, z: -12, rot: 0 }, { x: -26, z: -12, rot: 0 }] },
+      screens: { main: screen(K, s, 46, 20, 15, 22, -40, 0, '#fde047') }, cam: [10, 62, 92], look: [0, 4, 0] };
   },
   office(K, s) { // a minister's / mayor's / VP's office: the big desk, staff desks behind
     floor(K, s, 110, 80, '#120a2e'); walls(K, s, 110, 80, '#1b1145');
     K.box(20, 4, 9, '#5b3a8c', 0, 0, -18); K.neon(20.2, 0.3, 0.3, '#e879f9', 0, 4.2, -13.4);
-    const slots = [{ x: 0, z: -24, rot: 0, sit: true }];
+    const slots = [];
     for (let i = 0; i < 12; i++) { const x = -36 + (i % 6) * 14.5, z = 10 + Math.floor(i / 6) * 16; K.box(9, 3.2, 5, '#2a1d63', x, 0, z); K.neon(9, 0.25, 0.25, '#22d3ee', x, 3.3, z + 2.6, 1.8); slots.push({ x, z: z + 5.5, rot: Math.PI, sit: true }); }
     for (let i = 0; i < 20; i++) slots.push({ x: -46 + (i % 10) * 10, z: 34, rot: Math.PI, sit: false });
-    return { slots, screens: { main: screen(K, s, 40, 17, 0, 20, -38, 0, '#e879f9') }, cam: [0, 52, 78], look: [0, 4, -2] };
+    K.box(14, 3.4, 5, '#3b2a7a', 36, 0, 26); // the reception desk by the door
+    return { slots, posts: { lead: [{ x: 0, z: -24, rot: 0, sit: true }], escort: [{ x: -14, z: -22, rot: 0 }, { x: 14, z: 22, rot: 0 }], desk: [{ x: 36, z: 22, rot: 0, sit: true }, { x: 42, z: 22, rot: 0, sit: true }] },
+      screens: { main: screen(K, s, 40, 17, 0, 20, -38, 0, '#e879f9') }, cam: [0, 52, 78], look: [0, 4, -2] };
   },
   court(K, s) { // the judges' high bench, the dock, the gallery
     floor(K, s, 120, 100, '#140b2c'); walls(K, s, 120, 100, '#1b1145');
     K.box(48, 9, 9, '#5a3d1a', 0, 0, -30); K.neon(48.4, 0.4, 0.4, '#fbbf24', 0, 9.2, -25.4);
-    const slots = []; for (let i = 0; i < 5; i++) slots.push({ x: -16 + i * 8, z: -33, rot: 0, sit: true, y: 4 });
+    const judge = []; for (let i = 0; i < 5; i++) judge.push({ x: -16 + i * 8, z: -33, rot: 0, sit: true, y: 4 });
     K.box(10, 4, 6, '#3b2a7a', 0, 0, 0); K.neon(10.2, 0.3, 0.3, '#f43f5e', 0, 4.1, 3.1);
-    for (let i = 0; i < 6; i++) slots.push({ x: -8 + (i % 3) * 8, z: 6 + Math.floor(i / 3) * 6, rot: Math.PI, sit: false }); // the dock
-    for (let r = 0; r < 3; r++) { K.box(90, 1.6, 4, '#2a1d63', 0, 0, 24 + r * 9); for (let i = 0; i < 12; i++) slots.push({ x: -40 + i * 7.3, z: 27 + r * 9, rot: Math.PI, sit: true }); }
-    return { slots, screens: { main: screen(K, s, 42, 18, 0, 26, -48, 0, '#fbbf24') }, cam: [0, 58, 95], look: [0, 6, -6] };
+    const dock = []; for (let i = 0; i < 6; i++) dock.push({ x: -8 + (i % 3) * 8, z: 6 + Math.floor(i / 3) * 6, rot: Math.PI, sit: false });
+    K.box(10, 3, 5, '#2a1d63', 32, 0, -14); // the clerk's desk
+    const slots = []; for (let r = 0; r < 3; r++) { K.box(90, 1.6, 4, '#2a1d63', 0, 0, 24 + r * 9); for (let i = 0; i < 12; i++) slots.push({ x: -40 + i * 7.3, z: 27 + r * 9, rot: Math.PI, sit: true }); }
+    return { slots, posts: { judge, dock, bench: [{ x: -30, z: -26, rot: 0 }, { x: 30, z: -26, rot: 0 }, { x: 14, z: 4, rot: -Math.PI / 2 }], desk: [{ x: 32, z: -10, rot: 0, sit: true }] },
+      screens: { main: screen(K, s, 42, 18, 0, 26, -48, 0, '#fbbf24') }, cam: [0, 58, 95], look: [0, 6, -6] };
   },
   cells(K, s) { // a cell block: bars, a bunk each, a board with the days left
     floor(K, s, 130, 90, '#0e0a1f'); walls(K, s, 130, 90, '#171233');
@@ -135,13 +154,15 @@ const ROOMS = {
       slots.push({ x, z: z + side * 1, rot: side > 0 ? Math.PI : 0, sit: false });
     }
     for (let i = 0; i < 48; i++) slots.push({ x: -50 + (i % 16) * 6.7, z: (Math.floor(i / 16) - 1) * 5, rot: Math.PI / 2, sit: false }); // the yard corridor
-    return { slots, screens: { main: screen(K, s, 40, 17, 0, 20, -44, 0, '#f97316') }, cam: [0, 66, 80], look: [0, 0, 0] };
+    K.box(16, 3.6, 5, '#3f2d1a', 0, 0, 36); // the warden's desk at the door
+    const cell = []; for (let k = 0; k < 3; k++) { cell.push({ x: -45 + k * 36, z: -12, rot: Math.PI }); cell.push({ x: -27 + k * 36, z: 12, rot: 0 }); }
+    return { slots, posts: { cell, desk: [{ x: -3, z: 32, rot: 0, sit: true }, { x: 3, z: 32, rot: 0, sit: true }] }, screens: { main: screen(K, s, 40, 17, 0, 20, -44, 0, '#f97316') }, cam: [0, 66, 80], look: [0, 0, 0] };
   },
   exam(K, s) { // the Academy exam hall: one desk per candidate, a screen with question n
     floor(K, s, 120, 100, '#120a2e'); walls(K, s, 120, 100, '#1b1145');
     const slots = []; for (let i = 0; i < 24; i++) { const x = -35 + (i % 6) * 14, z = -10 + Math.floor(i / 6) * 13; K.box(7, 3, 4.5, '#2a1d63', x, 0, z); K.neon(7, 0.2, 0.2, '#c084fc', x, 3.1, z - 2.3, 1.6); slots.push({ x, z: z + 4.5, rot: Math.PI, sit: true }); }
     for (let i = 0; i < 36; i++) slots.push({ x: -50 + (i % 12) * 9, z: 46 + Math.floor(i / 12) * 6, rot: Math.PI, sit: false });
-    return { slots, screens: { main: screen(K, s, 52, 22, 0, 24, -44, 0, '#c084fc') }, cam: [0, 60, 96], look: [0, 3, 0] };
+    return { slots, posts: { lead: [{ x: -34, z: -34, rot: 0 }, { x: 34, z: -34, rot: 0 }] }, screens: { main: screen(K, s, 52, 22, 0, 24, -44, 0, '#c084fc') }, cam: [0, 60, 96], look: [0, 3, 0] };
   },
   yard(K, s) { // a training ground: a running track, obstacles, a flag, the screen on the drill hall
     floor(K, s, 170, 130, '#151a14', false);
@@ -150,56 +171,63 @@ const ROOMS = {
     for (let i = 0; i < 5; i++) { K.box(1, 4, 12, '#475569', -30 + i * 15, 0, 0); K.neon(1.2, 0.3, 12, '#facc15', -30 + i * 15, 4.1, 0, 1.8); }
     K.cyl(0.4, 26, '#e5e7eb', 0, 0, -40); K.neon(8, 5, 0.2, '#ef4444', 4, 23, -40, 1.6);
     const slots = []; for (let i = 0; i < 60; i++) { const a = (i / 60) * Math.PI * 2; slots.push({ x: Math.cos(a) * 67, z: Math.sin(a) * 45, rot: -a, sit: false, run: true }); }
-    return { slots, screens: { main: screen(K, s, 44, 18, 0, 20, -62, 0, '#65a30d') }, cam: [0, 88, 118], look: [0, 0, 0] };
+    K.box(3, 6, 3, '#475569', -14, 0, 60); K.box(3, 6, 3, '#475569', 14, 0, 60); K.neon(28, 0.6, 0.6, '#facc15', 0, 6, 60, 1.6); // the gate
+    return { slots, posts: { lead: [{ x: 0, z: -8, rot: 0 }], gate: [{ x: -10, z: 57, rot: 0 }, { x: 10, z: 57, rot: 0 }, { x: -20, z: 57, rot: 0 }, { x: 20, z: 57, rot: 0 }] },
+      screens: { main: screen(K, s, 44, 18, 0, 20, -62, 0, '#65a30d') }, cam: [0, 88, 118], look: [0, 0, 0] };
   },
   station(K, s) { // police station: the front desk, officers, the holding cells
     floor(K, s, 120, 90, '#0e1027'); walls(K, s, 120, 90, '#151b3d');
     K.box(36, 4, 6, '#1e3a8a', 0, 0, -6); K.neon(36.2, 0.3, 0.3, '#3b82f6', 0, 4.2, -2.8);
-    const slots = []; for (let i = 0; i < 6; i++) slots.push({ x: -15 + i * 6, z: -11, rot: 0, sit: true });
-    for (let i = 0; i < 4; i++) { const x = -42 + i * 12; for (let b = 0; b < 5; b++) K.neon(0.3, 11, 0.3, '#60a5fa', x - 4 + b * 2, 5.5, -26, 1.4); slots.push({ x, z: -32, rot: 0, sit: false }); }
-    for (let i = 0; i < 50; i++) slots.push({ x: -45 + (i % 10) * 10, z: 12 + Math.floor(i / 10) * 7, rot: Math.PI, sit: false });
-    return { slots, screens: { main: screen(K, s, 36, 15, 28, 20, -42, 0, '#3b82f6') }, cam: [0, 56, 82], look: [0, 3, -6] };
+    const desk = []; for (let i = 0; i < 6; i++) desk.push({ x: -15 + i * 6, z: -11, rot: 0, sit: true });
+    const held = []; for (let i = 0; i < 4; i++) { const x = -42 + i * 12; for (let b = 0; b < 5; b++) K.neon(0.3, 11, 0.3, '#60a5fa', x - 4 + b * 2, 5.5, -26, 1.4); held.push({ x, z: -32, rot: 0, sit: false }); }
+    const slots = []; for (let i = 0; i < 50; i++) slots.push({ x: -45 + (i % 10) * 10, z: 12 + Math.floor(i / 10) * 7, rot: Math.PI, sit: false });
+    return { slots, posts: { desk, held, cell: [{ x: -30, z: -20, rot: Math.PI }, { x: -6, z: -20, rot: Math.PI }], lead: [{ x: 30, z: -24, rot: 0 }] },
+      screens: { main: screen(K, s, 36, 15, 28, 20, -42, 0, '#3b82f6') }, cam: [0, 56, 82], look: [0, 3, -6] };
   },
   command(K, s) { // the military command room: the map table, screens, officers around
     floor(K, s, 120, 90, '#0f150e'); walls(K, s, 120, 90, '#18200f');
     K.box(40, 4, 22, '#1f2d1a', 0, 0, 0); K.neon(38, 0.2, 20, '#65a30d', 0, 4.15, 0, 1.4);
     const slots = []; for (let i = 0; i < 14; i++) { const a = (i / 14) * Math.PI * 2; slots.push({ x: Math.cos(a) * 28, z: Math.sin(a) * 18, rot: -a - Math.PI / 2, sit: false }); }
     for (let i = 0; i < 46; i++) slots.push({ x: -50 + (i % 12) * 9, z: 32 + Math.floor(i / 12) * 6, rot: Math.PI, sit: false });
-    return { slots, screens: { main: screen(K, s, 50, 20, 0, 22, -42, 0, '#65a30d') }, cam: [0, 60, 86], look: [0, 3, 0] };
+    return { slots, posts: { lead: [{ x: 0, z: -16, rot: 0 }] }, screens: { main: screen(K, s, 50, 20, 0, 22, -42, 0, '#65a30d') }, cam: [0, 60, 86], look: [0, 3, 0] };
   },
   count(K, s) { // Election Commission: counting tables and the turnout board
     floor(K, s, 120, 90, '#0b1328'); walls(K, s, 120, 90, '#10203e');
     const slots = []; for (let t = 0; t < 4; t++) { const x = -36 + t * 24; K.box(16, 3.4, 7, '#0c4a6e', x, 0, 0); for (let b = 0; b < 3; b++) K.box(2, 2, 2, '#e0f2fe', x - 5 + b * 5, 3.4, 0); for (const sd of [-1, 1]) for (let i = 0; i < 2; i++) slots.push({ x: x - 4 + i * 8, z: sd * 6.5, rot: sd > 0 ? Math.PI : 0, sit: true }); }
     for (let i = 0; i < 44; i++) slots.push({ x: -50 + (i % 11) * 10, z: 26 + Math.floor(i / 11) * 6, rot: Math.PI, sit: false });
-    return { slots, screens: { main: screen(K, s, 50, 21, 0, 22, -40, 0, '#38bdf8') }, cam: [0, 56, 84], look: [0, 3, 0] };
+    return { slots, posts: { lead: [{ x: 0, z: -24, rot: 0 }] }, screens: { main: screen(K, s, 50, 21, 0, 22, -40, 0, '#38bdf8') }, cam: [0, 56, 84], look: [0, 3, 0] };
   },
   vault(K, s) { // the Central Bank: the vault door, the tellers, the screen with the treasury
     floor(K, s, 110, 90, '#14100a'); walls(K, s, 110, 90, '#211a0e');
     const door = K.cyl(14, 2, '#a16207', 0, 0, -42); door.rotation.x = Math.PI / 2; door.position.set(-28, 16, -43);
     K.neon(0.6, 28, 0.6, '#fbbf24', -28, 16, -41.8);
-    const slots = []; for (let i = 0; i < 6; i++) { const x = -10 + i * 9; K.box(7, 3.6, 4, '#3f2d0e', x, 0, 0); slots.push({ x, z: -4.5, rot: 0, sit: true }); }
-    for (let i = 0; i < 40; i++) slots.push({ x: -45 + (i % 10) * 10, z: 16 + Math.floor(i / 10) * 7, rot: Math.PI, sit: false });
-    return { slots, screens: { main: screen(K, s, 40, 18, 22, 21, -43, 0, '#fbbf24') }, cam: [0, 54, 80], look: [0, 4, -8] };
+    const desk = []; for (let i = 0; i < 6; i++) { const x = -10 + i * 9; K.box(7, 3.6, 4, '#3f2d0e', x, 0, 0); desk.push({ x, z: -4.5, rot: 0, sit: true }); }
+    const slots = []; for (let i = 0; i < 40; i++) slots.push({ x: -45 + (i % 10) * 10, z: 16 + Math.floor(i / 10) * 7, rot: Math.PI, sit: false });
+    // guards: two at the vault door, two at the entrance
+    return { slots, posts: { desk, vault: [{ x: -40, z: -34, rot: 0 }, { x: -16, z: -34, rot: 0 }], door: [{ x: -12, z: 38, rot: 0 }, { x: 12, z: 38, rot: 0 }] },
+      screens: { main: screen(K, s, 40, 18, 22, 21, -43, 0, '#fbbf24') }, cam: [0, 54, 80], look: [0, 4, -8] };
   },
   class(K, s) { // a classroom: the blackboard with the subject, rows of desks
     floor(K, s, 110, 90, '#120a2e'); walls(K, s, 110, 90, '#1b1145');
-    const slots = [{ x: 0, z: -30, rot: 0, sit: false }];
+    const slots = [];
     for (let i = 0; i < 30; i++) { const x = -35 + (i % 6) * 14, z = -12 + Math.floor(i / 6) * 11; K.box(8, 3, 4, '#2a1d63', x, 0, z); slots.push({ x, z: z + 4, rot: Math.PI, sit: true }); }
     for (let i = 0; i < 29; i++) slots.push({ x: -45 + (i % 10) * 10, z: 46 + Math.floor(i / 10) * 5, rot: Math.PI, sit: false });
-    return { slots, screens: { main: screen(K, s, 50, 20, 0, 18, -41, 0, '#4ade80') }, cam: [0, 54, 86], look: [0, 3, 0] };
+    return { slots, posts: { lead: [{ x: 0, z: -30, rot: 0 }, { x: -20, z: -30, rot: 0 }] }, screens: { main: screen(K, s, 50, 20, 0, 18, -41, 0, '#4ade80') }, cam: [0, 54, 86], look: [0, 3, 0] };
   },
   library(K, s) { // shelves, reading tables
     floor(K, s, 120, 90, '#140b2c'); walls(K, s, 120, 90, '#1d1240');
     for (let i = 0; i < 6; i++) { K.box(4, 16, 30, '#3b2a1a', -50 + i * 4.5 * 4, 0, -25); K.neon(4.2, 0.3, 30, '#fbbf24', -50 + i * 18, 16.2, -25, 1.4); }
     const slots = []; for (let t = 0; t < 6; t++) { const x = -40 + (t % 3) * 30, z = 6 + Math.floor(t / 3) * 18; K.box(16, 3, 7, '#2a1d63', x, 0, z); for (const sd of [-1, 1]) for (let i = 0; i < 3; i++) slots.push({ x: x - 5 + i * 5, z: z + sd * 6, rot: sd > 0 ? Math.PI : 0, sit: true }); }
     for (let i = 0; i < 24; i++) slots.push({ x: -45 + (i % 12) * 8, z: 40, rot: Math.PI, sit: false });
-    return { slots, screens: { main: screen(K, s, 40, 16, 30, 20, -42, 0, '#fbbf24') }, cam: [0, 56, 86], look: [0, 3, 0] };
+    K.box(14, 3.4, 5, '#3b2a1a', 44, 0, 4); // the lending desk
+    return { slots, posts: { desk: [{ x: 41, z: 0, rot: 0, sit: true }, { x: 47, z: 0, rot: 0, sit: true }] }, screens: { main: screen(K, s, 40, 16, 30, 20, -42, 0, '#fbbf24') }, cam: [0, 56, 86], look: [0, 3, 0] };
   },
   ward(K, s) { // hospital/clinic: beds and a nurses' station
     floor(K, s, 120, 90, '#0b1420'); walls(K, s, 120, 90, '#10202e');
     const slots = []; for (let i = 0; i < 12; i++) { const x = -45 + (i % 6) * 18, z = i < 6 ? -24 : 24; K.box(8, 2.6, 14, '#e2e8f0', x, 0, z); K.neon(8, 0.3, 0.3, '#4ade80', x, 2.8, z + (z < 0 ? 7 : -7), 1.4); slots.push({ x, z: z + (z < 0 ? 9 : -9), rot: z < 0 ? Math.PI : 0, sit: false }); }
-    K.box(24, 4, 6, '#14532d', 0, 0, 0); for (let i = 0; i < 48; i++) slots.push({ x: -40 + (i % 12) * 7, z: (Math.floor(i / 12) - 1.5) * 4, rot: 0, sit: false });
-    return { slots, screens: { main: screen(K, s, 36, 15, 0, 20, -42, 0, '#4ade80') }, cam: [0, 56, 84], look: [0, 2, 0] };
+    K.box(24, 4, 6, '#14532d', 0, 0, 0); for (let i = 0; i < 48; i++) slots.push({ x: -40 + (i % 12) * 7, z: (Math.floor(i / 12) - 1.5) * 4 + (i % 12 > 3 && i % 12 < 8 ? 9 : 0), rot: 0, sit: false });
+    const care = [{ x: -6, z: -5, rot: 0 }, { x: 6, z: -5, rot: 0 }, { x: -6, z: 5, rot: Math.PI }, { x: 6, z: 5, rot: Math.PI }]; // the nurses' station
+    return { slots, posts: { care, desk: [{ x: 0, z: 36, rot: 0, sit: false }] }, screens: { main: screen(K, s, 36, 15, 0, 20, -42, 0, '#4ade80') }, cam: [0, 56, 84], look: [0, 2, 0] };
   },
   servers(K, s) { // the data centre: rows of racks with blinking lights, the big Qwen screen
     floor(K, s, 130, 100, '#05060f'); walls(K, s, 130, 100, '#0b0e22');
@@ -215,26 +243,27 @@ const ROOMS = {
   shop(K, s) { // market/mall: stalls with neon awnings and shoppers in the aisles
     floor(K, s, 130, 100, '#140b2c'); walls(K, s, 130, 100, '#1d1240');
     const cols = ['#f472b6', '#22d3ee', '#fde047', '#4ade80', '#e879f9', '#fb923c'];
-    const slots = []; for (let i = 0; i < 12; i++) { const x = -50 + (i % 6) * 20, z = i < 6 ? -26 : 8; K.box(12, 3.6, 7, '#2a1d63', x, 0, z); K.neon(13, 0.5, 8, cols[i % 6], x, 7.5, z, 1.6); slots.push({ x, z: z - 5.5, rot: 0, sit: false }); }
-    for (let i = 0; i < 48; i++) slots.push({ x: -55 + (i % 12) * 10, z: (Math.floor(i / 12) % 2 ? 26 : -9) + Math.floor(i / 24) * 6, rot: (i % 4) * Math.PI / 2, sit: false });
-    return { slots, screens: { main: screen(K, s, 40, 16, 0, 22, -46, 0, '#f472b6') }, cam: [0, 60, 96], look: [0, 3, 0] };
+    const desk = []; for (let i = 0; i < 12; i++) { const x = -50 + (i % 6) * 20, z = i < 6 ? -26 : 8; K.box(12, 3.6, 7, '#2a1d63', x, 0, z); K.neon(13, 0.5, 8, cols[i % 6], x, 7.5, z, 1.6); desk.push({ x, z: z - 5.5, rot: 0, sit: false }); }
+    const slots = []; for (let i = 0; i < 48; i++) slots.push({ x: -55 + (i % 12) * 10, z: (Math.floor(i / 12) % 2 ? 26 : -9) + Math.floor(i / 24) * 6, rot: (i % 4) * Math.PI / 2, sit: false });
+    return { slots, posts: { desk }, screens: { main: screen(K, s, 40, 16, 0, 22, -46, 0, '#f472b6') }, cam: [0, 60, 96], look: [0, 3, 0] };
   },
   work(K, s) { // offices/factory: desks or machines in rows
     floor(K, s, 120, 90, '#10122a'); walls(K, s, 120, 90, '#181b3f');
     const slots = []; for (let i = 0; i < 24; i++) { const x = -40 + (i % 6) * 16, z = -24 + Math.floor(i / 6) * 14; K.box(9, 3.4, 5, '#334155', x, 0, z); K.neon(9, 0.2, 0.2, '#60a5fa', x, 3.5, z - 2.5, 1.5); slots.push({ x, z: z + 5, rot: Math.PI, sit: true }); }
     for (let i = 0; i < 36; i++) slots.push({ x: -50 + (i % 12) * 9, z: 40 + Math.floor(i / 12) * 5, rot: Math.PI, sit: false });
-    return { slots, screens: { main: screen(K, s, 40, 16, 0, 20, -42, 0, '#60a5fa') }, cam: [0, 56, 86], look: [0, 3, 0] };
+    return { slots, posts: { lead: [{ x: 0, z: -36, rot: 0 }] }, screens: { main: screen(K, s, 40, 16, 0, 20, -42, 0, '#60a5fa') }, cam: [0, 56, 86], look: [0, 3, 0] };
   },
   hall(K, s) { // community hall: a stage and rows of chairs
     floor(K, s, 120, 90, '#140b2c'); walls(K, s, 120, 90, '#1d1240');
     K.box(40, 3, 14, '#3b2a7a', 0, 0, -30); K.neon(40.2, 0.3, 0.3, '#fde047', 0, 3.1, -23);
-    const slots = [{ x: 0, z: -30, rot: 0, sit: false, y: 3 }];
+    const slots = [];
     for (let i = 0; i < 40; i++) { const x = -36 + (i % 10) * 8, z = -6 + Math.floor(i / 10) * 9; K.chair(x, z, Math.PI); slots.push({ x, z, rot: Math.PI, sit: true }); }
     for (let i = 0; i < 19; i++) slots.push({ x: -45 + (i % 10) * 10, z: 36 + Math.floor(i / 10) * 6, rot: Math.PI, sit: false });
-    return { slots, screens: { main: screen(K, s, 40, 16, 0, 22, -44, 0, '#fde047') }, cam: [0, 56, 86], look: [0, 3, 0] };
+    return { slots, posts: { lead: [{ x: 0, z: -30, rot: 0, sit: false, y: 3 }] }, screens: { main: screen(K, s, 40, 16, 0, 22, -44, 0, '#fde047') }, cam: [0, 56, 86], look: [0, 3, 0] };
   },
 };
 function floor(K, s, w, d, color, grid = true) {
+  K.dims = { w, d }; // the entrance is at the +z wall (the side the camera looks in from)
   const f = new THREE.Mesh(K.geo(new THREE.PlaneGeometry(w, d)), K.mat(new THREE.MeshLambertMaterial({ color }))); f.rotation.x = -Math.PI / 2; s.add(f);
   if (grid) { const g = new THREE.GridHelper(Math.max(w, d), 24, '#4c1d95', '#2e1065'); g.position.y = 0.04; g.material.transparent = true; g.material.opacity = 0.4; K.own.push(g.geometry, g.material); s.add(g); }
 }
@@ -254,7 +283,7 @@ const itemLine = x => (x && typeof x === 'object' ? [x.day != null ? `day ${x.da
 function genericLines(board) {
   const out = [];
   for (const [k, v] of Object.entries(board || {})) {
-    if (k === 'note' || v == null) continue;
+    if (k === 'note' || k === 'onDuty' || v == null) continue; // the shift is shown in the header chip
     if (Array.isArray(v)) { out.push(`${label(k)} (${v.length})`); for (const x of v.slice(-2)) out.push(`  ${itemLine(x)}`); }
     else out.push(`${label(k)}: ${typeof v === 'object' ? itemLine(v) : fmt(v)}`);
   }
@@ -305,7 +334,9 @@ function robots(K, scene, max) {
   const tip = part(new THREE.SphereGeometry(0.62, 10, 8).translate(0, 9.6, 0), new THREE.MeshBasicMaterial({ color: '#ffffff', toneMapped: false }));
   return { parts: [body, head, visor, tip], body, head, visor, tip, pick: [body, head, visor] };
 }
-const ROLE_COLOR = r => { const s = String(r || '').toLowerCase(); return /speaker|president|chief|judge|mayor|minister/.test(s) ? '#facc15' : /police|officer/.test(s) ? '#3b82f6' : /soldier|military/.test(s) ? '#65a30d' : /inmate|prisoner|held|defendant|suspect/.test(s) ? '#f97316' : /candidate|student|cadet/.test(s) ? '#c084fc' : /council/.test(s) ? '#fbbf24' : '#a5b4fc'; };
+const ROLE_COLOR = r => { const s = String(r || '').toLowerCase(); return /vault guard/.test(s) ? '#ca8a04' : /warden|cell guard|jailer/.test(s) ? '#ea580c' : /bailiff/.test(s) ? '#b45309' : /bodyguard/.test(s) ? '#334155' :
+    /night guard|gate guard|\bguard\b|security|sentry/.test(s) ? '#0e7490' : /desk officer|duty officer/.test(s) ? '#1d4ed8' : /clerk|teller/.test(s) ? '#0d9488' : /nurse|doctor/.test(s) ? '#16a34a' :
+    /speaker|president|chief|judge|mayor|minister/.test(s) ? '#facc15' : /police|officer/.test(s) ? '#3b82f6' : /soldier|military/.test(s) ? '#65a30d' : /inmate|prisoner|held|defendant|suspect/.test(s) ? '#f97316' : /candidate|student|cadet/.test(s) ? '#c084fc' : /council/.test(s) ? '#fbbf24' : '#a5b4fc'; };
 
 // ------------------------------------------------------------ enter
 // opts: { renderer, type, place (first view), mobile, onExit, refresh: () => Promise<place>, poke: (id) => Promise<text>, h }
@@ -333,22 +364,46 @@ export function enter(opts) {
   const head = h('div', { class: 'inside-head' });
   const card = h('aside', { class: 'inside-card', hidden: true });
   const more = h('div', { class: 'inside-more', hidden: true });
-  ui.append(tags, head, more, card); document.body.append(ui);
+  const empty = h('div', { class: 'inside-empty', hidden: true });
+  ui.append(tags, head, more, empty, card); document.body.append(ui);
   const off = new AbortController(); const sig = { signal: off.signal };
+  // posts: the room's own, plus the entrance (guards, and staff whose post this room does not have)
+  const D = K.dims || { w: 120, d: 90 };
+  const posts = { door: [-12, 12, -24, 24].map(x => ({ x, z: D.d / 2 - 7, rot: 0 })), ...(room.posts || {}) };
 
   let bots = []; // { o: occupant, slot, tag, bubble, pokeT }
   let place = opts.place; let alive = true; let bubbleAt = 0, bubbleI = 0;
+  // each person to a post that fits their role, everyone else to the room's seats in order
+  function placeAll(list) {
+    const used = {}; let seat = 0; const out = [];
+    const take = k => { const l = posts[k]; const n = used[k] || 0; if (!l || n >= l.length) return null; used[k] = n + 1; return l[n]; };
+    for (const o of list) {
+      const k = postOf(o.role);
+      let slot = k ? take(k) : null;
+      if (!slot && k && STAFF.has(k)) slot = take('door');
+      if (!slot && seat < room.slots.length) slot = room.slots[seat++];
+      if (!slot) break; // no room left: counted in "+N more"
+      out.push([o, slot]);
+    }
+    return out;
+  }
   function setPlace(p) {
     place = p || place; drawScreens(room, type, place);
-    head.replaceChildren(h('b', { text: place.title || type }), h('span', { text: `${(place.occupants || []).length + (Number(place.more) || 0)} inside · updated ${new Date(place.updatedAt || Date.now()).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}` }));
-    const list = (place.occupants || []).slice(0, Math.min(MAX_BOTS, room.slots.length));
+    const total = (place.occupants || []).length + (Number(place.more) || 0);
+    // who keeps the building: the shift on duty and how many staff (board.onDuty from the server)
+    const od = place.board?.onDuty && typeof place.board.onDuty === 'object' ? place.board.onDuty : null;
+    const duty = od ? ` · ${typeof od.shift === 'string' ? od.shift : 'on'} shift: ${Number(od.staff) || 0} on duty` : '';
+    head.replaceChildren(h('b', { text: place.title || type }), h('span', { text: `${total.toLocaleString('en-US')} inside${duty} · updated ${fmtTime(place.updatedAt || Date.now(), { seconds: true })}` }));
+    const placed = placeAll((place.occupants || []).slice(0, MAX_BOTS));
     const old = new Map(bots.map(b => [b.o.id, b]));
-    for (const b of bots) if (!list.some(o => o.id === b.o.id)) { b.tag.remove(); b.bubble.remove(); }
-    bots = list.map((o, i) => {
+    for (const b of bots) if (!placed.some(([o]) => o.id === b.o.id)) { b.tag.remove(); b.bubble.remove(); }
+    // nobody is drawn who is not in the server's list: an empty building says so
+    empty.hidden = placed.length > 0; empty.textContent = placed.length ? '' : 'Nobody is inside right now.';
+    bots = placed.map(([o, slot]) => {
       const was = old.get(o.id);
       const b = was || { tag: h('div', { class: 'itag' }), bubble: h('div', { class: 'ibubble', hidden: true }), pokeT: 0, phase: (hashStr(String(o.id)) % 628) / 100, shell: SHELLS[hashStr(String(o.id)) % SHELLS.length] };
       if (!was) tags.append(b.tag, b.bubble);
-      b.o = o; b.slot = room.slots[i];
+      b.o = o; b.slot = slot;
       b.tag.replaceChildren(...[h('b', { text: o.name || o.id }), o.gifted ? h('span', { class: 'gift', text: '★' }) : null, o.role ? h('small', { text: o.role }) : null].filter(Boolean));
       b.tag.onclick = () => openCard(b);
       return b;
@@ -367,7 +422,7 @@ export function enter(opts) {
       h('button', { type: 'button', class: 'close', 'aria-label': 'Close', text: '×', onclick: closeCard }),
       h('h3', { text: o.name || o.id }),
       h('p', { class: 'role', text: [o.role, o.gifted ? `gifted${o.field ? ` in ${o.field}` : ''}` : null].filter(Boolean).join(' · ') || 'inside' }),
-      h('div', { class: 'kv' }, ...[['Doing', o.activity], ['Detail', o.detail], ['Field', o.field], ['Mood', `${em} ${typeof o.mood === 'object' && o.mood?.label ? o.mood.label : mk}`], ['Here since', o.since ? (o.since > 1e11 ? new Date(o.since).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : `day ${o.since}`) : null]]
+      h('div', { class: 'kv' }, ...[['Doing', o.activity], ['Detail', o.detail], ['Field', o.field], ['Mood', `${em} ${typeof o.mood === 'object' && o.mood?.label ? o.mood.label : mk}`], ['Here since', o.since ? (o.since > 1e11 ? fmtTime(o.since) : `day ${o.since}`) : null]]
         .filter(([, v]) => v).flatMap(([k, v]) => [h('span', { text: k }), h('b', { text: String(v) })])),
       h('div', { class: 'row' }, h('button', { type: 'button', class: 'poke-btn', text: '👉 Poke', onclick: () => doPoke(b) }), h('small', { text: 'They feel it and grumble.' })));
     card.hidden = false;

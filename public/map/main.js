@@ -10,6 +10,7 @@ import { buildWorld, buildLife, pick, night, clock, buildCoverage, COVERAGE } fr
 import { Agents, moodOf } from './agents.js';
 import { Scenes, SCENE_COLOR } from './scenes.js';
 import { TYPES, CATS, ACT_COLOR, REP, MOODS, BOND_COLOR } from './catalog.js';
+import { setClock, fmtTime, hourOf, clockDetail } from '../clock.js'; // every time on the map is the republic's (ET)
 
 const $ = s => document.querySelector(s);
 function h(tag, attrs = {}, ...kids) {
@@ -41,6 +42,8 @@ function fetchCitizen(id) {
 }
 const nameOf = id => citizen(id)?.name || pretty(id);
 const citizenCity = id => citizen(id)?.city || null;
+// where an officer serves: command.postings (id -> city) when the Chief posted them, else their home city
+const postedCity = id => { const p = st.state?.command?.postings?.[id]; return typeof p === 'string' && data?.cities && Object.hasOwn(data.cities, p) ? p : citizenCity(id); };
 const cai = n => `${Math.round(n || 0).toLocaleString('en-US')} CAI`;
 const pct = n => `${Math.round((n || 0) * 100)}%`;
 const STAGE = { debate: 'in debate', vote: 'voting', president: 'on the President\'s desk', override: 'override vote', timelock: 'signed, waiting a day', referendum: 'in a referendum', enacted: 'law', rejected: 'rejected', vetoed: 'vetoed', repealed: 'rejected by the people' };
@@ -83,11 +86,11 @@ function setShadows(on) {
   scene.traverse(o => { if (o.material) o.material.needsUpdate = true; });
 }
 
-// the real local clock still runs the sky, but it is a neon city: day is a violet haze, night is deep blue
-// and the windows burn brighter
+// the republic's clock (ET, not the visitor's zone) runs the sky, but it is a neon city: day is a violet haze,
+// night is deep blue and the windows burn brighter
 const sunOff = new THREE.Vector3(800, 1200, 400);
 function lighting() {
-  const d = new Date(); const hr = d.getHours() + d.getMinutes() / 60;
+  const hr = hourOf();
   const t = (hr - 6) / 12; const elev = Math.sin(Math.PI * Math.min(Math.max(t, 0), 1));
   const day = Math.min(1, Math.max(0, elev * 2.2 + (t > 0 && t < 1 ? 0.15 : 0)));
   skyU.top.value.set('#04030d').lerp(new THREE.Color('#1e1b4b'), day);
@@ -199,11 +202,11 @@ function details(b) {
       break;
     }
     case 'police_station': case 'police_post': case 'police_hq': {
-      const cops = (s.seats?.police || []).filter(id => b.type === 'police_hq' || citizenCity(id) === b.city);
+      const cops = (s.seats?.police || []).filter(id => b.type === 'police_hq' || postedCity(id) === b.city);
       const chief = (s.seats?.police_chief || [])[0];
       out.push(h('h4', { text: 'Police' }), kv([...(b.type === 'police_hq' ? [['Chief of Police', chief ? nameOf(chief) : 'vacant']] : []), [b.type === 'police_hq' ? 'Officers nationwide' : 'Officers in this city', String(cops.length)], ['Arrests (all time)', String(s.police?.arrests ?? 0)]]));
       if (cops.length) out.push(h('ul', {}, cops.slice(0, 12).map(id => h('li', {}, h('b', { text: nameOf(id) }), h('span', { text: 'officer' })))));
-      const cases = detected(s).filter(i => b.type === 'police_hq' || citizenCity(i.perps[0]) === b.city || citizenCity(i.solvedBy) === b.city);
+      const cases = detected(s).filter(i => b.type === 'police_hq' || citizenCity(i.perps[0]) === b.city || postedCity(i.solvedBy) === b.city);
       out.push(h('h4', { text: 'Recent cases (detected)' }), rowsList(incidentRows(cases), 'No detected cases here.'));
       break;
     }
@@ -217,7 +220,7 @@ function details(b) {
     }
     case 'community_hall': case 'election_comm': {
       const voting = (s.elections || []).filter(e => e.stage === 'voting' && (b.type === 'election_comm' || !e.city || e.city === b.city));
-      out.push(h('h4', { text: voting.length ? 'Voting now' : 'Elections' }), rowsList(voting.map(e => row(`${e.title} · ${e.kind}`, `${e.voted || 0} of ${e.electorate || 0} voted${e.stageEndsAt ? ` · closes ${new Date(e.stageEndsAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}` : ''}`)), 'No vote open right now. On election day this hall is a polling station.'));
+      out.push(h('h4', { text: voting.length ? 'Voting now' : 'Elections' }), rowsList(voting.map(e => row(`${e.title} · ${e.kind}`, `${e.voted || 0} of ${e.electorate || 0} voted${e.stageEndsAt ? ` · closes ${fmtTime(e.stageEndsAt)}` : ''}`)), 'No vote open right now. On election day this hall is a polling station.'));
       break;
     }
   }
@@ -286,7 +289,7 @@ function localPlace(type, b) {
   const s = st.state || {}; const seats = s.seats || {}; const occ = []; const board = {};
   const cityName = data.cities[b.city]?.name || b.city || '';
   const add = (id, role, activity, extra = {}) => { if (id && !occ.some(o => o.id === id)) { const c = citizen(id); occ.push({ id, name: c?.name || nameOf(id), role, activity, detail: extra.detail || null, since: extra.since ?? null, field: extra.field || null, gifted: !!extra.gifted, mood: c?.mood?.label || null }); } };
-  const inCity = id => !b.city || citizenCity(id) === b.city;
+  const inCity = id => !b.city || postedCity(id) === b.city;
   const live = (s.bills || []).find(x => ['debate', 'vote', 'override'].includes(x.stage));
   switch (type) {
     case 'parliament': {
@@ -319,7 +322,6 @@ function localPlace(type, b) {
       const rooms = s.academy?.rooms || (s.academy?.current ? [s.academy.current] : []);
       for (const r of rooms) if (!force ? true : force.test(r.roleId)) add(r.agentId, `Candidate · ${roleTitle(r.roleId)}`, `question ${Math.min(r.step + 1, r.total)} of ${r.total}`, { detail: `${(r.answers || []).filter(x => x?.ok).length} right so far` });
       const d = s.training?.current; if (d && (!force || force.test(d.roleId))) add(d.agentId, `Drill · ${roleTitle(d.roleId)}`, `${(d.answers || []).length} of ${d.total} answered`);
-      if (force) for (const id of (type === 'police_academy' ? seats.police : seats.military) || []) if (occ.length < 40) add(id, type === 'police_academy' ? 'Officer' : 'Soldier', 'training');
       const cur = rooms[0]; if (cur) board.exam = `${roleTitle(cur.roleId)}: question ${Math.min(cur.step + 1, cur.total)} of ${cur.total}`;
       Object.assign(board, { sessions: s.academy?.sessions ?? 0, swornIn: s.academy?.graduates ?? 0, examRooms: rooms.length }); break;
     }
@@ -352,8 +354,8 @@ function localPlace(type, b) {
     }
     default: {
       const ACT = { market: 'shop', mall: 'shop', supermarket: 'shop', office: 'work', factory: 'work', hospital: 'help', clinic: 'help', community_hall: 'volunteer', data_center: 'work' }[type];
-      for (const e of (s.daily?.recent || []).slice().reverse()) if ((!ACT || e.act === ACT) && (!b.city || e.city === b.city)) add(e.agent, 'Citizen', e.line || e.act, { detail: e.note ? String(e.note).slice(0, 120) : null, since: e.ts });
-      board.note = occ.length ? `Recent visitors in ${cityName}` : `Quiet right now in ${cityName}`;
+      for (const e of (s.daily?.recent || []).slice().reverse()) if ((!ACT || e.act === ACT) && (!b.city || e.city === b.city)) add(e.agent, 'Recent visitor', e.line || e.act, { detail: e.note ? String(e.note).slice(0, 120) : null, since: e.ts });
+      board.note = occ.length ? `Who came by recently in ${cityName}` : `Nobody here right now in ${cityName}`;
     }
   }
   return { type, city: b.city || null, title: `${b.name}${cityName && !b.name.includes(cityName) ? ` · ${cityName}` : ''}`, updatedAt: Date.now(), occupants: occ.slice(0, 60), board, more: Math.max(0, occ.length - 60), local: true };
@@ -365,7 +367,7 @@ async function enterBuilding(b, push = true) {
   if (entering || inside || !INSIDE.has(b.type)) return; entering = true;
   const box = $('#enter'); $('#enterTitle').textContent = `Entering ${b.name}`; box.hidden = false; enterStep(8, 'Opening the doors…');
   try {
-    insideMod ||= await import('./interior.js?v=1'); enterStep(40, 'Reading who is inside…');
+    insideMod ||= await import('./interior.js?v=3'); enterStep(40, 'Reading who is inside…');
     const place = await placeFor(b.type, b); enterStep(75, 'Furnishing the room…');
     await new Promise(r => setTimeout(r, 30));
     renderer.setAnimationLoop(null); controls.enabled = false; // the map pauses where it is (and ignores drags)
@@ -522,6 +524,20 @@ function showAgent(a, keepBonds) {
   const info = isReal(a) ? (rec || citizen(a.id)) : null; // goal and reputation from the citizen record
   if (typeof info?.reputation === 'number') rows.push(['Reputation', `${Math.round(info.reputation * 100)}%`]);
   body.append(h('div', { class: 'kv' }, rows.flatMap(([k, v]) => [h('span', { text: k }), h('b', { text: v })])));
+  // what the server says they are doing right now (citizen.now from /api/citizens/:id; null = nothing yet)
+  const now = rec?.now;
+  if (now && typeof now === 'object') {
+    const pt = typeof now.place === 'string' && Object.hasOwn(TYPES, now.place) ? now.place : null;
+    const where = pt ? TYPES[pt].name : now.place || null;
+    const cityName = now.city && data.cities[now.city] ? data.cities[now.city].name : null;
+    const nr = [['Doing', now.act], ['Where', [where, cityName].filter(Boolean).join(', ') || null], ['Since', now.since ? (now.since > 1e11 ? fmtTime(now.since) : `day ${now.since}`) : null],
+      ['Field', now.field ? `${now.field}${now.gifted ? ' ★ gifted' : ''}` : null], ['Detail', now.detail], ['Mood', now.mood]].filter(([, v]) => v);
+    if (nr.length) {
+      body.append(h('h4', { text: 'Right now' }), h('div', { class: 'kv' }, nr.flatMap(([k, v]) => [h('span', { text: k }), h('b', { text: String(v) })])));
+      const b = pt && INSIDE.has(pt) ? data.buildings.find(x => x.type === pt && (!now.city || x.city === now.city)) : null;
+      if (b) body.append(h('button', { type: 'button', class: 'go-in small', onclick: () => enterBuilding(b) }, `Go inside the ${b.name}`, h('span', { text: '→' })));
+    }
+  }
   const goal = info?.goal;
   if (goal?.label) {
     const p = Math.round(Math.min(1, Math.max(0, Number(goal.progress) || 0)) * 100);
@@ -540,7 +556,7 @@ function showAgent(a, keepBonds) {
       h('span', { class: 'em', text: emoji(b.mood) }), h('b', { text: b.name || pretty(b.id) }), h('span', { class: 'kind', color: BOND_COLOR[b.kind] || '#67e8f9', text: KIND[b.kind] || b.kind })))));
   }
   if (a.thought) {
-    body.append(h('h4', { text: `Thought · ${new Date(a.thought.ts).toLocaleTimeString('en-GB', { hour12: false })}` }), h('p', { class: 'quote', text: a.thought.note || a.thought.line || a.thought.act }));
+    body.append(h('h4', { text: `Thought · ${fmtTime(a.thought.ts)}` }), h('p', { class: 'quote', text: a.thought.note || a.thought.line || a.thought.act }));
     if (a.thought.engine) body.append(h('p', { class: 'note', text: `Brain: ${a.thought.engine}` }));
   }
   if (!a.name && a.scene) body.append(h('p', { class: 'note', text: 'A sample figure: it shows that this is happening here, not one named agent.' }));
@@ -575,8 +591,8 @@ function renderFeed() {
     h('span', { class: 'em', color: ACT_COLOR[e.act] || '#94a3b8', text: emoji(e.mood || (agents.byId.get(e.agent) ? moodLabel(agents.byId.get(e.agent)) : 'calm')) }), h('div', {}, h('b', { text: e.name || pretty(e.agent) }), ` ${e.line || e.act}`, h('small', { text: `${data.cities[e.city]?.name || e.city} · ${e.note || ''}` }))));
 }
 function renderClock() {
-  const s = st.state; const d = new Date();
-  $('#clock').replaceChildren(h('b', { text: `DAY ${s?.day ?? '–'}` }), ` · ${d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })} · `, h('b', { text: (s?.stats?.citizens ?? 0).toLocaleString('en-US') }), ' citizens');
+  const s = st.state; $('#clock').title = clockDetail();
+  $('#clock').replaceChildren(h('b', { text: `DAY ${s?.day ?? '–'}` }), ` · ${fmtTime(Date.now())} · `, h('b', { text: (s?.stats?.citizens ?? 0).toLocaleString('en-US') }), ' citizens');
 }
 const liveLabels = new Map();
 function showLive(e) {
@@ -588,7 +604,8 @@ function showLive(e) {
 }
 function ingest(s) {
   st.state = s; agents.setWeights(s.daily?.byAct);
-  agents.officials(s.seats, s.cities, nameOf, citizenCity);
+  setClock(s.config?.clock);
+  agents.officials(s.seats, s.cities, nameOf, postedCity); // police and soldiers stand in the city they are posted to
   const fresh = (s.daily?.recent || []).filter(e => e.ts > st.lastTs).sort((a, b) => a.ts - b.ts);
   const first = st.lastTs === 0;
   for (const [i, e] of fresh.slice(-30).entries()) {

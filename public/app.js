@@ -1,4 +1,6 @@
 // COUNTRY AI client. All agent/visitor text goes through textContent (never innerHTML with data).
+// Every time shown is the republic's clock (US Eastern, "ET"), never the visitor's own zone: see clock.js.
+import { setClock, fmtTime, fmtDate, fmtDateTime, clockDetail } from './clock.js';
 const $ = s => document.querySelector(s);
 const st = { config: { channels: [], roles: [], constitution: [] }, citizens: [], feed: {}, stats: {}, seats: {}, academy: {}, ch: 'academy', tab: 'academy', citizen: null };
 
@@ -19,7 +21,7 @@ function h(tag, attrs = {}, ...kids) {
 }
 const cit = id => st.citizens.find(a => a.id === id) || st.found?.[id];
 const role = id => st.config.roles.find(r => r.id === id);
-const time = ts => new Date(ts).toLocaleTimeString('en-GB', { hour12: false });
+const time = ts => fmtTime(ts, { seconds: true });
 const cai = n => Math.round(n || 0).toLocaleString('en-US') + ' CAI';
 const pct = n => Math.round((n || 0) * 100) + '%';
 function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('show'), 2600); }
@@ -39,8 +41,9 @@ function renderStats() {
     let v = st.stats[k];
     if (k === 'treasury') v = v >= 1e6 ? (v / 1e6).toFixed(2) + 'M' : Math.round(v / 1000) + 'K';
     if (k === 'seated') v = `${st.stats.seated}/${st.stats.seats}`;
-    if (k === 'day' && st.config.foundedAt) label = `DAY · ${new Date(st.config.foundedAt + (v - 1) * st.config.dayMs).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`;
-    box.append(h('div', { class: 'stat' }, h('b', { text: v }), h('span', { text: label })));
+    // the republic's date and time (ET): the day starts at midnight in the republic's zone
+    if (k === 'day') label = `DAY · ${st.config.foundedAt ? `${fmtDate(st.config.foundedAt + (v - 1) * st.config.dayMs)} · ` : ''}${fmtTime(Date.now())}`.toUpperCase();
+    box.append(h('div', { class: 'stat', title: k === 'day' ? clockDetail() : null }, h('b', { text: v }), h('span', { text: label })));
   }
   // (the AI cost in dollars is not shown in the header; it stays in the Treasury tab)
   const ep = $('#enginePill');
@@ -533,7 +536,7 @@ const PANELS = {
           h('tbody', {}, bad.map(([m, e]) => h('tr', {},
             h('td', { class: 'm', text: m.replace(/^(claude|openrouter):/, '') }),
             h('td', { class: 'n', text: e.errors }),
-            h('td', {}, `${e.lastKind || '?'}${e.lastStatus ? ' ' + e.lastStatus : ''}`, h('br'), h('small', { text: e.lastAt ? new Date(e.lastAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false }) : '-' })))))) : h('p', { text: 'No model errors.' })));
+            h('td', {}, `${e.lastKind || '?'}${e.lastStatus ? ' ' + e.lastStatus : ''}`, h('br'), h('small', { text: e.lastAt ? fmtDateTime(Date.parse(e.lastAt)) : '-' })))))) : h('p', { text: 'No model errors.' })));
     }
     return out;
   },
@@ -653,6 +656,7 @@ async function changeBrain() {
 }
 function alertKey(k) { $('#doneName').textContent = 'back'; $('#doneKey').textContent = k; $('#doneNext').textContent = 'Your old key no longer works.'; $('#dlgForm').hidden = true; $('#dlgDone').hidden = false; $('#dlg').showModal(); }
 setInterval(() => { if (st.tab === 'me' && myKey()) loadMe(); }, 15000);
+setInterval(() => { if (!document.hidden) renderStats(); }, 30000); // the ET clock in the header keeps moving
 function ledgerLine(e) {
   const d = e.data || {}; const n = id => cit(id)?.name || id; const t = r => role(r)?.title || r;
   switch (e.kind) {
@@ -700,6 +704,7 @@ function applyCompact(d) { Object.assign(st, d); markSeen(d); renderStats(); ren
 async function load() {
   const d = await (await fetch('/api/state')).json();
   Object.assign(st, d); markSeen(d); lastFull = Date.now();
+  setClock(d.config?.clock); // the republic's zone, from the server
   if (!st.config.channels.some(c => c.id === st.ch)) st.ch = st.config.channels[0]?.id;
   if (d.config.ca) { $('#cabar').hidden = false; $('#caAddr').textContent = d.config.ca; }
   // shareable tab links: /#treasury opens the Treasury tab
