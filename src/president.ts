@@ -430,7 +430,9 @@ export function placeView(S: State, type: string, city: string | null = null, q:
     board = { lastOrders: (S.orders || []).slice(-3).map(o => ({ day: o.day, text: short(o.text, 140) })), orderToday: S.orderedDay === day, plans: occupants.length ? seated(S, 'president').concat(seated(S, 'vice_president')).filter(a => a.workPlan).map(a => ({ by: a.name, day: a.workPlan.day, text: short(a.workPlan.text, 200) })) : [] };
   } else if (type === 'ministry') {
     // one of the eight fixed portfolios, whether or not a Minister holds it today (a vacant ministry still has its
-    // guard and clerk, and only theirs are counted)
+    // guard and clerk, and only theirs are counted). Shared rule with placeKeys() in server.mjs (Negara box): a
+    // person's ministry is their cabinet.portfolios seat, else the unit of their duty post (this shift's post
+    // first). Change it only together with the Negara box, or the two counts of /api/place/ministry drift apart.
     const port = typeof q?.portfolio === 'string' && Object.hasOwn(PORTFOLIO_FIELDS, q.portfolio) ? q.portfolio : null;
     title = port ? `Ministry: ${port}` : 'The Ministries';
     const ports = port ? [port] : Object.keys(S.cabinet?.portfolios || {});

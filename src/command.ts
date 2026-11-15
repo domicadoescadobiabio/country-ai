@@ -390,6 +390,8 @@ export const canGuard = (a: Citizen) => !!a && a.status === 'free' && !a.office 
 const unfitWhy = (a: Citizen) => !a ? 'left the republic' : a.status !== 'free' ? a.status : a.office ? 'took an office' : a.brain ? 'has an own brain' : student(a) ? 'a university student' : (a.faction || 'civilian') === 'underworld' ? 'joined the underworld' : convicted(a) ? 'convicted' : 'unfit';
 const hashOf = (s: string) => { let h = 2166136261; for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619); return h >>> 0; };
 const D = (S: State) => { const cmd = C(S); cmd.duty ||= { posts: {}, hired: 0, dismissed: 0 }; cmd.duty.posts ||= {}; cmd.postings ||= {}; return cmd.duty; };
+// a ministry's posts carry their portfolio as `unit`; placeKeys() in server.mjs (Negara box) reads it to place a
+// guard or clerk in their own ministry: keep the field name and the eight portfolio ids in step with them
 const unitsOf = (type: string) => (type === 'ministry' ? Object.keys(PORTFOLIO_FIELDS) : ['']);
 // every post the plan wants now: key "type|city|unit|post#|shift|n"
 export function dutySlots(S: State) {
