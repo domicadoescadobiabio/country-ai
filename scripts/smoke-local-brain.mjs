@@ -315,10 +315,11 @@ try {
     const lw = spawn(process.execPath, ['scripts/local-brain.mjs'], { cwd: ROOT, env: llamaEnv({}), stdio: ['ignore', 'pipe', 'pipe'] });
     let llog = ''; lw.stdout.on('data', d => { llog += d; }); lw.stderr.on('data', d => { llog += d; });
     let ls = null; const lengines = new Set();
-    for (let i = 0; i < 40; i++) {
+    // until a decision carries the llama engine too (ticket #666: read too early, 1 run in 81 missed it)
+    for (let i = 0; i < 60; i++) {
       await wait(1000); ls = await get('/api/state');
       for (const d of ls.decisions) lengines.add(d.engine);
-      if (llamaBodies.length >= 12 && llamaBodies.some(x => x.response_format) && ls.localBrain?.model?.startsWith('llamacpp/')) break;
+      if (llamaBodies.length >= 12 && llamaBodies.some(x => x.response_format) && ls.localBrain?.model?.startsWith('llamacpp/') && lengines.has('local:llamacpp/qwen3:8b+general')) break;
     }
     lw.kill();
     check('llamacpp: the runner answers through llama-server\'s chat completions', llamaBodies.length > 0 && ls.localBrain?.online, `${llamaBodies.length} ${llog.slice(-300)}`);
@@ -337,7 +338,7 @@ try {
     base.kill();
     check('LLAMA_LORA_SCALE=0 rolls back to the base model: every adapter off, label llamacpp/qwen3:8b', llamaBodies.length > 0 && llamaBodies.every(x => JSON.stringify(x.lora) === '[{"id":0,"scale":0},{"id":1,"scale":0}]') && bs.localBrain?.model === 'llamacpp/qwen3:8b', JSON.stringify({ lora: llamaBodies[0]?.lora, model: bs?.localBrain?.model }));
     // the real server keeps what the runner says it is (cleanRunner, ticket #562)
-    check('the runner tells the server its backend, adapter and scale (localBrain.runner)', ls.localBrain?.runner?.backend === 'llamacpp' && ls.localBrain.runner.adapter === 'general' && ls.localBrain.runner.loraScale === 1 && ls.localBrain.runner.version === 3, JSON.stringify(ls.localBrain?.runner));
+    check('the runner tells the server its backend, adapter and scale (localBrain.runner)', ls.localBrain?.runner?.backend === 'llamacpp' && ls.localBrain.runner.adapter === 'general' && ls.localBrain.runner.loraScale === 1 && ls.localBrain.runner.version === 4, JSON.stringify(ls.localBrain?.runner));
     // ticket #562: each school job carries its field (job.domain); the runner maps it to an adapter it has checked is
     // loaded, else general. A small stand-in republic hands out jobs with known fields, so this never depends on the
     // test republic happening to teach a field lesson in time (ticket #568: 0 field jobs in one run).
@@ -357,7 +358,8 @@ try {
     llamaBodies.length = 0; llamaIds = [0, 1];
     const per = spawn(process.execPath, ['scripts/local-brain.mjs'], { cwd: ROOT, env: llamaEnv({ COUNTRY_URL: `http://127.0.0.1:${fake.address().port}`, PARALLEL: '1', LLAMA_LORAS: 'general:0,law:1' }), stdio: ['ignore', 'pipe', 'pipe'] });
     for (let i = 0; i < 40 && fakeAnswers.length < DOMAINS.length; i++) await wait(250);
-    per.kill(); fake.close();
+    await wait(1500); // one more pull after the last answer: it carries the final byAdapter counts
+    per.kill();
     const on = b => (b.lora || []).filter(x => x.scale > 0).map(x => x.id);
     const byQ = Object.fromEntries(llamaBodies.map(b => [String(b.messages?.[1]?.content || '').match(/q(\d+)/)?.[1], on(b)]));
     const labels = Object.fromEntries(fakeAnswers.map(a => [String(a.id).match(/f(\d+)/)?.[1], a.model]));
@@ -365,6 +367,22 @@ try {
     check('llamacpp: a school job carrying its field uses that field\'s adapter, the rest use general (exactly one adapter on)', llamaBodies.length === DOMAINS.length && Object.entries(want).every(([i, ids]) => JSON.stringify(byQ[i]) === JSON.stringify(ids)), JSON.stringify(byQ));
     check('llamacpp: each answer is labelled with the adapter that gave it (+law, else +general)', [0, 4, 5].every(i => labels[i] === 'llamacpp/qwen3:8b+law') && [1, 2, 3].every(i => labels[i] === 'llamacpp/qwen3:8b+general'), JSON.stringify(labels));
     check('llamacpp: the pull carries backend, adapter and scale in runner', fakeRunner?.backend === 'llamacpp' && fakeRunner.adapter === 'general' && fakeRunner.loraScale === 1, JSON.stringify(fakeRunner));
+    // owner, 15 Nov: field LoRAs live; the status names every adapter in use and counts the answers of each
+    check('llamacpp: runner.adapters lists every adapter in use, runner.byAdapter counts the answers of each (law 3, general 3)', JSON.stringify(fakeRunner?.adapters) === '["general","law"]' && JSON.stringify(fakeRunner?.byAdapter) === '{"general":3,"law":3}' && fakeRunner.version === 4, JSON.stringify(fakeRunner));
+    // the same stand-in republic, a runner that only pulls: LLAMA_LORA_SCALE=0 (none in use) and more than 32 adapters
+    const statusOf = async extra => {
+      const before = pulls; pulls = DOMAINS.length; // no more jobs: only the status
+      const p = spawn(process.execPath, ['scripts/local-brain.mjs'], { cwd: ROOT, env: llamaEnv({ COUNTRY_URL: `http://127.0.0.1:${fake.address().port}`, PARALLEL: '1', ...extra }), stdio: ['ignore', 'pipe', 'pipe'] });
+      fakeRunner = null; for (let i = 0; i < 40 && !fakeRunner; i++) await wait(250);
+      p.kill(); void before; return fakeRunner;
+    };
+    llamaIds = [0, 1];
+    const off = await statusOf({ LLAMA_LORAS: 'general:0,law:1', LLAMA_LORA_SCALE: '0' });
+    check('LLAMA_LORA_SCALE=0: adapter none, adapters [] and byAdapter {}', off?.adapter === 'none' && Array.isArray(off.adapters) && off.adapters.length === 0 && JSON.stringify(off.byAdapter) === '{}', JSON.stringify(off));
+    llamaIds = Array.from({ length: 40 }, (_, i) => i);
+    const many = await statusOf({ LLAMA_LORAS: ['general:0', ...Array.from({ length: 39 }, (_, i) => `f${i + 1}:${i + 1}`)].join(',') });
+    check('at most 32 adapters in the status, each a plain name ([a-z0-9_]{1,32}), and the status stays small', many?.adapters?.length === 32 && many.adapters.every(n => /^[a-z0-9_]{1,32}$/.test(n)) && JSON.stringify(many).length < 2000, JSON.stringify({ n: many?.adapters?.length, bytes: JSON.stringify(many || {}).length }));
+    fake.close();
   } finally { llama.close(); }
 
   // ---- local-brain.cmd (owner, 14 Nov): llama.cpp by default, llama-server started when it does not answer

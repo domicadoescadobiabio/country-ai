@@ -56,7 +56,9 @@ function parseLoras(spec) {
   }
   return m;
 }
-const LORAS = parseLoras(process.env.LLAMA_LORAS || 'general:0');
+const MAX_ADAPTERS = 32; // keeps the status sent with every pull small
+const LORAS = new Map([...parseLoras(process.env.LLAMA_LORAS || 'general:0')].slice(0, MAX_ADAPTERS));
+if ((process.env.LLAMA_LORAS || '').split(',').filter(s => s.trim()).length > MAX_ADAPTERS) console.error(`LLAMA_LORAS: only the first ${MAX_ADAPTERS} adapters are used`);
 if (BACKEND === 'llamacpp' && !LORAS.has('general')) { console.error('LLAMA_LORAS needs a general adapter (for example general:0): it answers every field without one of its own'); process.exit(1); }
 const adapterFor = job => { const d = String(job?.domain || '').toLowerCase(); return LORAS.has(d) ? d : 'general'; };
 // the honest name of what answered: the base alone when the adapter is switched off
@@ -67,10 +69,20 @@ let LOADED_IDS = []; // adapter ids llama-server has loaded (GET /lora-adapters 
 // What this runner is, sent with every pull so the republic (and its monitoring) can see which version
 // answers and with which settings: no secrets, no paths, only numbers and short labels.
 // RUNNER_VERSION goes up whenever the runner's behaviour changes. 2 = daily-life temperature + reload on change;
-// 3 = llama.cpp backend with LoRA adapters (backend, adapter and loraScale say which).
-const RUNNER_VERSION = 3;
+// 3 = llama.cpp backend with LoRA adapters (backend, adapter and loraScale say which);
+// 4 = adapters (every adapter in use: in LLAMA_LORAS and loaded by llama-server) and byAdapter (answers per adapter).
+// adapter stays 'general' (or 'none') for servers that only know that field.
+const RUNNER_VERSION = 4;
 const RUNNER = { version: RUNNER_VERSION, lifeTemperature: LIFE_TEMP, examTemperature: 0.4, parallel: PARALLEL, context: CTX, supervised: process.env.LOCAL_BRAIN_SUPERVISED === '1',
-  backend: BACKEND, ...(BACKEND === 'llamacpp' ? { adapter: LORA_SCALE > 0 ? 'general' : 'none', loraScale: LORA_SCALE } : {}) };
+  backend: BACKEND, ...(BACKEND === 'llamacpp' ? { adapter: LORA_SCALE > 0 ? 'general' : 'none', loraScale: LORA_SCALE, adapters: [], byAdapter: {} } : {}) };
+const ADAPTER_NAME = /^[a-z0-9_]{1,32}$/;
+// filled once llama-server has listed what it loaded (the ready check below); none at all with LLAMA_LORA_SCALE=0
+function setAdaptersInUse() {
+  if (BACKEND !== 'llamacpp') return;
+  RUNNER.adapters = LORA_SCALE > 0 ? [...LORAS].filter(([n, id]) => ADAPTER_NAME.test(n) && LOADED_IDS.includes(id)).map(([n]) => n).slice(0, MAX_ADAPTERS) : [];
+  RUNNER.byAdapter = Object.fromEntries(RUNNER.adapters.map(n => [n, 0]));
+}
+const countAdapter = name => { if (name && Object.hasOwn(RUNNER.byAdapter || {}, name)) RUNNER.byAdapter[name]++; };
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const stats = { answered: 0, failed: 0, started: Date.now(), tokens: 0 };
@@ -119,7 +131,7 @@ async function answerLlama(job) {
   if (!r.ok) throw new Error(`llama-server ${r.status}: ${(await r.text()).slice(0, 120)}`);
   const j = await r.json();
   stats.tokens += (j.usage?.prompt_tokens || 0) + (j.usage?.completion_tokens || 0);
-  return { text: noThink(j.choices?.[0]?.message?.content), model: llamaLabel(name) };
+  return { text: noThink(j.choices?.[0]?.message?.content), model: llamaLabel(name), adapter: LORA_SCALE > 0 ? name : null };
 }
 const answer = BACKEND === 'llamacpp' ? answerLlama : answerOllama;
 
@@ -160,7 +172,7 @@ async function loop(slot) {
           await sleep(3000); continue;
         }
         try {
-          if (out.text) { await server('/api/worker/answer', { answers: [{ id: job.id, text: out.text, model: out.model }] }); stats.answered++; }
+          if (out.text) { await server('/api/worker/answer', { answers: [{ id: job.id, text: out.text, model: out.model }] }); stats.answered++; countAdapter(out.adapter); }
           else stats.failed++;
         } catch (e) { stats.failed++; console.error(`[${slot}] ${e.message}`); await sleep(3000); }
       }
@@ -180,6 +192,7 @@ if (BACKEND === 'llamacpp') {
   } catch { console.error(`llama-server at ${LLAMA} did not list its adapters (GET /lora-adapters).`); process.exit(1); }
   const missing = [...LORAS].filter(([, id]) => !LOADED_IDS.includes(id));
   if (LORA_SCALE > 0 && missing.length) { console.error(`llama-server has not loaded the adapter(s) ${missing.map(([n, id]) => `${n}:${id}`).join(', ')} (loaded ids: ${LOADED_IDS.join(', ') || 'none'}). Start it with --lora for each, or set LLAMA_LORA_SCALE=0 for the plain base model.`); process.exit(1); }
+  setAdaptersInUse();
   const fields = [...LORAS.keys()].filter(n => n !== 'general');
   console.log(`local brain: ${llamaLabel('general')} via llama-server ${LLAMA}, adapter scale ${LORA_SCALE}${LORA_SCALE > 0 && fields.length ? `, own adapters for ${fields.join(', ')}` : ''}, ${PARALLEL} at a time, daily-life temperature ${LIFE_TEMP} (exams 0.4), serving ${URL_}${SUPERVISED ? ', reloads itself when its code changes' : ''}`);
 } else {

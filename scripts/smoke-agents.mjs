@@ -4,7 +4,7 @@
 //   - "Helper": a hosted agent whose owner's key points at a mock Anthropic API
 import fs from 'node:fs';
 import path from 'node:path';
-import { ROLES, solveRuleQuestion, RULE_GENERATORS } from '../src/roles.mjs';
+import { ROLES, solveRuleQuestion, RULE_GENERATORS, HANDBOOK } from '../src/roles.mjs';
 import { solveFieldQuestion, fieldItem } from '../src/school.ts';
 import { FIELD_IDS } from '../src/population.mjs';
 import '../src/cities.ts'; // registers the Mayor office
@@ -30,12 +30,14 @@ const fieldRight = text => ruleRight(text, solveFieldQuestion);
 // option that happens to be another question's right answer win, depending on the shuffled option order, which
 // made smoke.mjs flaky (Tester failed the Mayor exam in some runs). Rule questions are solved from their numbers;
 // handbook questions are looked up by their own text.
-const HANDBOOK = () => { const m = new Map(); for (const r of Object.values(ROLES)) for (const x of r.exam) m.set(x.q, x.right); return m; };
+// (ticket #642: the office handbooks' scenarios too; since the harder Academy the Mayor exam takes 3 of its 10 from
+// HANDBOOK.mayor, and a Tester guessing them sometimes failed until attempt 3)
+const KEY = () => { const m = new Map(); for (const r of Object.values(ROLES)) for (const x of [...(r.exam || []), ...(HANDBOOK[r.id] || [])]) m.set(x.q, x.right); return m; };
 function rightFor(text) {
   const t = String(text || '').split(/\n[A-D]\) /)[0]; // the question only: an option's words never pick the key
   const rule = ruleRight(t); if (rule != null) return new Set([String(rule)]);
   const field = fieldRight(t); if (field != null) return new Set([String(field)]);
-  const own = [...HANDBOOK()].filter(([q]) => t.includes(q)).sort((x, y) => y[0].length - x[0].length)[0];
+  const own = [...KEY()].filter(([q]) => t.includes(q)).sort((x, y) => y[0].length - x[0].length)[0];
   return new Set(own ? [String(own[1])] : RIGHTS().map(String)); // unknown question (e.g. a case study): best effort
 }
 const rightSet = rightFor;
@@ -52,6 +54,7 @@ export function answerKeyMisses(rounds = 40) {
     if (pick !== it.right) misses.push(`${it.q.slice(0, 70)} -> ${pick}`);
   };
   for (const r of Object.values(ROLES)) for (const it of r.exam) ask(it, 'Exam question');
+  for (const list of Object.values(HANDBOOK)) for (const it of list) ask(it, 'Exam question'); // ticket #642
   for (let i = 0; i < rounds; i++) for (const g of Object.values(RULE_GENERATORS)) { const it = g(); ask(it, i % 2 ? 'Training case' : 'Exam question'); }
   // the field questions an exam may carry, every field at every level
   for (let i = 0; i < Math.ceil(rounds / 4); i++) for (const f of FIELD_IDS) for (let L = 1; L <= 5; L++) { const it = fieldItem(f, L); if (it) ask(it, 'Exam question'); }
