@@ -246,7 +246,9 @@ function jobView(a) {
 // GET /api/jobs: the catalog and how many hold each job per city (src/jobs.ts jobCounts), counted at most every 30 s
 let jobsCache = { at: 0, v: null };
 function jobsView() {
-  if (jobsCache.v && Date.now() - jobsCache.at < 30000) return jobsCache.v;
+  // kept 30 s once the jobs are given out, 5 s before (so "assigning jobs…" ends within seconds, and the count over
+  // every citizen runs at most once per 5 s whoever asks: Security #757)
+  if (jobsCache.v && Date.now() - jobsCache.at < (jobsCache.v.ready ? 30000 : 5000)) return jobsCache.v;
   let c = null; try { c = jobCounts(S); } catch (e) { logActivity('state', `jobs: ${String(e?.message || e).slice(0, 80)}`); }
   const n = v => (Number.isFinite(Number(v)) && Number(v) >= 0 ? Number(v) : 0);
   const counts = o => { const r = {}; for (const [k, v] of Object.entries(o || {})) if (JOB_IDS.has(k)) r[k] = n(v); return r; };
@@ -258,8 +260,7 @@ function jobsView() {
     // ready: the first job assignment has run (before it the page says "assigning jobs…"); assignedDay: its republic day
     ready: c?.ready === true, assignedDay: Number.isInteger(c?.assignedDay) && c.assignedDay >= 0 ? c.assignedDay : null,
   };
-  // not cached until the jobs are given out, so "assigning jobs…" ends as soon as they are
-  jobsCache = { at: v.ready ? Date.now() : 0, v };
+  jobsCache = { at: Date.now(), v };
   return v;
 }
 // Republic News (src/news.ts newsFeed): the newest n headlines (1..50), newest first, every text cleaned again
