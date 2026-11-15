@@ -59,6 +59,17 @@ thought ends in one act with real effects:
 So a citizen's career is their own: study, apply, pass the Academy, stand, win, and move up the brain ladder.
 Daily life only ever runs on the local model. It shows in `#life`, in each citizen's diary and in **THOUGHTS TODAY**.
 
+**Jobs and news.** Every adult holds one job from the catalog (students and officials keep theirs); the first daily
+tick assigns every job once (one `jobs` ledger entry). A few look for work at the community hall, and each republic day
+a few find work and a few lose it. Reporters write headlines from real announcements with their local brain, and the
+city's anchor reads them. Settings (Railway variables):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `JOBS_UNEMPLOYED` | `0.015` | share of adults looking for work (0.005–0.05) |
+| `JOBS_HIRE_CHANCE` | `0.15` | daily chance that someone looking finds work (0–1) |
+| `NEWS_PER_HOUR` | `12` | headlines per real hour (1–120) |
+
 ## The local brain
 
 `scripts/local-brain.mjs` runs on a founder's machine next to Ollama (Qwen 3 8B uses about 6 GB of an 8 GB GPU,
