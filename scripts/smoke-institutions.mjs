@@ -534,8 +534,16 @@ export async function runTraining({ get, until, check }) {
   check('drills include real-event case studies', drilled.some(a => a.drills.some(d => d.items.some(q => q.from && q.from !== 'office handbook'))));
   check('skill is tracked per office', drilled.every(a => Object.keys(a.skill || {}).length > 0));
   const ds = s.decisions;
+  // /api/state carries only the last 120 decisions: a busy stretch (duty rosters, elections, cabinet acts) can push
+  // the gate's decisions out of that window, so the roles are read from the whole archive (/api/decisions) as well
   const roles = new Set(ds.map(d => d.role));
-  check('decisions logged for president, council, police and military', ['president', 'council', 'police', 'military'].every(r => roles.has(r)), JSON.stringify([...roles]));
+  for (let after = 0, page = 0; page < 40; page++) {
+    const r = await get(`/api/decisions?after=${after}&limit=500`).catch(() => null);
+    const es = r?.entries || []; for (const d of es) roles.add(d.role);
+    if (es.length < 500 || ['president', 'council', 'police', 'military'].every(x => roles.has(x))) break;
+    after = es[es.length - 1].id;
+  }
+  check('decisions logged for president, council, police and military', ['president', 'council', 'police', 'military'].every(r => roles.has(r)), JSON.stringify({ roles: [...roles], window: ds.length }));
   check('every decision has a reason and checks', ds.every(d => d.reason && Array.isArray(d.checks)), JSON.stringify(ds.find(d => !d.reason || !Array.isArray(d.checks))));
   const single = ds.filter(d => !['nominate', 'merit', 'promote', 'election'].includes(d.type)); // those pick several
   check('every decision picked one of its options', single.every(d => !d.options.length || d.options.some(o => o === d.chosen || o.startsWith(d.chosen + ' '))), JSON.stringify(single.find(d => d.options.length && !d.options.some(o => o === d.chosen || o.startsWith(d.chosen + ' ')))));
