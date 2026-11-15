@@ -55,7 +55,8 @@ def cmd_check(a) -> int:
 def cmd_watch(a) -> int:
     src = ApiSource(a.url)
     by_kind = {k: list(src.ledger_kind(k)) for k in watch.EXPECTED_ONCE}
-    res = watch.evaluate(src.state(), src.health(), by_kind, {})
+    ubi = list(src.ledger_kind("ubi"))[-1:]
+    res = watch.evaluate(src.state(), src.health(), by_kind, {}, ubi_entries=ubi)
     res.pop("opened", None), res.pop("closed", None)
     print(json.dumps(res, indent=2, ensure_ascii=False))
     return 0 if not res["alarms"] else 2

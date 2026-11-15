@@ -99,7 +99,14 @@ def observe(src: ApiSource, cursor: ChainCursor, recounted: set[int], memo: dict
         by_kind = {k: list(src.ledger_kind(k)) for k in watch.EXPECTED_ONCE}
     except Exception as exc:
         obs["ledgerKindError"] = str(exc)
-    obs["watch"] = watch.evaluate(st, health, by_kind, memo)
+    ubi = None
+    try:
+        ubi = list(src.ledger_kind("ubi", after=memo.get("ubiAfter", 0)))[-1:] or memo.get("ubiLast")
+        if ubi:
+            memo["ubiAfter"], memo["ubiLast"] = ubi[-1]["seq"], ubi
+    except Exception as exc:
+        obs["ledgerUbiError"] = str(exc)
+    obs["watch"] = watch.evaluate(st, health, by_kind, memo, ubi_entries=ubi)
     try:
         census = src.get("/api/census") or {}
         obs["census"] = (census.get("hours") or [])[-1:] or None

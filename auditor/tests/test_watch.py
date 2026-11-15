@@ -23,6 +23,150 @@ class StreetsTest(unittest.TestCase):
         self.assertEqual(watch.street_repeats(s)["repeats"], 0)
 
 
+class MonotoneTest(unittest.TestCase):
+    def st(self, **acts):
+        return {"daily": {"byAct": acts}}
+
+    def test_old_night_does_not_hold_the_alarm(self):
+        memo = {}
+        # a night of resting is in the cumulative counter: 3500 rest of 3700
+        self.assertIsNone(watch.monotone(self.st(rest=3500, work=200), memo, 0))
+        # the next two hours are varied: no alarm, although the cumulative share is still ~80% rest
+        self.assertIsNone(watch.monotone(self.st(rest=3600, work=300, study=100, talk=100), memo, 3600))
+
+    def test_monotone_window_alarms_and_closes(self):
+        memo = {}
+        watch.monotone(self.st(rest=0, work=0), memo, 0)
+        self.assertIsNotNone(watch.monotone(self.st(rest=300, work=20), memo, 3600))
+        # window slides past the monotone hour and the new thoughts are varied
+        later = watch.monotone(self.st(rest=400, work=200, study=200), memo, 3600 + 2 * 3600)
+        self.assertIsNone(later)
+
+    def test_quiet_night_is_skipped(self):
+        memo = {}
+        watch.monotone(self.st(rest=1000), memo, 0)
+        self.assertIsNone(watch.monotone(self.st(rest=1150), memo, 3600))  # only 150 new thoughts
+
+    def test_counter_reset(self):
+        memo = {}
+        watch.monotone(self.st(rest=5000), memo, 0)
+        self.assertIsNone(watch.monotone(self.st(rest=10), memo, 60))
+        self.assertEqual(memo["actsWindow"]["new"], 0)
+
+
+class AwakeTest(unittest.TestCase):
+    def test_night_is_skipped_and_morning_starts_fresh(self):
+        memo = {}
+        watch.monotone({"daily": {"byAct": {"rest": 0}, "clock": {"awake": True}}}, memo, 0)
+        night = {"daily": {"byAct": {"rest": 900}, "clock": {"awake": False}}}
+        self.assertIsNone(watch.monotone(night, memo, 3600))
+        self.assertTrue(memo["actsWindow"]["asleep"])
+        # the evening's resting does not count in the morning window
+        morning = {"daily": {"byAct": {"rest": 900, "work": 150, "study": 100}, "clock": {"awake": True}}}
+        self.assertIsNone(watch.monotone(morning, memo, 7200))
+        self.assertEqual(memo["actsWindow"]["new"], 0)
+
+
+class RunwayTest(unittest.TestCase):
+    def test_from_gov_figures(self):
+        st = {"treasury": 400_000, "gov": {"ubiPerDay": 300_000, "taxPerDay": 200_000}}
+        a = watch.treasury_runway(st, None, {}, 0)
+        self.assertEqual(a["key"], "pemerintah:treasury-runway")  # 4 days
+        st["treasury"] = 600_000
+        self.assertIsNone(watch.treasury_runway(st, None, {}, 0))  # 6 days
+
+    def test_server_runway_days(self):
+        gov = {"taxPerDay": 1, "ubiPerDay": 2, "netPerDay": -1, "rejectedShare": 0.1}
+        a = watch.treasury_runway({"treasury": 3, "gov": {**gov, "runwayDays": 3.0}}, None, {}, 0)
+        self.assertEqual(a["key"], "pemerintah:treasury-runway")
+        self.assertIsNone(watch.treasury_runway({"treasury": 3, "gov": {**gov, "runwayDays": 12.0}}, None, {}, 0))
+        self.assertIsNone(watch.treasury_runway({"treasury": 3, "gov": {**gov, "runwayDays": None}}, None, {}, 0))
+
+    def test_taxes_cover_ubi(self):
+        self.assertIsNone(watch.treasury_runway({"treasury": 1, "gov": {"ubiPerDay": 1, "taxPerDay": 2}}, None, {}, 0))
+
+    def test_from_ledger_and_tax_history(self):
+        memo, ubi = {}, [{"seq": 5, "data": {"total": 300_000, "short": 0}}]
+        st = lambda tax: {"treasury": 400_000, "econ": {"taxCollected": tax}}  # noqa: E731
+        self.assertIsNone(watch.treasury_runway(st(0), ubi, memo, 0))  # no day of tax history yet
+        self.assertIsNotNone(watch.treasury_runway(st(200_000), ubi, memo, 86400))
+        self.assertEqual(memo["runway"]["days"], 4.0)
+
+    def test_missing_data(self):
+        self.assertIsNone(watch.treasury_runway({"treasury": 5}, None, {}, 0))
+
+
+class RejectedShareTest(unittest.TestCase):
+    def test_a_full_day_above_half(self):
+        memo, st = {}, {"gov": {"rejectedShare": 0.7}}
+        self.assertIsNone(watch.rejected_share(st, memo, 0))
+        self.assertIsNone(watch.rejected_share(st, memo, 3600))
+        self.assertIsNotNone(watch.rejected_share(st, memo, 86400))
+        self.assertIsNone(watch.rejected_share({"gov": {"rejectedShare": 0.3}}, memo, 90000))
+        self.assertIsNone(watch.rejected_share(st, memo, 90001))  # the day starts again
+
+
+class SeatsStuckTest(unittest.TestCase):
+    H = 3600
+
+    def st(self, elections, mayor=None):
+        return {"stats": {"seated": 1, "seats": 2},
+                "config": {"roles": [{"id": "president", "seats": 1}, {"id": "mayor", "seats": 1}]},
+                "seats": {"president": ["p"], "mayor": []},
+                "cities": [{"id": "datahaven", "mayor": mayor}], "elections": elections}
+
+    def run12(self, state):
+        memo = {}
+        watch.seats_stuck(state, memo, 0)
+        return watch.seats_stuck(state, memo, 12 * self.H)
+
+    def test_running_race_holds_the_alarm(self):
+        race = {"id": 28, "office": "mayor", "city": "datahaven", "stage": "campaign", "stageEndsAt": 13 * self.H * 1000}
+        self.assertIsNone(self.run12(self.st([race])))
+
+    def test_no_race_alarms(self):
+        other = {"id": 9, "office": "mayor", "city": "neura", "stage": "voting", "stageEndsAt": 13 * self.H * 1000}
+        a = self.run12(self.st([other]))
+        self.assertIn("no election open", a["text"])
+
+    def test_race_past_its_stage_end_alarms(self):
+        race = {"id": 28, "office": "mayor", "city": "datahaven", "stage": "nomination", "stageEndsAt": 1 * self.H * 1000}
+        self.assertIn("stuck in nomination", self.run12(self.st([race]))["text"])
+
+    def test_seats_moved(self):
+        memo = {}
+        watch.seats_stuck(self.st([]), memo, 0)
+        moved = self.st([])
+        moved["stats"]["seated"] = 2
+        self.assertIsNone(watch.seats_stuck(moved, memo, 12 * self.H))
+
+
+class SchoolTest(unittest.TestCase):
+    def st(self, lessons, expired=0, queued=5, online=True):
+        return {"school": {"lessons": lessons},
+                "localBrain": {"online": online, "trainExpired": expired, "queuedTrain": queued}}
+
+    def keys(self, states):
+        memo, out = {}, []
+        for i, s in enumerate(states):
+            out = watch.school_training(s, memo, i * 900)  # every 15 min, 5 observations = 1 h
+        return {a["key"] for a in out}
+
+    def test_healthy_hour(self):
+        self.assertEqual(self.keys([self.st(100 + 50 * i, queued=5 + (i % 2)) for i in range(5)]), set())
+
+    def test_stalled_expiring_and_growing(self):
+        keys = self.keys([self.st(100, expired=i, queued=5 + 10 * i) for i in range(5)])
+        self.assertEqual(keys, {"rakyat:school-stalled", "rakyat:train-expired", "rakyat:train-queue"})
+
+    def test_offline_or_short_window_is_silent(self):
+        self.assertEqual(self.keys([self.st(100, online=False) for _ in range(5)]), set())
+        self.assertEqual(self.keys([self.st(100) for _ in range(3)]), set())
+
+    def test_counter_restart(self):
+        self.assertEqual(self.keys([self.st(9000), self.st(9100), self.st(10), self.st(60), self.st(120)]), set())
+
+
 class RunnerTest(unittest.TestCase):
     def test_old_runner(self):
         self.assertIsNotNone(watch.local_brain({"localBrain": {"online": True, "runner": None}}))

@@ -12,6 +12,16 @@ import time
 
 REPEAT_WINDOW = 30          # last N street chat lines
 REPEAT_SHARE = 0.30         # alarm when this share or more are repeats of a line in the window
+MONOTONE_WINDOW_S = 2 * 3600  # daily-life acts are compared over the last two hours
+MONOTONE_MIN_NEW = 200      # fewer new thoughts than this (the republic's night): no verdict
+MONOTONE_SHARE = 0.70       # one act above this share of the new thoughts is monotone
+SCHOOL_WINDOW_S = 3600      # lessons / train queue are judged over the last hour
+QUEUE_GROWTH = 10           # queuedTrain rising at every observation by at least this much in total
+RUNWAY_DAYS = 5.0           # treasury left at the net UBI burn
+REJECTED_SHARE = 0.5        # gov.rejectedShare above this for a whole day
+SEATS_STUCK_S = 12 * 3600   # seats filled unchanged this long
+RUNNING_STAGES = ("nomination", "campaign", "quiet", "voting", "certify")
+STAGE_GRACE_MS = 15 * 60 * 1000  # a stage may close a few ticks after stageEndsAt
 PENDING_STALE_S = 3600      # a cabinet nomination unchanged this long is stuck
 EXAM_FAIL_SHARE = 0.50      # Academy entrance exams failed in a day
 EXAM_MIN_SESSIONS = 4
@@ -26,6 +36,11 @@ def _alarm(key: str, box: str, text: str) -> dict:
     return {"key": key, "box": box, "text": text}
 
 
+def _num(x) -> float | None:
+    """A number from the public state, or None for anything else (bools, strings, missing)."""
+    return float(x) if isinstance(x, (int, float)) and not isinstance(x, bool) else None
+
+
 # ---------------------------------------------------------------- people
 def street_repeats(state: dict, window: int = REPEAT_WINDOW, share: float = REPEAT_SHARE) -> dict:
     """Repeated lines among the last `window` street chat messages of this very state."""
@@ -33,6 +48,62 @@ def street_repeats(state: dict, window: int = REPEAT_WINDOW, share: float = REPE
     last = [" ".join(str(m.get("text") or "").lower().split()) for m in msgs[-window:]]
     repeats = len(last) - len(set(last))
     return {"window": len(last), "repeats": repeats, "share": round(repeats / len(last), 3) if last else 0.0}
+
+
+def monotone(state: dict, memo: dict, now: float) -> dict | None:
+    """Share of the top act among thoughts of the last ~2 hours (not the cumulative counter, which keeps
+    one night of resting alive for hours); skipped under MONOTONE_MIN_NEW new thoughts (the republic's night)."""
+    daily = state.get("daily") or {}
+    acts = {k: int(_num(v) or 0) for k, v in (daily.get("byAct") or {}).items()}
+    snaps = memo.setdefault("acts", [])
+    if (daily.get("clock") or {}).get("awake") is False:
+        # the republic's night: citizens sleep, no verdict, and the morning starts a fresh window
+        snaps.clear()
+        memo["actsWindow"] = {"minutes": 0, "new": 0, "byAct": {}, "asleep": True}
+        return None
+    if snaps and any(acts.get(k, 0) < v for k, v in snaps[-1][1].items()):
+        snaps.clear()  # the counters were reset (new byAct version)
+    snaps.append((now, acts))
+    snaps[:] = [s for s in snaps if now - s[0] <= MONOTONE_WINDOW_S]
+    base = snaps[0][1]
+    delta = {k: v - base.get(k, 0) for k, v in acts.items() if v - base.get(k, 0) > 0}
+    total = sum(delta.values())
+    memo["actsWindow"] = {"minutes": int((now - snaps[0][0]) / 60), "new": total, "byAct": delta}
+    if total < MONOTONE_MIN_NEW:
+        return None
+    top, n = max(delta.items(), key=lambda kv: kv[1])
+    if n / total > MONOTONE_SHARE:
+        return _alarm("rakyat:monotone", "rakyat",
+                      f"{round(100 * n / total)}% of the last {total} thoughts ({memo['actsWindow']['minutes']} min) chose \"{top}\"")
+    return None
+
+
+def school_training(state: dict, memo: dict, now: float) -> list[dict]:
+    """Over the last hour, while the local brain is online: lessons must rise, train answers must not
+    expire, and the train queue must not keep growing."""
+    lb, school = state.get("localBrain") or {}, state.get("school") or {}
+    cur = {k: _num(v) for k, v in (("lessons", school.get("lessons")), ("trainExpired", lb.get("trainExpired")),
+                                   ("queuedTrain", lb.get("queuedTrain")))}
+    hist = memo.setdefault("school", [])
+    if hist and cur["lessons"] is not None and hist[-1][1]["lessons"] is not None and cur["lessons"] < hist[-1][1]["lessons"]:
+        hist.clear()  # counters restarted (deploy or a new day)
+    hist.append((now, cur))
+    hist[:] = [h for h in hist if now - h[0] <= SCHOOL_WINDOW_S + 900]
+    memo["schoolWindow"] = {"minutes": int((now - hist[0][0]) / 60), **cur}
+    if not lb.get("online") or now - hist[0][0] < SCHOOL_WINDOW_S:
+        return []
+    base = hist[0][1]  # the oldest snapshot of the (trimmed) window, about an hour ago
+    out = []
+    if cur["lessons"] is not None and base["lessons"] is not None and cur["lessons"] <= base["lessons"]:
+        out.append(_alarm("rakyat:school-stalled", "rakyat", f"school.lessons has not risen in an hour ({cur['lessons']:.0f})"))
+    if cur["trainExpired"] is not None and base["trainExpired"] is not None and cur["trainExpired"] > base["trainExpired"]:
+        out.append(_alarm("rakyat:train-expired", "rakyat",
+                          f"localBrain.trainExpired rose {base['trainExpired']:.0f} → {cur['trainExpired']:.0f} in an hour"))
+    q = [h[1]["queuedTrain"] for h in hist if h[1]["queuedTrain"] is not None]
+    if len(q) >= 3 and all(b > a for a, b in zip(q, q[1:])) and q[-1] - q[0] >= QUEUE_GROWTH:
+        out.append(_alarm("rakyat:train-queue", "rakyat",
+                          f"localBrain.queuedTrain kept growing for an hour ({q[0]:.0f} → {q[-1]:.0f})"))
+    return out
 
 
 def local_brain(state: dict) -> dict | None:
@@ -77,6 +148,108 @@ def cabinet_pending(state: dict, memo: dict, now: float) -> dict | None:
         mins = int((now - seen["since"]) / 60)
         return _alarm("pemerintah:cabinet-stuck", "pemerintah", f"cabinet nomination gained no vote for {mins} min: {what}")
     return None
+
+
+def _ubi_short(ubi_entries: list[dict] | None) -> str:
+    short = (ubi_entries[-1].get("data") or {}).get("short") if ubi_entries else None
+    return f" (last UBI short by {short})" if short else ""
+
+
+def treasury_runway(state: dict, ubi_entries: list[dict] | None, memo: dict, now: float) -> dict | None:
+    """Days the treasury lasts at today's net UBI burn: treasury / (UBI per day - tax per day).
+
+    Prefers `gov.ubiPerDay` / `gov.taxPerDay` from the state; otherwise UBI per day is the `total` of the
+    latest daily `ubi` ledger entry and tax per day is the rise of `econ.taxCollected` over the last ~24 h."""
+    treasury = _num(state.get("treasury"))
+    gov = state.get("gov") or {}
+    if "runwayDays" in gov:
+        # the server's own figure: null means taxes cover the UBI (no deficit)
+        days = _num(gov.get("runwayDays"))
+        memo["runway"] = {"treasury": treasury, "ubiPerDay": _num(gov.get("ubiPerDay")), "taxPerDay": _num(gov.get("taxPerDay")),
+                          "netPerDay": _num(gov.get("netPerDay")), "days": days, "from": "gov"}
+        if days is not None and days < RUNWAY_DAYS:
+            return _alarm("pemerintah:treasury-runway", "pemerintah",
+                          f"treasury {treasury or 0:,.0f} CAI lasts {days:.1f} days (net {gov.get('netPerDay')}/day)"
+                          + _ubi_short(ubi_entries))
+        return None
+    ubi = _num(gov.get("ubiPerDay"))
+    if ubi is None and ubi_entries:
+        ubi = _num((ubi_entries[-1].get("data") or {}).get("total"))
+    tax = _num(gov.get("taxPerDay"))
+    collected = _num((state.get("econ") or {}).get("taxCollected"))
+    hist = memo.setdefault("tax", [])
+    if collected is not None:
+        if hist and collected < hist[-1][1]:
+            hist.clear()
+        hist.append((now, collected))
+        hist[:] = [h for h in hist if now - h[0] <= 26 * 3600]
+        if tax is None and now - hist[0][0] >= 20 * 3600:  # a day's worth of history
+            tax = (collected - hist[0][1]) * 86400 / (now - hist[0][0])
+    memo["runway"] = {"treasury": treasury, "ubiPerDay": ubi, "taxPerDay": tax}
+    if treasury is None or ubi is None or tax is None:
+        return None
+    burn = ubi - tax
+    if burn <= 0:
+        memo["runway"]["days"] = None  # taxes cover the UBI: no runway limit
+        return None
+    days = treasury / burn
+    memo["runway"]["days"] = round(days, 1)
+    if days < RUNWAY_DAYS:
+        return _alarm("pemerintah:treasury-runway", "pemerintah",
+                      f"treasury {treasury:,.0f} CAI lasts {days:.1f} days at UBI {ubi:,.0f}/day minus tax {tax:,.0f}/day"
+                      + _ubi_short(ubi_entries))
+    return None
+
+
+def rejected_share(state: dict, memo: dict, now: float) -> dict | None:
+    """`gov.rejectedShare` above 0.5 continuously for a day."""
+    share = _num((state.get("gov") or {}).get("rejectedShare"))
+    if share is None or share <= REJECTED_SHARE:
+        memo.pop("rejectedSince", None)
+        return None
+    since = memo.setdefault("rejectedSince", now)
+    if now - since >= 86400:
+        return _alarm("pemerintah:rejected-share", "pemerintah",
+                      f"gov.rejectedShare {share:.2f} has stayed above {REJECTED_SHARE} for {int((now - since) / 3600)} h")
+    return None
+
+
+def vacancies(state: dict) -> list[tuple[str, str | None]]:
+    """Empty seats as (office, city); a vacant mayoralty is named by its city."""
+    roles = {r.get("id"): r.get("seats") or 0 for r in ((state.get("config") or {}).get("roles") or [])}
+    seats = state.get("seats") or {}
+    out: list[tuple[str, str | None]] = []
+    for office, n in roles.items():
+        if office == "mayor":
+            out += [("mayor", c.get("id")) for c in state.get("cities") or [] if not c.get("mayor")]
+        else:
+            out += [(office, None)] * max(0, n - len(seats.get(office) or []))
+    return out
+
+
+def seats_stuck(state: dict, memo: dict, now: float) -> dict | None:
+    """Seats filled has not moved for 12 h, and some vacant seat has no election running on time for it."""
+    st = state.get("stats") or {}
+    seated, total = st.get("seated"), st.get("seats")
+    hist = memo.setdefault("seated", [])
+    hist.append((now, seated))
+    hist[:] = [h for h in hist if now - h[0] <= SEATS_STUCK_S + 3600]
+    old = next((h for h in hist if now - h[0] >= SEATS_STUCK_S), None)
+    if not old or old[1] != seated or not isinstance(seated, int) or not isinstance(total, int) or seated >= total:
+        return None
+    now_ms = now * 1000
+    uncovered = []
+    for office, city in vacancies(state):
+        race = next((e for e in state.get("elections") or [] if e.get("office") == office
+                     and (city is None or e.get("city") == city) and e.get("stage") in RUNNING_STAGES), None)
+        if race is None:
+            uncovered.append(f"{office}{' ' + city if city else ''}: no election open")
+        elif isinstance(race.get("stageEndsAt"), (int, float)) and now_ms > race["stageEndsAt"] + STAGE_GRACE_MS:
+            uncovered.append(f"{office}{' ' + city if city else ''}: election #{race.get('id')} stuck in {race.get('stage')}")
+    if not uncovered:
+        return None  # every empty seat has a race on schedule (a regular race takes ~26 h)
+    return _alarm("pemerintah:seats-stuck", "pemerintah",
+                  f"seats filled unchanged for 12 h ({seated}/{total}); " + "; ".join(uncovered[:5]))
 
 
 def council_quorum(state: dict) -> dict | None:
@@ -170,17 +343,21 @@ def ledger_alarm(dup: dict) -> dict | None:
 
 
 # ---------------------------------------------------------------- all together
-def evaluate(state: dict, health: dict | None, ledger_by_kind: dict | None, memo: dict, now: float | None = None) -> dict:
+def evaluate(state: dict, health: dict | None, ledger_by_kind: dict | None, memo: dict, now: float | None = None,
+             ubi_entries: list[dict] | None = None) -> dict:
     now = time.time() if now is None else now
     alarms: list[dict] = []
     rep = street_repeats(state)
     if rep["window"] and rep["share"] >= REPEAT_SHARE:
         alarms.append(_alarm("rakyat:repeat", "rakyat",
                              f"{rep['repeats']}/{rep['window']} of the latest street lines are repeats"))
-    for a in (local_brain(state), cabinet_pending(state, memo, now), council_quorum(state), build_restart(health, memo)):
+    for a in (monotone(state, memo, now), local_brain(state), cabinet_pending(state, memo, now),
+              council_quorum(state), seats_stuck(state, memo, now), build_restart(health, memo),
+              treasury_runway(state, ubi_entries, memo, now), rejected_share(state, memo, now)):
         if a:
             alarms.append(a)
     alarms += academy_training(state, memo)
+    alarms += school_training(state, memo, now)
     alarms += llm_errors(state, memo)
     dup = ledger_duplicates(ledger_by_kind) if ledger_by_kind is not None else None
     if dup and (a := ledger_alarm(dup)):
@@ -189,4 +366,5 @@ def evaluate(state: dict, health: dict | None, ledger_by_kind: dict | None, memo
     keys = [a["key"] for a in alarms]
     memo["open"] = keys
     return {"alarms": alarms, "opened": [k for k in keys if k not in before], "closed": sorted(before - set(keys)),
-            "streets": rep, "today": memo.get("today"), "ledgerOnce": dup}
+            "streets": rep, "acts": memo.get("actsWindow"), "runway": memo.get("runway"),
+            "school": memo.get("schoolWindow"), "today": memo.get("today"), "ledgerOnce": dup}
