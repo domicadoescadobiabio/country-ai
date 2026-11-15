@@ -360,6 +360,8 @@ try {
     (jb.jobs || []).length === 59 && jb.jobs.filter(j => j.isNew).length === 20 && jb.jobs.every(j => j.id && j.title && Array.isArray(j.fields) && ['day', 'night', 'mixed'].includes(j.shift))
     && jSum === jAll.total && jCities === jSum && Number.isInteger(jb.unemployed) && jb.unemployedShare >= 0 && jb.unemployedShare < 0.1 && Number.isInteger(jb.hired) && Number.isInteger(jb.lost),
     JSON.stringify({ jobs: jb.jobs?.length, isNew: jb.jobs?.filter(j => j.isNew).length, sum: jSum, cities: jCities, citizens: jAll.total, unemployed: jb.unemployed, share: jb.unemployedShare }));
+  check('jobs: /api/jobs says whether the jobs are given out (ready) and on which republic day (assignedDay)', jb.ready === true && Number.isInteger(jb.assignedDay) && jb.assignedDay >= 1 && jb.assignedDay <= occSt.day,
+    JSON.stringify({ ready: jb.ready, assignedDay: jb.assignedDay, day: occSt.day }));
   // --- Republic News: headlines from what happened, newest first; new ones stream on SSE as a small 'news' event
   const newsShape = x => /^news-\d+$/.test(x.id) && typeof x.ts === 'number' && typeof x.headline === 'string' && x.headline.length > 0 && x.headline.length <= 100
     && (x.city === null || typeof x.city === 'string') && typeof x.kind === 'string' && x.reporter && x.reporter.id && x.reporter.name && (x.anchor === null || (x.anchor.id && x.anchor.name)) && typeof x.ref === 'string';

@@ -255,8 +255,11 @@ function jobsView() {
     jobs: (c?.jobs || []).filter(j => JOB_IDS.has(j.id)).map(j => ({ id: j.id, title: cleanText(j.title, 40), place: typeof j.place === 'string' && /^[a-z_]{1,24}$/.test(j.place) ? j.place : null,
       fields: (Array.isArray(j.fields) ? j.fields : []).filter(f => typeof f === 'string' && /^[a-z_]{1,24}$/.test(f)).slice(0, 6), shift: ['day', 'night', 'mixed'].includes(j.shift) ? j.shift : 'day', isNew: j.isNew === true })),
     byCity, total: counts(c?.total), unemployed: n(c?.unemployed), unemployedShare: Math.min(1, n(c?.unemployedShare)), hired: n(c?.hired), lost: n(c?.lost),
+    // ready: the first job assignment has run (before it the page says "assigning jobs…"); assignedDay: its republic day
+    ready: c?.ready === true, assignedDay: Number.isInteger(c?.assignedDay) && c.assignedDay >= 0 ? c.assignedDay : null,
   };
-  jobsCache = { at: Date.now(), v };
+  // not cached until the jobs are given out, so "assigning jobs…" ends as soon as they are
+  jobsCache = { at: v.ready ? Date.now() : 0, v };
   return v;
 }
 // Republic News (src/news.ts newsFeed): the newest n headlines (1..50), newest first, every text cleaned again
