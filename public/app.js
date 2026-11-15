@@ -51,7 +51,19 @@ function renderStats() {
   const ep = $('#enginePill');
   ep.textContent = st.paused ? 'paused' : st.config.engine === 'llm' ? brainMix() : 'offline engine';
   ep.className = 'pill ' + (st.paused ? 'red' : st.config.engine === 'llm' ? 'violet' : '');
-  ep.title = [st.config.engineLabel, st.localBrain?.model ? `citizens: local ${st.localBrain.model}${st.localBrain.online ? '' : ' (offline)'}` : null].filter(Boolean).join(' · ') || ep.textContent;
+  ep.title = [st.config.engineLabel, st.localBrain?.model ? `citizens: local ${st.localBrain.model}${st.localBrain.online ? '' : ' (offline)'}` : null, adapterTip()].filter(Boolean).join(' · ') || ep.textContent;
+}
+// the LoRA adapters the local runner has loaded (localBrain.runner.adapters, names checked like the runner does)
+function adaptersOf() {
+  const a = st.localBrain?.runner?.adapters;
+  return Array.isArray(a) ? a.filter(n => typeof n === 'string' && /^[a-z0-9_]{1,32}$/.test(n)).slice(0, 32) : null;
+}
+// "answers per adapter: general 812, math 40, …" (localBrain.runner.byAdapter), most used first
+function adapterTip() {
+  const by = st.localBrain?.runner?.byAdapter; const names = adaptersOf();
+  if (!names?.length || !by || typeof by !== 'object') return null;
+  const rows = names.map(n => [n, Number.isFinite(Number(by[n])) ? Number(by[n]) : 0]).sort((x, y) => y[1] - x[1]);
+  return `answers per adapter: ${rows.map(([n, v]) => `${n.replace(/_/g, ' ')} ${v.toLocaleString('en-US')}`).join(', ')}`;
 }
 // "mix: Claude · OpenRouter · Ollama": which brains the republic thinks with (leaders, officials, citizens)
 function brainMix() {
@@ -67,6 +79,10 @@ function localLabel(model) {
   const m = String(model || '').slice(0, 120).match(/^([a-z0-9._-]+)\/([^+]*)(?:\+([A-Za-z0-9._-]{1,40}))?$/i);
   if (!m) return 'local';
   const rt = RUNTIME[m[1].toLowerCase()] || 'local';
+  // every adapter the runner loaded: "llama.cpp + 6 LoRAs (general, math, economics, …)"
+  const names = adaptersOf();
+  if (names?.length > 1) { const shown = names.slice(0, 2).map(n => n.replace(/_/g, ' ')); return `${rt} + ${names.length} LoRAs (${shown.join(', ')}${names.length > 2 ? ', …' : ''})`; } // all of them in the tooltip
+  if (names?.length === 1) return `${rt} + LoRA (${names[0].replace(/_/g, ' ')})`;
   return m[3] ? `${rt} + LoRA (${m[3]})` : rt;
 }
 
@@ -264,7 +280,10 @@ const PANELS = {
     } else out.push(h('div', { class: 'card' }, h('h4', { text: 'No exam right now' }), h('p', { text: 'Every office has enough qualified candidates. Seats are filled by elections and appointments; the Academy opens again when more candidates are needed.' })));
     const ru = st.academy.rules;
     const rules = ru?.asked > 0 ? `${ru.right}/${ru.asked} (${pct(ru.right / ru.asked)})` : '—';
-    out.push(h('div', { class: 'card' }, h('h4', { text: 'Entrance exams' }), kv([['Sessions', st.academy.sessions], ['Sworn in', st.academy.graduates], ['Failed', st.academy.failures], ['Rule questions right', rules]])));
+    // answered right by kind of question (academy.stats.byKind: rules, field, case, handbook…)
+    const kinds = Object.entries(st.academy.stats?.byKind || {}).filter(([k, v]) => /^[a-z_]{1,20}$/.test(k) && v && num(v.asked) > 0)
+      .map(([k, v]) => [`${k.replace(/_/g, ' ')} questions right`, `${num(v.right) || 0}/${num(v.asked)} (${pct((num(v.right) || 0) / num(v.asked))})`]);
+    out.push(h('div', { class: 'card' }, h('h4', { text: 'Entrance exams' }), kv([['Sessions', st.academy.sessions], ['Sworn in', st.academy.graduates], ['Failed', st.academy.failures], ...(kinds.length ? kinds : [['Rule questions right', rules]])])));
     const t = st.training;
     if (t) {
       const card = h('div', { class: 'card' }, h('h4', { text: 'In-service training' }),
