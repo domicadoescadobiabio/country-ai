@@ -218,6 +218,17 @@ try {
   const rBad = cr({ version: 3, backend: 'vllm; rm -rf', adapter: '../../etc/passwd', loraScale: 'high' });
   check('runner info keeps backend (ollama|llamacpp), adapter (a field id or none) and loraScale (0..2); anything else is dropped', rOk.backend === 'llamacpp' && rOk.adapter === 'philosophy' && rOk.loraScale === 2 && rNone.adapter === 'none' && rNone.loraScale === 0.5
     && !('backend' in rBad) && !('adapter' in rBad) && !('loraScale' in rBad) && rBad.version === 3, JSON.stringify({ rOk, rNone, rBad }));
+  // runner v4: every LoRA adapter in use and the answers each gave
+  const many = Array.from({ length: 40 }, (_, i) => `field_${i}`);
+  const rv4 = cr({ version: 4, backend: 'llamacpp', adapter: 'general', loraScale: 1, adapters: ['general', 'law', 'math', 'law', '../x', 'Law', '', 7, null, { a: 1 }, '__proto__', 'x'.repeat(33)],
+    byAdapter: JSON.parse('{"general":120,"law":7,"math":0,"__proto__":5,"bad-name":3,"neg":-1,"half":2.5,"big":2000000000,"str":"9","constructor":4}') });
+  const r4Many = cr({ version: 4, adapters: many, byAdapter: Object.fromEntries(many.map((k, i) => [k, i])) });
+  const r4Junk = cr({ version: 4, adapters: 'law,math', byAdapter: [1, 2] });
+  check('runner v4: adapters (plain ids, no duplicates, at most 32) and answers per adapter (whole numbers 0..1e9) are kept; adapter and loraScale unchanged',
+    JSON.stringify(rv4.adapters) === JSON.stringify(['general', 'law', 'math']) && JSON.stringify(rv4.byAdapter) === JSON.stringify({ general: 120, law: 7, math: 0, constructor: 4 })
+    && Object.getPrototypeOf(rv4.byAdapter) === Object.prototype && rv4.adapter === 'general' && rv4.loraScale === 1
+    && r4Many.adapters.length === 32 && Object.keys(r4Many.byAdapter).length === 32 && !('adapters' in r4Junk) && !('byAdapter' in r4Junk) && r4Junk.version === 4,
+    JSON.stringify({ rv4, many: [r4Many.adapters.length, Object.keys(r4Many.byAdapter).length], r4Junk }));
   // --- the distillation set: masked text, no agent ids
   // a stand-in for the store: one row per question hash (0 = duplicate), like train_examples' unique qhash
   const saved = []; const seenQ = new Set();

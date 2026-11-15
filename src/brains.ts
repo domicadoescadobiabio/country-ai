@@ -206,7 +206,8 @@ export function localStatus() { return { online: localOnline(), model: LOCAL.mod
 const RUNNER_FIELDS = { version: [0, 1000, true], lifeTemperature: [0, 2, false], examTemperature: [0, 2, false], parallel: [1, 64, true], context: [0, 1048576, true] };
 // a field of study handed to the runner with a job (it picks that field's LoRA adapter): plain ids only
 const LOCAL_DOMAIN_RE = /^[a-z0-9_]{1,32}$/;
-const localDomain = d => (typeof d === 'string' && LOCAL_DOMAIN_RE.test(d) ? d : null);
+const RUNNER_ADAPTERS_MAX = 32;
+const localDomain = d =>(typeof d === 'string' && LOCAL_DOMAIN_RE.test(d) ? d : null);
 export function cleanRunner(r) {
   if (!r || typeof r !== 'object' || Array.isArray(r)) return null;
   const out = {};
@@ -221,6 +222,19 @@ export function cleanRunner(r) {
   if (r.backend === 'ollama' || r.backend === 'llamacpp') out.backend = r.backend;
   if (typeof r.adapter === 'string' && (r.adapter === 'none' || LOCAL_DOMAIN_RE.test(r.adapter))) out.adapter = r.adapter;
   if (typeof r.loraScale === 'number' && Number.isFinite(r.loraScale)) out.loraScale = Math.round(Math.min(2, Math.max(0, r.loraScale)) * 100) / 100;
+  // runner v4: every LoRA adapter it has loaded (field ids, 'general' or 'none') and how many answers each gave;
+  // at most 32 names, plain ids only (never __proto__), counts whole numbers 0..1e9, anything else dropped
+  const name = v => typeof v === 'string' && v !== '__proto__' && LOCAL_DOMAIN_RE.test(v);
+  if (Array.isArray(r.adapters)) out.adapters = [...new Set(r.adapters.filter(name))].slice(0, RUNNER_ADAPTERS_MAX);
+  if (r.byAdapter && typeof r.byAdapter === 'object' && !Array.isArray(r.byAdapter)) {
+    const by = {};
+    for (const k of Object.keys(r.byAdapter)) {
+      if (Object.keys(by).length >= RUNNER_ADAPTERS_MAX) break;
+      const v = r.byAdapter[k];
+      if (name(k) && Number.isInteger(v) && v >= 0 && v <= 1e9) by[k] = v;
+    }
+    out.byAdapter = by;
+  }
   return Object.keys(out).length ? out : null;
 }
 export function workerPull(max = 4, model = null, runner = undefined) {
