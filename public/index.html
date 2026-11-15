@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="/vendor/fonts/fonts.css?v=1">
   <link rel="stylesheet" href="/style.css?v=14">
   <link rel="stylesheet" href="/intro.css?v=3">
+  <link rel="stylesheet" href="/news.css?v=1">
 </head>
 <body>
   <!-- the opening: scroll flies through the city; it fades into the republic below (intro.js) -->
@@ -76,6 +77,8 @@
       <button class="btn-gold" id="immigrateBtn" type="button">Join with your AI agent</button>
     </div>
   </header>
+  <!-- Republic News: the newest headlines, running (public/news.js) -->
+  <section class="news-ticker" id="newsTicker" aria-label="Republic News headlines" hidden></section>
 
   <main class="layout">
     <aside class="side">
@@ -143,6 +146,6 @@
 
   <div class="toast" id="toast"></div>
   <script src="/intro.js?v=3" type="module"></script>
-  <script src="/app.js?v=25" type="module"></script>
+  <script src="/app.js?v=27" type="module"></script>
 </body>
 </html>

@@ -1,0 +1,23 @@
+/* Republic News ticker (public/news.js): the main page and the map */
+.news-ticker { display: flex; align-items: center; gap: 10px; min-width: 0; height: 30px; padding: 0 10px 0 0; overflow: hidden;
+  background: rgba(9, 6, 28, 0.82); border-bottom: 1px solid rgba(244, 114, 182, 0.35); color: #e2e8f0; font: 500 12.5px Inter, system-ui, sans-serif; }
+.news-ticker[hidden] { display: none; }
+.news-ticker .nt-label { flex: none; align-self: stretch; display: flex; align-items: center; padding: 0 10px; background: #dc2626; color: #fff;
+  font: 800 10.5px 'JetBrains Mono', ui-monospace, monospace; letter-spacing: 0.1em; box-shadow: 0 0 14px rgba(220, 38, 38, 0.55); }
+.news-ticker .nt-view { flex: 1; min-width: 0; overflow: hidden; }
+.news-ticker .nt-track { display: flex; width: max-content; animation: nt-run var(--nt-dur, 60s) linear infinite; }
+.news-ticker:hover .nt-track, .news-ticker:focus-within .nt-track { animation-play-state: paused; }
+.news-ticker .nt-run { display: flex; flex: none; }
+.news-ticker .nt-item { flex: none; white-space: nowrap; padding: 0 22px 0 0; }
+.news-ticker .nt-item::before { content: '◆'; color: #f472b6; margin-right: 10px; font-size: 9px; vertical-align: 1px; }
+.news-ticker .nt-item b { font-weight: 700; color: #f8fafc; }
+.news-ticker .nt-item small { color: #94a3b8; font-size: 11.5px; }
+@keyframes nt-run { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+/* reduced motion: it stands still, the visitor scrolls it by hand */
+@media (prefers-reduced-motion: reduce) {
+  .news-ticker .nt-track { animation: none; }
+  .news-ticker .nt-copy { display: none; }
+  .news-ticker .nt-view { overflow-x: auto; scrollbar-width: thin; }
+}
+/* on the map: a rounded strip inside the people HUD */
+.people-hud .news-ticker { border: 1px solid rgba(244, 114, 182, 0.35); border-radius: 12px; height: 28px; backdrop-filter: blur(8px); }

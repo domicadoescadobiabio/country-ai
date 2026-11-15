@@ -12,6 +12,8 @@ import { People, HOUSING, kindOf } from './people.js';
 import { Scenes, SCENE_COLOR } from './scenes.js';
 import { TYPES, CATS, ACT_COLOR, REP, MOODS, BOND_COLOR } from './catalog.js';
 import { setClock, fmtTime, hourOf, clockDetail } from '../clock.js'; // every time on the map is the republic's (ET)
+import { jobLine, workingLine } from '../jobs.js?v=1'; // everyone's job (citizen.job)
+import { newsTicker, TEST_NEWS } from '../news.js?v=1'; // Republic News, running in the people HUD
 
 const $ = s => document.querySelector(s);
 function h(tag, attrs = {}, ...kids) {
@@ -286,9 +288,14 @@ const statusOf = p => {
   if (k === 'home') return `At home in ${home}`;
   if (k === 'out') return 'Outside';
   if (k === 'prison') return `Inside ${p.b?.name || (p.where === 'jail' ? 'the jail' : 'the prison')}${p.act ? ` · ${p.act}` : ''}`;
+  // whereabouts act 'working': at their job ("Working as Barista · Cafe 2")
+  if (p.act === 'working') return `${workingLine(p, personOffice(p))} · ${p.b?.name || p.where}`;
   return `Inside ${p.b?.name || p.where}${p.act ? ` · ${p.act}` : ''}`;
 };
 const shortStatus = (p, b) => { const k = kindOf(p); return k === 'asleep' ? 'asleep' : k === 'home' ? 'at home' : k === 'out' ? 'outside' : p.b === b ? (p.act || 'here') : `out at ${p.b?.name || p.where}`; };
+// the title of a person's office (officials), for their job line
+const personOffice = p => (p?.office ? roleTitle(p.office) : null);
+const jobText = p => jobLine(p, personOffice(p)) || 'Citizen';
 function peopleSection(b) {
   const box = h('div', { class: 'people' });
   // the schools for children stand empty: every citizen is an adult for now
@@ -313,7 +320,7 @@ function peopleSection(b) {
   const draw = () => {
     const f = q ? list.filter(p => p.name.toLowerCase().includes(q)) : list; const pages = Math.max(1, Math.ceil(f.length / 50)); page = Math.min(page, pages - 1);
     ul.replaceChildren(...f.slice(page * 50, page * 50 + 50).map(p => h('li', { onclick: () => goPerson(p) },
-      h('span', { class: 'em', text: emoji(p.mood || 'calm') }), h('b', {}, p.name, p.student ? h('span', { class: 'tag-student', text: 'Student' }) : null), h('small', { text: shortStatus(p, b) }))));
+      h('span', { class: 'em', text: emoji(p.mood || 'calm') }), h('b', { text: p.name }), h('small', { text: `${jobText(p)} · ${shortStatus(p, b)}` }))));
     nav.replaceChildren(...(pages > 1 ? [h('button', { type: 'button', text: '‹', disabled: page === 0, onclick: () => { page--; draw(); } }), h('span', { text: `${page + 1} / ${pages} · ${f.length}` }), h('button', { type: 'button', text: '›', disabled: page >= pages - 1, onclick: () => { page++; draw(); } })] : []));
   };
   if (list.length > 12) box.append(h('input', { type: 'search', class: 'people-q', placeholder: 'Find a name here', maxlength: '40', oninput: e => { q = e.target.value.trim().toLowerCase(); page = 0; draw(); } }));
@@ -410,7 +417,7 @@ function peopleSearchUi() {
   const q = $('#peopleQ'), out = $('#peopleHits');
   q.addEventListener('input', () => {
     const hits = people ? people.find(q.value) : [];
-    out.replaceChildren(...hits.map(p => h('li', { onclick: () => { out.replaceChildren(); q.value = ''; goPerson(p); } }, h('span', { class: 'em', text: emoji(p.mood || 'calm') }), h('b', { text: p.name }), h('small', { text: `${data.cities[p.city]?.name || p.city} · ${statusOf(p)}` }))));
+    out.replaceChildren(...hits.map(p => h('li', { onclick: () => { out.replaceChildren(); q.value = ''; goPerson(p); } }, h('span', { class: 'em', text: emoji(p.mood || 'calm') }), h('b', { text: p.name }), h('small', { text: `${jobText(p)} · ${data.cities[p.city]?.name || p.city} · ${statusOf(p)}` }))));
     out.hidden = !hits.length;
   });
   q.addEventListener('keydown', e => { if (e.key === 'Enter') { const p = people?.find(q.value, 1)[0]; if (p) { out.replaceChildren(); out.hidden = true; q.value = ''; goPerson(p); } } });
@@ -444,7 +451,10 @@ function peopleTest() {
 // The interior module is imported only when someone goes in. While inside, the map does not render.
 const INSIDE = new Set(['parliament', 'palace', 'vp_office', 'ministry', 'const_court', 'court', 'prison', 'jail', 'academy', 'police_academy', 'military_academy', 'police_hq', 'police_station',
   'military_hq', 'army_base', 'border_post', 'election_comm', 'central_bank', 'city_hall', 'primary_school', 'middle_school', 'high_school', 'university', 'library', 'hospital', 'clinic',
-  'data_center', 'market', 'mall', 'supermarket', 'office', 'factory', 'community_hall']);
+  'data_center', 'market', 'mall', 'supermarket', 'office', 'factory', 'community_hall',
+  // the job catalog's workplaces (owner, 16 Nov): people work in each, so each can be entered
+  'news_station', 'cafe', 'garage', 'gym', 'barbershop', 'construction_site', 'farm', 'law_firm', 'food_stall', 'minimarket', 'restaurant', 'bank', 'fire_station',
+  'post_office', 'train_station', 'pharmacy', 'hotel']);
 // live events that change what is inside (the interior refreshes a little after one arrives)
 const INSIDE_CH = { parliament: ['parliament', 'council'], palace: ['palace', 'cabinet'], vp_office: ['palace', 'cabinet'], ministry: ['cabinet', 'palace'], const_court: ['court'], court: ['court'], prison: ['police', 'court'], jail: ['police', 'court'],
   academy: ['academy'], police_academy: ['academy', 'police'], military_academy: ['academy', 'border'], police_hq: ['police'], police_station: ['police'], military_hq: ['border'], army_base: ['border'], border_post: ['border'],
@@ -466,6 +476,12 @@ async function placeFor(type, b) {
       const p = await r.json();
       // the building's card counts from the same snapshot as this interior
       if (p && Number.isFinite(p.count) && p.at) syncCity(b.city, p.at);
+      // each plain row (role = their job's bare title, or 'Citizen') gets the full job line: "University student ·
+      // Economics", "Looking for work", the office title; a role a box wrote (Judge, Desk officer...) stays
+      for (const o of Array.isArray(p?.occupants) ? p.occupants : []) {
+        const q = o && typeof o.id === 'string' ? [people?.byId.get(o.id), citizen(o.id)].find(x => x?.job) : null; if (!q) continue;
+        if (!o.role || o.role === 'Citizen' || o.role === q.job.title) o.role = jobText(q);
+      }
       const empty = !(p.occupants || []).length && !p.more && !p.count && Object.keys(p.board || {}).every(k => k === 'note');
       if (!empty || Number.isFinite(p.count)) return p; // a counted building is the truth even when nobody is in it
     }
@@ -566,7 +582,7 @@ async function enterBuilding(b, push = true) {
   if (entering || inside || !INSIDE.has(b.type)) return; entering = true;
   const box = $('#enter'); $('#enterTitle').textContent = `Entering ${b.name}`; box.hidden = false; enterStep(8, 'Opening the doors…');
   try {
-    insideMod ||= await import('./interior.js?v=6'); enterStep(40, 'Reading who is inside…');
+    insideMod ||= await import('./interior.js?v=7'); enterStep(40, 'Reading who is inside…');
     const place = await placeFor(b.type, b); enterStep(75, 'Furnishing the room…');
     await new Promise(r => setTimeout(r, 30));
     renderer.setAnimationLoop(null); controls.enabled = false; // the map pauses where it is (and ignores drags)
@@ -736,7 +752,11 @@ function showAgent(a, keepBonds) {
   const rec = isReal(a) ? recs.get(a.id) : null; const label = moodLabel(a);
   // occupation from the server ('student' | 'official' | 'citizen'): a university student is labelled as one
   const occ = isReal(a) ? (rec || citizen(a.id))?.occupation ?? (people?.byId.get(a.id)?.student ? 'student' : null) : null;
-  const role = a.seat ? roleTitle(a.seat) : a.scene ? 'At an institution' : a.name ? (occ === 'student' ? 'Student · University' : 'Citizen') : 'Passer-by';
+  // their job (owner, 16 Nov: everyone's, from citizen.job): the record when loaded, else the light list's copy
+  const pp0 = people?.byId.get(a.id); const jsrc = isReal(a) ? [rec, citizen(a.id), pp0].find(x => x?.job) || rec || citizen(a.id) || pp0 : null;
+  const officeT = a.seat ? roleTitle(a.seat) : personOffice(jsrc);
+  const job = jsrc ? jobLine(jsrc, officeT) || (occ === 'student' ? 'University student' : null) : null;
+  const role = a.name ? (job || officeT || (occ === 'student' ? 'University student' : 'Citizen')) : a.seat ? roleTitle(a.seat) : a.scene ? 'At an institution' : 'Passer-by';
   body.append(h('div', { class: 'who' }, avatar(a, true), h('div', {},
     h('span', { class: 'cat', color: a.color }, h('i'), role), h('h2', { text: a.name || (a.scene ? 'A sample figure' : 'A citizen') }),
     h('p', { class: 'mood' }, h('b', { text: `${emoji(label)} ${label}` }), rec?.mood?.why ? ` · ${rec.mood.why}` : a.mood ? '' : ' · (a guess from what they are doing)'))));
@@ -745,6 +765,7 @@ function showAgent(a, keepBonds) {
   // where the whereabouts put them, for someone who is not out walking: "At home in …", "Inside …"
   const pp = people?.byId.get(a.id);
   if (pp && !a.scene && a.state !== 'walk' && !a.street) { const s = statusOf(pp); if (s) rows.splice(1, 1, ['Now', s]); }
+  if (job) rows.splice(1, 0, ['Job', job]);
   const pk = rec?.pokes?.n ?? a.pokesToday; if (pk) rows.push(['Poked today', `${pk}×`]);
   const info = isReal(a) ? (rec || citizen(a.id)) : null; // goal and reputation from the citizen record
   if (typeof info?.reputation === 'number') rows.push(['Reputation', `${Math.round(info.reputation * 100)}%`]);
@@ -824,7 +845,13 @@ async function placesTest() {
   const gap = Math.min(5000, Math.max(0, Number(qs.get('gap') ?? 1100) || 0)), from = Math.max(0, Number(qs.get('from')) || 0), n = Math.max(1, Number(qs.get('n')) || 1e9);
   const onlyCity = Object.hasOwn(data.cities, qs.get('city') || '') ? qs.get('city') : null;
   const list = [];
-  for (const [cid, c] of Object.entries(data.cities)) { if (onlyCity && cid !== onlyCity) continue; for (const type of INSIDE) if (!CHILD_SCHOOLS.has(type)) for (const b of c.byType?.[type] || []) list.push(b); }
+  // (more than 64 of a type in a city, e.g. the food stalls: the server answers for the whole city, so one ask each)
+  const onlyTypes = qs.get('types') ? new Set(qs.get('types').split(',')) : null; // e.g. types=cafe,farm
+  for (const [cid, c] of Object.entries(data.cities)) { if (onlyCity && cid !== onlyCity) continue; for (const type of INSIDE) if (!CHILD_SCHOOLS.has(type) && (!onlyTypes || onlyTypes.has(type))) { const pool = c.byType?.[type] || []; for (const b of pool) if (pool.length <= 64 || type === 'ministry' || b === pool[0]) list.push(b); } }
+  // the job catalog's workplaces (ticket #718): every city has its fixed count, and at least one of each workplace
+  const WANT = { news_station: 1, cafe: 6, garage: 3, gym: 2, barbershop: 4, construction_site: 3, farm: 1, law_firm: 2, food_stall: 1, minimarket: 1, restaurant: 1, bank: 1, fire_station: 1, post_office: 1, train_station: 1, pharmacy: 1, hotel: 1 };
+  const short = []; for (const [cid, c] of Object.entries(data.cities)) for (const [type, w] of Object.entries(WANT)) { const need = type === 'farm' && (cid === 'kernelfalls' || cid === 'lumenbay') ? 6 : w; const have = (c.byType?.[type] || []).length; if (type in { food_stall: 1, minimarket: 1, restaurant: 1, bank: 1, fire_station: 1, post_office: 1, train_station: 1, pharmacy: 1, hotel: 1 } ? have < need : have !== need) short.push(`${cid} ${type} ${have}/${need}`); }
+  const cat = `workplaces: ${short.length ? short.join(', ') : 'all there'}`;
   const todo = list.slice(from, from + n); const bad = []; let done = 0, people0 = 0, reread = 0;
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const readCity = async c => { for (let k = 0; k < 3; k++) { if (Date.now() < whereWait) await sleep(whereWait - Date.now() + 200); const v = await whereabouts(c); if (v) { people.apply(c, v); people.index(); reread++; return v.at; } } return null; };
@@ -843,9 +870,9 @@ async function placesTest() {
       const why = [...card].slice(0, 2).map(id => { const q = people.byId.get(id); return `${id} ${q?.where}/${q?.key}`; }).join(', ');
       bad.push(`${b.name} (${b.city}): card ${card.size}, inside ${p.count}${missing.length ? `, ${missing.length} not on the card` : ''}${sameAt ? '' : ' (snapshots differ)'}${qs.has('why') ? ` [${why}; place key ${p.key}/${p.of}]` : ''}`);
     }
-    out.textContent = `places test: ${done}/${todo.length} buildings · mismatches so far ${bad.length}${bad.length ? `: ${bad.slice(-3).join(' · ')}` : ''}`;
+    out.textContent = `places test: ${done}/${todo.length} buildings · mismatches so far ${bad.length}${bad.length ? `: ${bad.slice(-3).join(' · ')}` : ''} · ${cat}`;
   }
-  out.textContent = `places test: ${done} buildings (${todo.length} of ${list.length}${onlyCity ? ` in ${onlyCity}` : ''}, from ${from}) · ${people0} people inside · whereabouts re-read ${reread}× · mismatches: ${bad.length ? bad.slice(0, 8).join(' · ') + (bad.length > 8 ? ` · +${bad.length - 8} more` : '') : 'none'}`;
+  out.textContent = `places test: ${done} buildings (${todo.length} of ${list.length}${onlyCity ? ` in ${onlyCity}` : ''}, from ${from}) · ${people0} people inside · whereabouts re-read ${reread}× · mismatches: ${bad.length ? bad.slice(0, 8).join(' · ') + (bad.length > 8 ? ` · +${bad.length - 8} more` : '') : 'none'} · ${cat}`;
   // and the building the owner asked about: the Ministry of Finance's card
   const fin = data.buildings.find(x => x.type === 'ministry' && x.extra?.portfolio === 'finance');
   if (fin && qs.get('open') !== 'no') { flyTo(fin.x, fin.z, 320, 600); select(null); showBuilding(fin); }
@@ -1043,8 +1070,12 @@ async function cityFor(id) {
   if (cityCache.size > 5000) cityCache.clear();
   cityCache.set(id, c); return c;
 }
+// Republic News in the people HUD: the newest 20, then each new headline as it comes
+const news = newsTicker($('#newsTicker'), { cityName: id => data?.cities?.[id]?.name || id });
 function stream() {
+  news.load(); if (new URLSearchParams(location.search).get('selftest') === 'news') news.add(TEST_NEWS);
   let es; try { es = new EventSource('/api/stream'); } catch { return; }
+  news.listen(es);
   es.addEventListener('message', ev => {
     let m; try { m = JSON.parse(ev.data); } catch { return; }
     if (inside && (INSIDE_CH[inside.building?.type] || []).includes(m.ch)) inside.nudge(); // something changed in there

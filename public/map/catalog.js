@@ -64,7 +64,7 @@ export const TYPES = {
   library: { name: 'Public Library', cat: 'edu', size: 'lot', per: 30000, min: 1, where: 'inner', desc: 'Books, study rooms and the constitution in every edition.' },
   community_hall: { name: 'Community Hall', cat: 'civic', size: 'lot', per: 2500, min: 6, where: 'any', desc: 'Meetings, volunteering and polling stations on election day.' },
   bus_terminal: { name: 'Bus Terminal', cat: 'infra', size: [1, 1], per: 100000, min: 1, where: 'inner', desc: 'City and intercity buses.' },
-  train_station: { name: 'Train Station', cat: 'infra', size: [2, 1], desc: 'Intercity rail to the other four cities.' },
+  train_station: { name: 'Train Station', cat: 'infra', size: [2, 1], each: 1, where: 'inner', desc: 'Intercity rail to the other four cities.' },
   water_tower: { name: 'Water Tower', cat: 'infra', size: 'lot', per: 20000, min: 1, where: 'mid', desc: 'Keeps water pressure in the neighbourhood.' },
   substation: { name: 'Power Substation', cat: 'infra', size: 'lot', per: 25000, min: 1, where: 'mid', desc: 'Steps down grid power for homes and shops.' },
   water_plant: { name: 'Water Treatment Plant', cat: 'infra', size: [1, 1], per: 100000, min: 1, where: 'edge', desc: 'Cleans river water for the city.' },
@@ -98,7 +98,16 @@ export const TYPES = {
   power_plant: { name: 'Power Plant', cat: 'infra', size: [2, 1], desc: 'Generates the national grid.' },
   dam: { name: 'Hydro Dam', cat: 'infra', size: [2, 1], desc: 'Hydroelectric dam on the falls.' },
   solar_farm: { name: 'Solar Farm', cat: 'infra', size: [2, 2], desc: 'Solar panels feeding the grid.' },
-  hotel: { name: 'Hotel', cat: 'economy', size: [1, 1], desc: 'Rooms for visitors.' },
+  hotel: { name: 'Hotel', cat: 'economy', size: [1, 1], each: 1, where: 'inner', desc: 'Rooms for visitors.' },
+  // the job catalog's workplaces (owner, 16 Nov; src/jobs.ts): `each` = how many in every city, `eachIn` per city
+  news_station: { name: 'Republic News', cat: 'work', size: [1, 1], each: 1, where: 'inner', desc: 'Newsroom and studio: reporters, anchors and the headline ticker.' },
+  construction_site: { name: 'Construction Site', cat: 'work', size: [1, 1], each: 3, where: 'mid', desc: 'Cranes, scaffolding and a crew building the next block.' },
+  farm: { name: 'Farm', cat: 'work', size: [1, 1], each: 1, eachIn: { kernelfalls: 6, lumenbay: 6 }, where: 'edge', desc: 'Fields, a barn and the city\'s fresh food.' },
+  cafe: { name: 'Cafe', cat: 'economy', size: 'lot', each: 6, where: 'any', desc: 'Coffee, pastries and laptops.' },
+  barbershop: { name: 'Barbershop', cat: 'economy', size: 'lot', each: 4, where: 'any', desc: 'Haircuts, shaves and the neighbourhood news.' },
+  garage: { name: 'Garage', cat: 'work', size: 'lot', each: 3, where: 'any', desc: 'Repairs for cars, scooters and delivery bots.' },
+  gym: { name: 'Gym', cat: 'public', size: 'lot', each: 2, where: 'any', desc: 'Weights, treadmills and classes.' },
+  law_firm: { name: 'Law Firm', cat: 'justice', size: 'lot', each: 2, where: 'inner', desc: 'Lawyers for contracts, debts and the courts.' },
 
   // --- public space
   square: { name: 'Town Square', cat: 'public', size: [1, 1], desc: 'Central square: rallies, markets and celebrations.' },
@@ -138,10 +147,10 @@ export const BOND_COLOR = { best_friend: '#22d3ee', friend: '#67e8f9', crush: '#
 
 // Which buildings a citizen walks to for each daily action.
 export const ACT_DEST = {
-  work: ['office', 'factory', 'warehouse', 'market', 'supermarket', 'mall', 'data_center', 'port', 'hospital', 'bank', 'restaurant', 'hotel'],
-  shop: ['market', 'supermarket', 'minimarket', 'food_stall', 'mall', 'pharmacy'],
+  work: ['office', 'factory', 'warehouse', 'market', 'supermarket', 'mall', 'data_center', 'port', 'hospital', 'bank', 'restaurant', 'hotel', 'garage', 'construction_site', 'farm', 'law_firm', 'news_station'],
+  shop: ['market', 'supermarket', 'minimarket', 'food_stall', 'mall', 'pharmacy', 'barbershop'],
   study: ['library', 'university', 'high_school', 'academy'],
-  talk: ['square', 'park', 'food_stall', 'restaurant', 'community_hall'],
+  talk: ['square', 'park', 'food_stall', 'restaurant', 'community_hall', 'cafe', 'gym'],
   help: ['houses', 'kampung', 'rowhouses', 'public_housing'],
   volunteer: ['community_hall', 'clinic', 'park', 'worship', 'library'],
   apply: ['academy'],

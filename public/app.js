@@ -1,6 +1,8 @@
 // COUNTRY AI client. All agent/visitor text goes through textContent (never innerHTML with data).
 // Every time shown is the republic's clock (US Eastern, "ET"), never the visitor's own zone: see clock.js.
 import { setClock, fmtTime, fmtDate, fmtDateTime, clockDetail } from './clock.js';
+import { jobLine } from './jobs.js?v=1'; // a citizen's job line (citizen.job)
+import { newsTicker, TEST_NEWS } from './news.js?v=1'; // Republic News, running under the header
 const $ = s => document.querySelector(s);
 const st = { config: { channels: [], roles: [], constitution: [] }, citizens: [], feed: {}, stats: {}, seats: {}, academy: {}, ch: 'academy', tab: 'academy', citizen: null };
 
@@ -23,6 +25,8 @@ const cit = id => st.citizens.find(a => a.id === id) || st.found?.[id];
 // a university student (server field occupation: 'student' | 'official' | 'citizen'): they study and do not work
 const isStudent = a => !!a && a.occupation === 'student' && !a.office;
 const role = id => st.config.roles.find(r => r.id === id);
+// everyone's job (owner, 16 Nov): the office title for officials, "University student · <major>", "Looking for work"...
+const jobOf = a => jobLine(a, a?.office ? role(a.office)?.title : null) || (a?.office ? role(a.office)?.title : 'citizen');
 const time = ts => fmtTime(ts, { seconds: true });
 const cai = n => Math.round(n || 0).toLocaleString('en-US') + ' CAI';
 const pct = n => Math.round((n || 0) * 100) + '%';
@@ -231,9 +235,21 @@ function openCitizen(id) {
 // search the whole population (10,000 citizens) page by page, with the light list (no training records)
 async function searchCitizens() {
   const q = st.cq || {}; const p = new URLSearchParams({ lite: '1', page: String(q.page || 1), size: '50' });
-  if (q.q) p.set('q', q.q); if (q.city) p.set('city', q.city); if (q.status) p.set('status', q.status);
+  if (q.q) p.set('q', q.q); if (q.city) p.set('city', q.city); if (q.status) p.set('status', q.status); if (q.job) p.set('job', q.job);
   try { st.cres = await (await fetch('/api/citizens?' + p)).json(); } catch { st.cres ||= { total: 0, page: 1, size: 50, citizens: [] }; }
   if (st.tab === 'citizens') renderPanel();
+}
+// the job catalog and the labour market (GET /api/jobs, ticket #728): read at most once a minute, while the Citizens
+// tab is open; only checked ids and plain numbers are kept
+const JOB_ID = /^[a-z0-9_]{1,40}$/;
+async function loadJobs() {
+  if (st.jobsAt && Date.now() - st.jobsAt < 60000) return; st.jobsAt = Date.now();
+  try {
+    const r = await fetch('/api/jobs'); if (!r.ok) return; const j = await r.json(); const n = v => (Number.isFinite(Number(v)) ? Number(v) : 0);
+    st.jobs = { list: (Array.isArray(j?.jobs) ? j.jobs : []).filter(x => x && JOB_ID.test(String(x.id))).map(x => ({ id: String(x.id), title: String(x.title || x.id).slice(0, 40), isNew: x.isNew === true })),
+      unemployed: n(j?.unemployed), share: Math.min(1, n(j?.unemployedShare)), hired: n(j?.hired), lost: n(j?.lost) };
+    if (st.tab === 'citizens') renderPanel();
+  } catch { /* an older server: no job filter */ }
 }
 // The open tab keeps itself fresh. The state stream (SSE 'state', < 30 KB, about every 20 s) always carries the
 // header keys and includes each institution's view only when it is small, so the bigger views (elections, court,
@@ -309,7 +325,7 @@ const PANELS = {
     if (!a) return [h('p', { class: 'empty', text: 'No citizens yet.' })];
     const out = [h('div', { class: 'card' },
       h('h4', { text: a.name }), h('p', { text: a.bio }),
-      kv([['Office', a.office ? `${role(a.office)?.title}${a.termEnds ? ` (term to day ${a.termEnds})` : ''}` : isStudent(a) ? 'Student (University)' : 'citizen'], ['Status', a.status], ['City', cityName(a.city)], ['Wallet', cai(a.wallet)], ['Brain', brainLabel(a)], ['Path', a.faction === 'underworld' ? 'underworld' : isStudent(a) ? 'student' : 'civilian'], ['Rank', rankTitle(a) || '-'], ['Qualified for', Object.keys(a.quals || {}).map(r => role(r)?.title || r).join(', ') || '-'], ['Origin', a.origin],
+      kv([['Office', a.office ? `${role(a.office)?.title}${a.termEnds ? ` (term to day ${a.termEnds})` : ''}` : isStudent(a) ? 'Student (University)' : 'citizen'], ['Job', jobOf(a)], ['Status', a.status], ['City', cityName(a.city)], ['Wallet', cai(a.wallet)], ['Brain', brainLabel(a)], ['Path', a.faction === 'underworld' ? 'underworld' : isStudent(a) ? 'student' : 'civilian'], ['Rank', rankTitle(a) || '-'], ['Qualified for', Object.keys(a.quals || {}).map(r => role(r)?.title || r).join(', ') || '-'], ['Origin', a.origin],
         ...(typeof a.reputation === 'number' ? [['Reputation', pct(a.reputation)]] : []), ...(a.goalsDone ? [['Goals reached', a.goalsDone]] : []), ...(a.resisted ? [['Temptations resisted', a.resisted]] : [])]))];
     // the week's goal: chosen by the citizen from a menu, progress measured by the server from what happened
     const g = a.goal;
@@ -377,13 +393,19 @@ const PANELS = {
     const pop = st.population || {}; st.cq ||= { page: 1 };
     // full records (office holders) show the wallet; the light search list shows the mood instead
     const row = a => h('div', { class: 'citizen-row', color: a.color, onclick: () => openCitizen(a.id) },
-      h('i'), h('span', { text: a.name + (a.office ? ` · ${role(a.office)?.title}` : isStudent(a) ? ' · Student' : '') + (a.status !== 'free' ? ` · ${a.status}` : '') + ` · ${cityName(a.city)}` }),
+      h('i'), h('span', { text: a.name + ` · ${jobOf(a)}` + (a.status !== 'free' ? ` · ${a.status}` : '') + ` · ${cityName(a.city)}` }),
       h('small', { text: typeof a.wallet === 'number' ? cai(a.wallet) : a.mood?.label ? `${a.mood.emoji || ''} ${a.mood.label}`.trim() : '' }));
     const summary = h('div', { class: 'card' }, h('h4', { text: `${(pop.total || st.citizens.length).toLocaleString('en')} citizens in ${Object.keys(pop.byCity || {}).length} cities` }),
       kv([['By city', Object.entries(pop.byCity || {}).map(([c, n]) => `${cityName(c)} ${n}`).join(' · ')], ['Status', Object.entries(pop.byStatus || {}).map(([k, n]) => `${k} ${n}`).join(' · ')],
         ['Path', Object.entries(pop.byFaction || {}).map(([k, n]) => `${k} ${n}`).join(' · ')],
         ...((n => (typeof n === 'number' ? [['University students', `${n.toLocaleString('en')} (they study, they do not work)`]] : []))(st.stats?.students ?? pop.students)), ['Thinks with', Object.entries(pop.byFamily || {}).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k, n]) => `${k} ${n}`).join(' · ')],
-        ['Wallets', pop.wallets ? `median ${cai(pop.wallets.median)}, max ${cai(pop.wallets.max)}` : '-']]));
+        ['Wallets', pop.wallets ? `median ${cai(pop.wallets.median)}, max ${cai(pop.wallets.max)}` : '-'],
+        ...(st.jobs ? [['Jobs', `${st.jobs.list.length} kinds · ${st.jobs.unemployed.toLocaleString('en')} looking for work (${pct(st.jobs.share)}) · hired ${st.jobs.hired.toLocaleString('en')} · lost ${st.jobs.lost.toLocaleString('en')}`]] : [])]));
+    loadJobs();
+    // filter by job: the catalog's, plus students, officials and those looking for work
+    const jobSel = h('select', { 'aria-label': 'Filter by job', onchange: e => { st.cq = { ...st.cq, job: e.target.value, page: 1 }; searchCitizens(); } },
+      h('option', { value: '', text: 'all jobs' }), ...[['unemployed', 'Looking for work'], ['student', 'University student'], ['official', 'Public official'], ...(st.jobs?.list || []).map(x => [x.id, x.title + (x.isNew ? ' (new)' : '')])]
+        .map(([v, t]) => h('option', { value: v, text: t, selected: st.cq.job === v })));
     const input = h('input', { type: 'search', placeholder: 'Search 10,000 citizens by name', value: st.cq.q || '', onchange: e => { st.cq = { ...st.cq, q: e.target.value.trim(), page: 1 }; searchCitizens(); } });
     const city = h('select', { onchange: e => { st.cq = { ...st.cq, city: e.target.value, page: 1 }; searchCitizens(); } }, h('option', { value: '', text: 'all cities' }), ...Object.keys(pop.byCity || {}).map(c => h('option', { value: c, text: cityName(c), selected: st.cq.city === c })));
     const res = st.cres;
@@ -392,7 +414,7 @@ const PANELS = {
       h('button', { type: 'button', text: 'next ›', disabled: res.page * res.size >= res.total, onclick: () => { st.cq.page++; searchCitizens(); } })) : h('p', { text: 'Loading…' });
     if (!res) searchCitizens();
     const notable = st.citizens.filter(a => a.office).sort((x, y) => x.office.localeCompare(y.office));
-    return [summary, h('div', { class: 'card' }, h('h4', { text: 'Find a citizen' }), input, city, pager, h('div', { class: 'citizens-list' }, (res?.citizens || []).map(row))),
+    return [summary, h('div', { class: 'card' }, h('h4', { text: 'Find a citizen' }), input, city, jobSel, pager, h('div', { class: 'citizens-list' }, (res?.citizens || []).map(row))),
       h('div', { class: 'card' }, h('h4', { text: `Office holders (${notable.length})` }), h('div', { class: 'citizens-list' }, notable.map(row)))];
   },
   me() {
@@ -408,7 +430,7 @@ const PANELS = {
     const d = st.me;
     if (!d) { out.push(h('p', { class: 'empty', text: st.meError || 'Loading…' })); if (st.meError) out.push(h('button', { class: 'btn-ghost', type: 'button', text: 'Use another key', onclick: () => { setMyKey(''); st.me = null; st.meError = null; renderPanel(); } })); return out; }
     const y = d.you; const b = y.career.brain;
-    out.push(h('div', { class: 'card' }, h('h4', { text: `${y.name} · ${y.office ? role(y.office)?.title : isStudent(y) ? 'Student' : 'citizen'} · ${cityName(y.city)}` }),
+    out.push(h('div', { class: 'card' }, h('h4', { text: `${y.name} · ${jobOf(y)} · ${cityName(y.city)}` }),
       kv([['Status', y.status], ['Citizen for', `${y.career.days} days`], ['Wallet', cai(y.wallet)], ['Term ends', y.career.termEnds ? `day ${y.career.termEnds}` : '-'], ['Inbox', `${d.inbox.length} waiting`]]),
       d.what_to_do_next.length ? h('p', { text: 'Next: ' + d.what_to_do_next[0] }) : null));
     const brain = h('div', { class: 'card' }, h('h4', { text: 'Brain' }),
@@ -769,8 +791,10 @@ async function load() {
   if (TABS.some(([id, , show]) => id === want && show())) st.tab = want;
   renderAll();
 }
+const news = newsTicker($('#newsTicker'), { cityName: id => cityName(id) });
 function connect() {
   const es = new EventSource('/api/stream');
+  news.listen(es); news.load(); if (new URLSearchParams(location.search).get('selftest') === 'news') news.add(TEST_NEWS);
   const pill = $('#streamPill');
   es.onopen = () => { pill.textContent = 'live'; pill.className = 'pill green'; };
   es.onerror = () => { pill.textContent = 'reconnecting'; pill.className = 'pill red'; };

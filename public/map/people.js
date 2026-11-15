@@ -4,6 +4,7 @@
 // counted on the card of the building they are in. Names come from the server and are only ever set as text.
 import { hash } from './gen.js';
 import { MOODS } from './catalog.js';
+import { cleanJob } from '../jobs.js?v=1';
 
 export const HOUSING = new Set(['houses', 'rowhouses', 'apartments', 'public_housing', 'kampung', 'villas']);
 const ID = /^[a-z0-9-]{1,40}$/;
@@ -37,7 +38,7 @@ export class People {
           if (!x || typeof x.id !== 'string' || !ID.test(x.id) || typeof x.name !== 'string') continue;
           const mood = typeof x.mood === 'object' ? x.mood?.label : x.mood;
           this.byId.set(x.id, { id: x.id, name: x.name.slice(0, 40), city: typeof x.city === 'string' ? x.city : c, status: x.status, office: x.office || null, color: x.color,
-            mood: MOODS[mood] ? mood : null, student: x.occupation === 'student' && !x.office, home: x.home && typeof x.home === 'object' ? x.home : null, goal: x.goal || null, where: null, act: null, at: null, b: null, h: null });
+            mood: MOODS[mood] ? mood : null, student: x.occupation === 'student' && !x.office, job: cleanJob(x.job), home: x.home && typeof x.home === 'object' ? x.home : null, goal: x.goal || null, where: null, act: null, at: null, b: null, h: null });
         }
         const total = Number(j?.total) || 0; if (page * 2000 >= total) break;
       }

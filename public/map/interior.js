@@ -27,6 +27,10 @@ const ROOM = {
   primary_school: 'class', middle_school: 'class', high_school: 'class', university: 'class', library: 'library',
   hospital: 'ward', clinic: 'ward', data_center: 'servers', market: 'shop', mall: 'shop', supermarket: 'shop',
   office: 'work', factory: 'work', community_hall: 'hall',
+  // the job catalog's workplaces (owner, 16 Nov): each with the room closest to it
+  news_station: 'count', law_firm: 'office', post_office: 'office', bank: 'vault', fire_station: 'command',
+  cafe: 'shop', barbershop: 'shop', food_stall: 'shop', minimarket: 'shop', restaurant: 'shop', pharmacy: 'shop',
+  garage: 'work', construction_site: 'yard', farm: 'yard', gym: 'yard', train_station: 'hall', hotel: 'hall',
 };
 export const INTERIOR_TYPES = Object.keys(ROOM);
 const CHILD = new Set(['primary_school', 'middle_school', 'high_school']); // empty classrooms until there are children

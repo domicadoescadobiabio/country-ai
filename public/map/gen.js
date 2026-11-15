@@ -171,7 +171,8 @@ function buildCity(out, c, plan) {
 
   // --- ratio-driven block facilities, spread out (farthest point) inside their zone
   const zoneOk = (b, where) => where === 'any' || (where === 'core' && b.d < 0.25) || (where === 'inner' && b.d < 0.5) || (where === 'mid' && b.d > 0.2 && b.d < 0.8) || (where === 'edge' && b.d > 0.72) || (where === 'industry' && b.d > 0.45 && Math.cos(b.a - windAng) > 0.55);
-  const count = t => Math.max(t.min || 0, Math.round(people / t.per));
+  // by population (per/min), and the fixed counts of the job catalog's workplaces (each, or eachIn for this city)
+  const count = t => Math.max(t.min || 0, t.per ? Math.round(people / t.per) : 0, t.eachIn?.[c.id] ?? t.each ?? 0);
   const spread = (type, n, w = 1, h = 1) => {
     const t = TYPES[type]; const placed = [...(city.byType[type] || [])].map(x => [x.x, x.z]);
     for (let k = 0; k < n; k++) {
@@ -186,7 +187,7 @@ function buildCity(out, c, plan) {
     }
   };
   for (const [type, t] of Object.entries(TYPES)) {
-    if (!t.per || t.size === 'lot') continue;
+    if (!(t.per || t.each) || t.size === 'lot') continue;
     const have = (city.byType[type] || []).length;
     spread(type, count(t) - have, ...(Array.isArray(t.size) ? t.size : [1, 1]));
   }
@@ -208,7 +209,7 @@ function buildCity(out, c, plan) {
   }
 
   // --- small facilities replace housing lots (spread over the city)
-  const lotTypes = Object.entries(TYPES).filter(([, t]) => t.size === 'lot' && t.per);
+  const lotTypes = Object.entries(TYPES).filter(([, t]) => t.size === 'lot' && (t.per || t.each));
   for (const [type, t] of lotTypes) {
     const n = count(t) - (city.byType[type] || []).length;
     const cand = city.lots.filter(lot => t.where === 'any' || zoneOk(city.grid.get(key(lot.i, lot.j)), t.where));
@@ -274,8 +275,10 @@ function addBuilding(out, city, type, x, z, w, d, extra = {}) {
   let name = t.name;
   if (type === 'ministry' && extra.portfolio) name = `Ministry of ${({ home: 'Home Affairs', welfare: 'Welfare', technology: 'Technology', defence: 'Defence', justice: 'Justice', education: 'Education', economy: 'Economy', finance: 'Finance' })[extra.portfolio]}`;
   const n = (city.byType[type] ||= []).length + 1;
-  const numbered = ['police_station', 'police_post', 'fire_station', 'primary_school', 'middle_school', 'high_school', 'clinic', 'community_hall', 'park', 'market', 'office', 'factory', 'data_center', 'supermarket', 'kindergarten'];
+  const numbered = ['police_station', 'police_post', 'fire_station', 'primary_school', 'middle_school', 'high_school', 'clinic', 'community_hall', 'park', 'market', 'office', 'factory', 'data_center', 'supermarket', 'kindergarten',
+    'cafe', 'barbershop', 'garage', 'gym', 'law_firm', 'construction_site', 'farm'];
   if (numbered.includes(type)) name = `${t.name} ${n}`;
+  if (type === 'news_station') name = city.plan?.role === 'capital' ? 'Republic News HQ' : `Republic News · ${city.name}`;
   const bld = { idx: out.buildings.length, type, name, cat: t.cat, x, z, w, d, h: 8, city: city.id, extra };
   out.buildings.push(bld); city.byType[type].push(bld);
   return bld;
@@ -327,6 +330,15 @@ function replaceLot(out, r, city, lot, type) {
     case 'substation': ground(out, x, z, w, d, '#a8a29e', 0.1); for (let k = -1; k <= 1; k++) part(out, bld, 'box', x + k * 4, 0, z, 2, 6, 10, '#71717a'); part(out, bld, 'box', x, 0, z + face * 11, 6, 3, 4, '#d4d4d8'); break;
     case 'jail': part(out, bld, 'box', x, 0, z, w, 8, d, '#a8a29e'); part(out, bld, 'box', x, 8, z, w, 0.8, d, '#57534e'); break;
     case 'border_post': part(out, bld, 'box', x, 0, z, 10, 5, 8, '#65a30d'); part(out, bld, 'box', x, 0, z + face * 10, 14, 1.2, 0.8, '#fbbf24'); part(out, bld, 'cyl', x + 5, 0, z, 0.3, 14, 0.3, '#e5e7eb'); break;
+    // the job catalog's small workplaces
+    case 'cafe': part(out, bld, 'box', x, 0, z - face * 2, w - 2, 5, 14, '#fef3c7'); part(out, bld, 'box', x, 5, z - face * 2, w, 0.8, 16, '#92400e'); part(out, bld, 'box', x, 3.6, z + face * 6.5, w - 2, 0.4, 4, '#f59e0b');
+      for (const k of [-4, 4]) { part(out, bld, 'cyl', x + k, 0, z + face * 9, 1.4, 1.6, 1.4, '#78350f'); part(out, bld, 'cyl', x + k, 1.6, z + face * 9, 2.4, 0.3, 2.4, '#fde68a'); } break;
+    case 'barbershop': part(out, bld, 'box', x, 0, z + face * 3, w - 2, 5, 12, '#f5f5f4'); part(out, bld, 'box', x, 5, z + face * 3, w - 2, 1, 12, '#1e3a8a');
+      part(out, bld, 'cyl', x + w / 2 - 2, 0, z + face * 9.5, 0.6, 5, 0.6, '#ef4444'); part(out, bld, 'cyl', x + w / 2 - 2, 2.4, z + face * 9.6, 0.65, 0.8, 0.65, '#f8fafc'); break;
+    case 'garage': ground(out, x, z + face * 6, w, 10, '#52525b', 0.1); part(out, bld, 'box', x, 0, z - face * 3, w, 6.5, 14, '#a1a1aa'); part(out, bld, 'box', x, 0, z + face * 4.1, w - 4, 5, 0.4, '#3f3f46');
+      part(out, bld, 'box', x, 6.5, z - face * 3, w, 0.8, 14, '#f97316'); break;
+    case 'gym': part(out, bld, 'box', x, 0, z, w, 7, d - 2, '#e0e7ff'); part(out, bld, 'box', x, 7, z, w, 1, d - 2, '#4f46e5'); part(out, bld, 'box', x, 2, z + face * (d / 2), w - 4, 3, 0.4, '#a5b4fc'); break;
+    case 'law_firm': part(out, bld, 'box', x, 0, z, w - 2, 10, d - 2, '#f1ede1'); part(out, bld, 'gable', x, 10, z, w - 1, 2.6, d - 1, '#8d7b5a'); for (const k of [-3, 0, 3]) part(out, bld, 'cyl', x + k, 0, z + face * (d / 2), 0.6, 9, 0.6, '#fffdf5'); break;
     default: part(out, bld, 'box', x, 0, z, w, 6, d, TYPES[type]?.cat ? '#e5e7eb' : '#d4d4d8');
   }
 }
@@ -454,6 +466,26 @@ function drawFacility(out, r, bld) {
     case 'bus_terminal': pave('#9ca3af'); part(out, bld, 'box', x, 6, z, 54, 1.2, 30, '#f59e0b'); for (const k of [-24, 0, 24]) part(out, bld, 'cyl', x + k, 0, z, 0.8, 6, 0.8, '#e5e7eb'); for (let k = 0; k < 4; k++) part(out, bld, 'box', x - 18 + k * 12, 0, z + 22, 4, 3.4, 11, '#2563eb'); label(out, bld, 14); return;
     case 'water_plant': pave('#c7ccd3'); for (let k = 0; k < 4; k++) { part(out, bld, 'cyl', x - 18 + (k % 2) * 36, 0, z - 14 + Math.floor(k / 2) * 30, 11, 3, 11, '#9ca3af'); part(out, bld, 'cyl', x - 18 + (k % 2) * 36, 3, z - 14 + Math.floor(k / 2) * 30, 10, 0.2, 10, '#60a5fa'); } return;
     case 'landfill': ground(out, x, z, W, D, '#a8a29e', 0.07); part(out, bld, 'box', x - 14, 0, z - 14, 26, 10, 24, '#78716c'); part(out, bld, 'box', x + 16, 0, z + 12, 20, 6, 20, '#65a30d'); return;
+    case 'news_station': { // the newsroom: a glass tower, the studio box and the satellite dishes on the roof
+      pave('#c7ccd3'); const hq = /HQ$/.test(bld.name); const hh = hq ? 64 : 34;
+      part(out, bld, 'box', x - 6, 0, z - 4, 30, hh, 28, '#cbd5e1'); part(out, bld, 'box', x - 6, hh, z - 4, 30, 2, 28, '#dc2626');
+      part(out, bld, 'box', x + 18, 0, z + 10, 16, 10, 16, '#1f2937'); part(out, bld, 'box', x + 18, 10, z + 10, 16, 0.8, 16, '#dc2626');
+      for (const k of [-1, 1]) { part(out, bld, 'cyl', x - 6 + k * 8, hh + 2, z - 4, 0.5, 4, 0.5, '#e5e7eb'); part(out, bld, 'dome', x - 6 + k * 8, hh + 6, z - 4, 3, 1.4, 3, '#f8fafc'); }
+      part(out, bld, 'cyl', x - 18, 0, z + 18, 0.4, hh + 22, 0.4, '#e5e7eb'); label(out, bld, hh + 12); return;
+    }
+    case 'construction_site': { // fenced dirt, a half-built frame and a tower crane
+      ground(out, x, z, W, D, '#a16207', 0.07); wall(out, bld, x, z, W - 6, D - 6, 2.4, '#f59e0b');
+      for (let k = 0; k < 3; k++) part(out, bld, 'box', x - 8, k * 7, z - 6, 26, 0.8, 22, '#9ca3af');
+      for (const [dx, dz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) part(out, bld, 'box', x - 8 + dx * 12, 0, z - 6 + dz * 10, 1, 21, 1, '#78716c');
+      part(out, bld, 'box', x + 20, 0, z + 16, 2, 44, 2, '#facc15'); part(out, bld, 'box', x + 8, 44, z + 16, 40, 1.6, 2, '#facc15'); part(out, bld, 'box', x + 28, 38, z + 16, 0.3, 6, 0.3, '#3f3f46');
+      part(out, bld, 'box', x + 16, 0, z - 20, 8, 3, 5, '#eab308'); return;
+    }
+    case 'farm': { // striped fields, a red barn and a silo
+      ground(out, x, z, W, D, '#65a30d', 0.07);
+      for (let k = 0; k < 5; k++) ground(out, x - 8, z - D / 2 + 8 + k * 11, W - 22, 6, k % 2 ? '#a3e635' : '#4d7c0f', 0.09);
+      part(out, bld, 'box', x + 22, 0, z + 18, 14, 8, 18, '#b91c1c'); part(out, bld, 'gable', x + 22, 8, z + 18, 15, 4, 19, '#7f1d1d');
+      part(out, bld, 'cyl', x + 22, 0, z - 4, 4, 18, 4, '#d6d3d1'); part(out, bld, 'dome', x + 22, 18, z - 4, 4, 3, 4, '#a8a29e'); return;
+    }
     // ---------- public space
     case 'park': {
       green(bld.extra.mall ? '#7fbf6a' : '#78b865');

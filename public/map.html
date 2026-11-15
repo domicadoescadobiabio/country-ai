@@ -8,6 +8,7 @@
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/vendor/fonts/fonts.css?v=1">
   <link rel="stylesheet" href="/map/map.css?v=11">
+  <link rel="stylesheet" href="/news.css?v=1">
 </head>
 <body>
   <canvas id="scene" aria-label="3D map of the country"></canvas>
@@ -34,6 +35,8 @@
   <!-- everyone, really: where all the citizens are now, and a search by name -->
   <section class="people-hud" id="peopleHud" aria-label="Citizens" hidden>
     <p id="peopleCounts"></p>
+    <!-- Republic News: the newest headlines, running (public/news.js) -->
+    <div class="news-ticker" id="newsTicker" role="region" aria-label="Republic News headlines" hidden></div>
     <div class="people-find"><input id="peopleQ" type="search" placeholder="Find a citizen by name" maxlength="40" autocomplete="off" aria-label="Find a citizen"><ul id="peopleHits" hidden></ul></div>
   </section>
 
@@ -69,6 +72,6 @@
   <!-- going inside a building: a short loading screen, then the room (public/map/interior.js) -->
   <div class="enter" id="enter" hidden><div class="enter-box"><p id="enterTitle">Entering…</p><div class="enter-bar"><i id="enterBar"></i></div><small id="enterStep"></small></div></div>
   <button class="inside-back" id="insideBack" type="button">← Back to the map <kbd>Esc</kbd></button>
-  <script src="/map/main.js?v=19" type="module"></script>
+  <script src="/map/main.js?v=21" type="module"></script>
 </body>
 </html>
