@@ -18,6 +18,7 @@ import { tierOf, budgetState, trainBudgetState, trainPaceView, questionHash, cle
 import { borderCheck } from './src/military.ts';
 import { placeView as governmentPlace } from './src/president.ts'; // government buildings (Government box)
 import { placeView as peoplePlace, nowDoing, staffOnDuty } from './src/daily.ts'; // the people's buildings, the robot card and who is on duty (People box)
+import { jobOf, jobCounts, ALL_JOB_IDS, newsFeed } from './src/daily.ts'; // jobs and Republic News (People box, src/jobs.ts and src/news.ts)
 import { freshAcademy, academyTick, totalSeats } from './src/academy.ts';
 import { lifeTick, payday } from './src/life.ts';
 import { INSTITUTIONS } from './src/institutions.ts';
@@ -234,6 +235,47 @@ function occupationOf(a) {
   try { o = typeof dailyMod.occupationOf === 'function' ? dailyMod.occupationOf(S, a) : null; } catch { o = null; }
   return OCCUPATIONS.has(o) ? o : a?.office ? 'official' : 'citizen';
 }
+// A citizen's job (owner, 16 Nov; src/jobs.ts jobOf): { id, title, place, major }. id is one of ALL_JOB_IDS (the
+// catalog, 'unemployed', 'student', 'official'), place a building type the server knows or null; texts cleaned.
+const JOB_IDS = new Set(ALL_JOB_IDS);
+function jobView(a) {
+  let j = null; try { j = jobOf(S, a); } catch { j = null; }
+  if (!j || !JOB_IDS.has(j.id)) return { id: 'unemployed', title: 'Looking for work', place: null, major: null };
+  return { id: j.id, title: cleanText(j.title, 40) || j.id, place: typeof j.place === 'string' && Object.hasOwn(PLACE_TYPES, j.place) ? j.place : null, major: j.major ? cleanText(j.major, 40) || null : null };
+}
+// GET /api/jobs: the catalog and how many hold each job per city (src/jobs.ts jobCounts), counted at most every 30 s
+let jobsCache = { at: 0, v: null };
+function jobsView() {
+  if (jobsCache.v && Date.now() - jobsCache.at < 30000) return jobsCache.v;
+  let c = null; try { c = jobCounts(S); } catch (e) { logActivity('state', `jobs: ${String(e?.message || e).slice(0, 80)}`); }
+  const n = v => (Number.isFinite(Number(v)) && Number(v) >= 0 ? Number(v) : 0);
+  const counts = o => { const r = {}; for (const [k, v] of Object.entries(o || {})) if (JOB_IDS.has(k)) r[k] = n(v); return r; };
+  const byCity = {}; for (const [city, o] of Object.entries(c?.byCity || {})) if (CITIES.some(x => x.id === city)) byCity[city] = counts(o);
+  const v = {
+    jobs: (c?.jobs || []).filter(j => JOB_IDS.has(j.id)).map(j => ({ id: j.id, title: cleanText(j.title, 40), place: typeof j.place === 'string' && /^[a-z_]{1,24}$/.test(j.place) ? j.place : null,
+      fields: (Array.isArray(j.fields) ? j.fields : []).filter(f => typeof f === 'string' && /^[a-z_]{1,24}$/.test(f)).slice(0, 6), shift: ['day', 'night', 'mixed'].includes(j.shift) ? j.shift : 'day', isNew: j.isNew === true })),
+    byCity, total: counts(c?.total), unemployed: n(c?.unemployed), unemployedShare: Math.min(1, n(c?.unemployedShare)), hired: n(c?.hired), lost: n(c?.lost),
+  };
+  jobsCache = { at: Date.now(), v };
+  return v;
+}
+// Republic News (src/news.ts newsFeed): the newest n headlines (1..50), newest first, every text cleaned again
+const newsTotal = () => Number(S.news?.total) || 0;
+const person = x => (x && typeof x === 'object' && /^[a-z0-9-]{1,40}$/.test(String(x.id)) ? { id: String(x.id), name: placeText(x.name, 40) || String(x.id) } : null);
+function newsItems(n) {
+  let list = []; try { list = newsFeed(S, n) || []; } catch { list = []; }
+  return list.map(x => ({ id: cleanText(x.id, 40), ts: Number(x.ts) || 0, headline: placeText(x.headline, 100), city: CITIES.some(c => c.id === x.city) ? x.city : null,
+    kind: /^[a-z_]{1,20}$/.test(String(x.kind)) ? x.kind : 'news', reporter: person(x.reporter), anchor: person(x.anchor), ref: cleanText(x.ref, 40) })).filter(x => x.headline);
+}
+// new headlines go out on SSE as a small 'news' event (only the new ones, newest first), never the whole state
+let newsSent = null;
+function emitNews() {
+  const total = newsTotal();
+  if (newsSent == null || total < newsSent) { newsSent = total; return; } // first look (or a reset): nothing old is re-sent
+  if (total === newsSent) return;
+  const k = Math.min(50, total - newsSent); newsSent = total;
+  if (clients.size) emit('news', newsItems(k));
+}
 
 // ---------------------------------------------------------------- engine
 let busy = false;
@@ -262,6 +304,7 @@ async function step() {
     ladderTick(ctx);
     census();
     emitState(); // at most every SSE_STATE_MS, small, only when something changed
+    emitNews(); // new Republic News headlines, as they are published
     dirty = true;
   } catch (e) {
     console.error('step error', e);
@@ -353,7 +396,7 @@ function publicCitizen(a) {
   return { id: a.id, name: a.name, model: thinksWith(a), tier: tierOf(S, a), color: a.color, bio: a.bio, origin: a.origin, office: a.office, status: a.status, jailUntil: a.jailUntil, detainedDay: a.detainedDay ?? null, wallet: Math.round(a.wallet), traits: a.traits, joined: a.joined, training: a.training.slice(-8), lessons: a.lessons, record: a.record || [], skill: a.skill || {}, brain: publicBrain(a.brain), city: a.city || null, faction: a.faction || 'civilian', debt: Math.round(a.debt || 0), rank: a.rank || null, rankSince: a.rankSince ?? null, quals: a.quals || {}, termEnds: a.termEnds || null, practice: a.practice || {}, joinedDay: a.joinedDay ?? 0, drills: (a.drills || []).slice(-6), reviews: (a.reviews || []).slice(-6), stats: a.stats || {}, diary: (a.diary || []).slice(-6), home: a.home || null,
     // the week's goal, reputation and how often they resisted a temptation; never the private side
     // (a.mischief, a.lifeLessons, a.skipVoteDay stay out: this list names every public field)
-    goal: goalView(a), reputation: reputationOf(a), resisted: a.resisted || 0, goalsDone: a.goalsDone || 0, occupation: occupationOf(a) };
+    goal: goalView(a), reputation: reputationOf(a), resisted: a.resisted || 0, goalsDone: a.goalsDone || 0, occupation: occupationOf(a), job: jobView(a) };
 }
 function notableCitizens() {
   const running = new Set((S.elections?.list || []).filter(e => !['done', 'failed'].includes(e.stage)).flatMap(e => e.candidates.map(c => c.id)));
@@ -471,6 +514,10 @@ const PLACE_TYPES = {
   election_comm: 'Election Commission', central_bank: 'Central Bank', city_hall: 'City Hall', primary_school: 'Primary School', middle_school: 'Middle School',
   high_school: 'High School', university: 'University', library: 'Library', hospital: 'Hospital', clinic: 'Clinic', data_center: 'Data Centre',
   market: 'Market', mall: 'Mall', supermarket: 'Supermarket', office: 'Office', factory: 'Factory', community_hall: 'Community Hall',
+  // the work buildings of the job catalog (owner, 16 Nov; src/jobs.ts), served by the People box's placeView
+  news_station: 'Republic News', cafe: 'Cafe', garage: 'Garage', gym: 'Gym', barbershop: 'Barbershop', construction_site: 'Construction Site', farm: 'Farm',
+  law_firm: 'Law Firm', food_stall: 'Food Stall', minimarket: 'Minimarket', restaurant: 'Restaurant', bank: 'Bank', fire_station: 'Fire Station',
+  post_office: 'Post Office', train_station: 'Train Station', pharmacy: 'Pharmacy', hotel: 'Hotel',
 };
 const PLACE_CACHE_MS = 10000, PLACE_MAX_BYTES = 40000, PLACE_MAX_OCC = 60;
 const PLACE_PER_MIN = clamp(Number(process.env.PLACE_PER_MIN) || 60, 1, 6000);
@@ -556,8 +603,8 @@ function placeKeys(night) {
 const inBuilding = (p, type, sel) => p[1] === type && (type === 'ministry' ? !sel.portfolio || p[3] === sel.portfolio : sel.slot == null || (Number.isInteger(p[3]) && p[3] % sel.of === sel.slot));
 // a person the boxes' view does not describe: what the snapshot says
 function plainOccupant(a, p) {
-  const occ = a ? occupationOf(a) : 'citizen';
-  return { id: p[0], name: placeText(a?.name, 40) || p[0], role: a?.office ? placeText(ROLES[a.office]?.title || 'Official', 40) : occ === 'student' ? 'Student' : p[2] === 'on duty' ? 'Staff' : 'Citizen',
+  // the role is the citizen's job (an office's title, 'University student', 'Barista', 'Looking for work'...)
+  return { id: p[0], name: placeText(a?.name, 40) || p[0], role: a ? placeText(jobView(a).title, 40) || 'Citizen' : 'Citizen',
     activity: p[2] || '', detail: '', since: null, field: null, gifted: false, mood: a ? moodLite(a) : null };
 }
 function buildPlace(type, city, sel) {
@@ -682,7 +729,7 @@ function whereaboutsSnapshot() {
 // plain listings: no search text, no office filter; at most 300 pages kept)
 const liteCache = new Map();
 setInterval(() => { const now = Date.now(); for (const [k, w] of whereHits) if (now - w.t > 60000) whereHits.delete(k); for (const [k, c] of liteCache) if (now - c.at > 60000) liteCache.delete(k); }, 60000).unref();
-const liteCitizen = a => ({ id: a.id, name: a.name, city: a.city || null, status: a.status, office: a.office || null, color: a.color, wallet: Math.round(a.wallet || 0), home: a.home || null, mood: moodLite(a), goal: goalLite(a), occupation: occupationOf(a) });
+const liteCitizen = a => ({ id: a.id, name: a.name, city: a.city || null, status: a.status, office: a.office || null, color: a.color, wallet: Math.round(a.wallet || 0), home: a.home || null, mood: moodLite(a), goal: goalLite(a), occupation: occupationOf(a), job: jobView(a) });
 function fullState() {
   const feed = {};
   for (const [ch, list] of Object.entries(S.feed)) feed[ch] = list.slice(-120);
@@ -943,11 +990,15 @@ const server = http.createServer(async (req, res) => {
       const occupation = u.searchParams.get('occupation');
       if (occupation && !OCCUPATIONS.has(occupation)) return send(res, 400, { error: 'occupation: student, official or citizen' });
       if (occupation) list = list.filter(a => occupationOf(a) === occupation);
+      // ?job=<id>: one of the catalog's jobs, 'unemployed', 'student' or 'official' (anything else is 400)
+      const job = u.searchParams.get('job');
+      if (job && !JOB_IDS.has(job)) return send(res, 400, { error: 'job: a job id from GET /api/jobs, unemployed, student or official' });
+      if (job) list = list.filter(a => jobView(a).id === job);
       // ?lite=1: id, name, city, status, office, color, home, mood, goal and occupation only (for the map), up to 2,000 per page
       if (u.searchParams.get('lite') === '1') {
         const lsize = clamp(Number(u.searchParams.get('size')) || 500, 1, 2000);
         const cacheable = !q && !office && (!city || CITIES.some(c => c.id === city)) && (!status || /^[a-z]{1,20}$/.test(status));
-        const key = `${city || ''}|${status || ''}|${occupation || ''}|${page}|${lsize}`;
+        const key = `${city || ''}|${status || ''}|${occupation || ''}|${job || ''}|${page}|${lsize}`;
         const hit = cacheable && liteCache.get(key);
         if (hit && Date.now() - hit.at < 60000) return send(res, 200, hit.body);
         const body = { total: list.length, page, size: lsize, citizens: list.slice((page - 1) * lsize, page * lsize).map(liteCitizen) };
@@ -965,6 +1016,13 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { citizen: { ...publicCitizen(a), mood: moodView(a), bonds: bondsView(S, a), pokes: a.pokes?.day === S.day ? a.pokes.n : 0, school: schoolView(a), now: nowCard(a.id) } });
     }
     if (req.method === 'GET' && p === '/api/whereabouts') return handleWhereabouts(req, res);
+    if (req.method === 'GET' && p === '/api/jobs') return send(res, 200, jobsView());
+    if (req.method === 'GET' && p === '/api/news') {
+      const nq = new URL(req.url, 'http://x').searchParams.get('n');
+      const n = nq == null || nq === '' ? 20 : /^\d{1,2}$/.test(nq) ? Number(nq) : NaN;
+      if (!(n >= 1 && n <= 50)) return send(res, 400, { error: 'n: 1 to 50' });
+      return send(res, 200, newsItems(n));
+    }
     const plm = req.method === 'GET' && p.match(/^\/api\/place\/([^/]{1,40})$/);
     if (plm) return handlePlace(req, res, plm[1]);
     const pm = req.method === 'POST' && p.match(/^\/api\/poke\/([a-z0-9-]{1,40})$/);

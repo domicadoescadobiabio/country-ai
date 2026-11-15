@@ -38,7 +38,7 @@ function startServer() {
   child = spawn(process.execPath, ['server.mjs'], {
     cwd: ROOT,
     env: { ...process.env, PORT: String(PORT), DATA_DIR: DATA, TICK_SECONDS: '0.05', DAY_SECONDS: '0.5', POPULATION: '400', OPENROUTER_API_KEY: '', ANTHROPIC_API_KEY: '', ADMIN_TOKEN: TOKEN, IMMIGRANTS_PER_HOUR: '50',
-      BRAIN_SECRET: 'smoke-brain-secret', SSE_STATE_MS: '1500', ANTHROPIC_BASE_URL: `http://127.0.0.1:${mock.address().port}`, REGISTER_COOLDOWN_MS: '0', CAREER_DAYS_SCALE: '0.3', ELECTION_MIN_VOTING_MS: '5000' },
+      BRAIN_SECRET: 'smoke-brain-secret', SSE_STATE_MS: '1500', ANTHROPIC_BASE_URL: `http://127.0.0.1:${mock.address().port}`, REGISTER_COOLDOWN_MS: '0', CAREER_DAYS_SCALE: '0.3', ELECTION_MIN_VOTING_MS: '5000', NEWS_PER_HOUR: '120' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   child.stderr.on('data', d => { stderr += d; });
@@ -162,6 +162,13 @@ try {
   startServer(); // now, not earlier: see startServer
   for (let i = 0; i < 50; i++) { try { await get('/api/health'); break; } catch { await wait(100); } }
   const s0 = await get('/api/state'); // the first look, before anything else asks the server for time
+  // Republic News on SSE: a stream open from the start collects every 'news' event of the run (checked further down)
+  const newsEvents = [];
+  const newsStream = http.get(BASE + '/api/stream', res => {
+    let buf = ''; res.setEncoding('utf8');
+    res.on('data', chunk => { buf += chunk; let i; while ((i = buf.indexOf('\n\n')) >= 0) { const block = buf.slice(0, i); buf = buf.slice(i + 2); if (/^event: news$/m.test(block)) { try { newsEvents.push(JSON.parse(block.match(/^data: (.*)$/m)[1])); } catch { newsEvents.push('bad json'); } } } });
+  });
+  newsStream.on('error', () => {});
   const hc = (await get('/api/health')).clock;
   check('/api/health names the republic\'s clock zone (America/New_York, ET) and local time', hc && hc.tz === 'America/New_York' && hc.label === 'ET' && /^-0[45]:00$/.test(hc.utcOffset) && /^\d\d:\d\d$/.test(hc.localTime) && typeof hc.nextDayAt === 'number', JSON.stringify(hc));
   const hb = (await get('/api/health')).build;
@@ -258,7 +265,7 @@ try {
   check('/api/map is much smaller than /api/state', JSON.stringify(mj).length * 3 < JSON.stringify(gzBody).length, `${JSON.stringify(mj).length} vs ${JSON.stringify(gzBody).length}`);
   const one = (await get('/api/citizens?size=1')).citizens[0];
   const lc = await get('/api/citizens?lite=1&size=5');
-  check('citizens carry their home address; ?lite=1 lists id, name, city, status, office, home, mood and occupation only', 'home' in one && lc.citizens.length === 5 && lc.citizens.every(a => Object.keys(a).sort().join() === 'city,color,goal,home,id,mood,name,occupation,office,status,wallet' && (a.mood === null || Object.keys(a.mood).sort().join() === 'emoji,label')), JSON.stringify({ home: one.home, lite: lc.citizens[0] }));
+  check('citizens carry their home address; ?lite=1 lists id, name, city, status, office, home, mood, occupation and job only', 'home' in one && lc.citizens.length === 5 && lc.citizens.every(a => Object.keys(a).sort().join() === 'city,color,goal,home,id,job,mood,name,occupation,office,status,wallet' && (a.mood === null || Object.keys(a.mood).sort().join() === 'emoji,label')), JSON.stringify({ home: one.home, lite: lc.citizens[0] }));
 
   // --- poke (POST /api/poke/:id): no login, no text from the human, rate limited, this site only
   const pool = (await get('/api/citizens?lite=1&size=40&status=free')).citizens.map(a => a.id);
@@ -333,6 +340,47 @@ try {
   check('occupation: population counts the students (population.students, byOccupation summing to the total), stats.students and /api/map too',
     Number.isInteger(ps?.students) && ps.students === ps.byOccupation?.student && OCC.reduce((n, k) => n + (ps.byOccupation?.[k] || 0), 0) === ps.total
     && occSt.stats?.students === ps.students && Number.isInteger(mm.population?.students), JSON.stringify({ students: ps?.students, by: ps?.byOccupation, total: ps?.total, stats: occSt.stats?.students, map: mm.population?.students }));
+  // --- jobs (owner, 16 Nov: one job each, students and officials included, a few looking for work)
+  const jb = await get('/api/jobs');
+  const JOB_OK = new Set([...(jb.jobs || []).map(j => j.id), 'unemployed', 'student', 'official']);
+  const jobShape = j => j && JOB_OK.has(j.id) && typeof j.title === 'string' && j.title && (j.place === null || typeof j.place === 'string') && (j.major === null || typeof j.major === 'string');
+  const jAll = await get('/api/citizens?lite=1&size=2000'), jPub = await get('/api/citizens?size=200');
+  check('jobs: every citizen view carries job { id, title, place, major } (lite, full, important state); officials read official, students student',
+    jAll.citizens.every(a => jobShape(a.job) && (!a.office || a.job.id === 'official') && (a.occupation !== 'student' || a.job.id === 'student')) && jPub.citizens.every(a => jobShape(a.job))
+    && occSt.citizens.every(a => jobShape(a.job)), JSON.stringify(jAll.citizens.find(a => !jobShape(a.job))?.job || jAll.citizens[0]?.job));
+  const jStu = jAll.citizens.find(a => a.job.id === 'student'), jOne = jStu && (await get(`/api/citizens/${jStu.id}`)).citizen;
+  check('jobs: a student\'s own card says University student, with a major', !jStu || (jOne.job.id === 'student' && /student/i.test(jOne.job.title) && 'major' in jOne.job), JSON.stringify(jOne?.job));
+  const jPick = (jb.jobs || []).find(j => (jb.total?.[j.id] || 0) > 0);
+  const jF = jPick && await get(`/api/citizens?lite=1&size=2000&job=${jPick.id}`), jU = await get('/api/citizens?size=1&job=unemployed');
+  const jBad = await Promise.all(['__proto__', 'Barista', 'x'.repeat(30), 'constructor'].map(q => fetch(`${BASE}/api/citizens?job=${q}`).then(r => r.status)));
+  check('jobs: ?job= filters by job id (catalog, unemployed, student, official) and anything else is 400', jPick && jF.citizens.length > 0 && jF.citizens.every(a => a.job.id === jPick.id) && Number.isInteger(jU.total) && jBad.every(s => s === 400),
+    JSON.stringify({ job: jPick?.id, n: jF?.citizens?.length, unemployed: jU.total, bad: jBad }));
+  const jSum = Object.values(jb.total || {}).reduce((n, v) => n + v, 0), jCities = Object.values(jb.byCity || {}).reduce((n, o) => n + Object.values(o).reduce((m, v) => m + v, 0), 0);
+  check('jobs: GET /api/jobs lists the catalog (59 jobs, 20 new) and counts per city and in total, everyone once, a few looking for work',
+    (jb.jobs || []).length === 59 && jb.jobs.filter(j => j.isNew).length === 20 && jb.jobs.every(j => j.id && j.title && Array.isArray(j.fields) && ['day', 'night', 'mixed'].includes(j.shift))
+    && jSum === jAll.total && jCities === jSum && Number.isInteger(jb.unemployed) && jb.unemployedShare >= 0 && jb.unemployedShare < 0.1 && Number.isInteger(jb.hired) && Number.isInteger(jb.lost),
+    JSON.stringify({ jobs: jb.jobs?.length, isNew: jb.jobs?.filter(j => j.isNew).length, sum: jSum, cities: jCities, citizens: jAll.total, unemployed: jb.unemployed, share: jb.unemployedShare }));
+  // --- Republic News: headlines from what happened, newest first; new ones stream on SSE as a small 'news' event
+  const newsShape = x => /^news-\d+$/.test(x.id) && typeof x.ts === 'number' && typeof x.headline === 'string' && x.headline.length > 0 && x.headline.length <= 100
+    && (x.city === null || typeof x.city === 'string') && typeof x.kind === 'string' && x.reporter && x.reporter.id && x.reporter.name && (x.anchor === null || (x.anchor.id && x.anchor.name)) && typeof x.ref === 'string';
+  // every city has its own reporter and news anchor, also in this 400-citizen republic (People box, tickets #723/#727)
+  const jbNow = await get('/api/jobs'), reporters = jbNow.total?.reporter || 0;
+  const desks = Object.entries(jbNow.byCity || {}).map(([c, o]) => [c, o.reporter || 0, o.news_anchor || 0]);
+  check('news: every city has a reporter and a news anchor (Republic News runs in a small republic too)', desks.length === 5 && desks.every(([, r, a]) => r >= 1 && a >= 1), JSON.stringify(desks));
+  let nw0 = []; for (let i = 0; i < 120 && !nw0.length; i++) { nw0 = await get('/api/news?n=50'); if (!nw0.length) await wait(500); }
+  const nw3 = await get('/api/news?n=3'), nBad = await Promise.all(['0', '51', 'x', '-1', '1e2'].map(q => fetch(`${BASE}/api/news?n=${q}`).then(r => r.status)));
+  check('news: GET /api/news?n= gives the newest headlines first (id, ts, headline <= 100, city, kind, reporter, anchor, ref); n outside 1..50 is 400',
+    Array.isArray(nw0) && nw0.length > 0 && nw0.every(newsShape) && nw0.every((x, i) => i === 0 || nw0[i - 1].ts >= x.ts) && nw3.length <= 3 && nBad.every(s => s === 400),
+    JSON.stringify({ reporters, n: nw0.length, first: nw0[0], bad: nBad }));
+  // the stream opened at the start got every headline published since, each once, in small 'news' events
+  await wait(1000); // the step that published the last headline has sent its event
+  const nwAfter = await get('/api/news?n=50'); const nItems = newsEvents.flat();
+  const nIds = nItems.map(x => x?.id), nSeen = new Set(nIds);
+  check('news: new headlines stream on SSE as small news events (only the new ones, each once, the same as /api/news)',
+    newsEvents.length > 0 && newsEvents.every(e => Array.isArray(e) && e.length >= 1 && e.length <= 50 && JSON.stringify(e).length < 20000) && nItems.every(newsShape)
+    && nSeen.size === nIds.length && nwAfter.filter(y => Number(y.id.slice(5)) <= Math.max(...nIds.map(i => Number(String(i).slice(5))))).every(y => nSeen.has(y.id)),
+    JSON.stringify({ reporters, events: newsEvents.length, items: nItems.length, unique: nSeen.size, api: nwAfter.length, first: nItems[0] }));
+  newsStream.destroy();
   // the school's distillation set is exported to the admin only, as JSONL
   const ex0 = await fetch(BASE + '/api/admin/train/export', { headers: { 'x-forwarded-for': '198.51.100.40' } });
   const ex1 = await fetch(BASE + '/api/admin/train/export?limit=10', { headers: { 'x-admin-token': TOKEN } });
@@ -413,7 +461,10 @@ try {
   // --- building interiors: GET /api/place/<type>?city=  (one contract for every box)
   const PTYPES = ['parliament', 'palace', 'vp_office', 'ministry', 'const_court', 'court', 'prison', 'jail', 'academy', 'police_academy', 'military_academy', 'police_hq', 'police_station',
     'military_hq', 'army_base', 'border_post', 'election_comm', 'central_bank', 'city_hall', 'primary_school', 'middle_school', 'high_school', 'university', 'library', 'hospital', 'clinic',
-    'data_center', 'market', 'mall', 'supermarket', 'office', 'factory', 'community_hall'];
+    'data_center', 'market', 'mall', 'supermarket', 'office', 'factory', 'community_hall',
+    // the work buildings of the job catalog (owner, 16 Nov)
+    'news_station', 'cafe', 'garage', 'gym', 'barbershop', 'construction_site', 'farm', 'law_firm', 'food_stall', 'minimarket', 'restaurant', 'bank', 'fire_station',
+    'post_office', 'train_station', 'pharmacy', 'hotel'];
   const city0 = full.cities?.[0]?.id || 'neura';
   const placeBad = [], placeFallbacks = [];
   for (const t of PTYPES) {

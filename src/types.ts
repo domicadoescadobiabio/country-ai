@@ -57,6 +57,11 @@ export interface Citizen {
   bonds?: { id: string; w: number; kind: string; since: number }[];
   /** pokes by visitors on the republic day `day` */
   pokes?: { day: number; n: number };
+  /** 'student' (university, no work) or 'adult' (src/school.ts) */
+  occupation?: string;
+  /** the job a citizen holds (src/jobs.ts catalog id, or 'unemployed'), and the republic day it began */
+  job?: string;
+  jobSince?: number;
   [k: string]: any;
 }
 
