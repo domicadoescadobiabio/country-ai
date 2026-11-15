@@ -155,7 +155,7 @@ export const ACT_DEST = {
   volunteer: ['community_hall', 'clinic', 'park', 'worship', 'library'],
   apply: ['academy'],
   run: ['election_comm', 'community_hall'],
-  job_hunt: ['civil_office', 'city_hall'], // looking for work: the job centre desk at the district office / city hall
+  job_hunt: ['community_hall'], // looking for work: the job centre, as the server's whereabouts and placeOf (ticket #770)
   rest: [],
 };
 export const ACT_COLOR = { work: '#60a5fa', shop: '#f472b6', study: '#fb923c', talk: '#facc15', help: '#4ade80', volunteer: '#2dd4bf', apply: '#c084fc', run: '#f87171', job_hunt: '#a3e635', rest: '#94a3b8' };
