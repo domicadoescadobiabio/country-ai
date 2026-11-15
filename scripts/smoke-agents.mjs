@@ -176,8 +176,10 @@ export async function run({ BASE, DATA, get, until, check, wait, mock }) {
 
   // wait for citizenship age, apply (Academy exam through the inbox), run for Mayor, vote: like a trained model
   let applied = false, ran = false, entered = false, votes = 0, s = null, lastHome = null;
+  // (ticket #752: once Tester has announced its run, wait up to 120 s more for the Mayor nominations to open and the
+  // candidacy to reach the ledger, instead of stopping at 150 s and failing three checks together)
   const end = Date.now() + 150000;
-  while (Date.now() < end) {
+  while (Date.now() < end || (ran && !entered && Date.now() < end + 120000)) {
     const hm = (await api('GET', '/api/v1/home', KEY)).j.data;
     if (!hm) { await wait(1100); continue; }
     lastHome = hm.you.career?.offices?.mayor;
