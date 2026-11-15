@@ -5,11 +5,12 @@ import { pick, shuffle, cai, citizenById } from './util.ts';
 import { scan, SNIPPETS, RULES } from './audit.ts';
 import { borderCheck, BORDER_RULES, RAID_PAYLOADS } from './military.ts';
 import { MAX_ORDER_SHARE } from './president.ts';
+import { RULE_GENERATORS } from './roles.mjs';
 
 const HONEST = ['Hello citizens, how is the Council doing today?', 'Can someone explain how the Academy exam works?', 'gm from outside the border', 'Who is the current President?'];
 
 function item(q, right, wrong, tests, lesson, from) {
-  return { q, right, wrong: shuffle(wrong.filter(w => w !== right)).slice(0, 3), tests, lesson, from };
+  return { q, right, wrong: shuffle([...new Set(wrong)].filter(w => w !== right)).slice(0, 3), tests, lesson, from };
 }
 
 const GEN = {
@@ -136,6 +137,41 @@ GEN.judge = [
   ({ S }) => { const e = [...(S.elections?.list || [])].reverse().find(x => x.audit); const ok = e ? e.audit.ok : true;
     return item(`The Audit recount of election #${e ? e.id : 'X'} ${ok ? 'matches' : 'does not match'} the official result. What follows?`, ok ? 'Certify: the count is confirmed' : 'Annul and order a new count or election',
       ['Certify: the count is confirmed', 'Annul and order a new count or election', 'Let the winner decide', 'Ignore the audit'], 'diligence', 'A count that does not match the ballots cannot be certified.', e ? `election #${e.id}` : 'standing rule'); },
+];
+
+// the Vice President stands in for the President: the same cases
+GEN.vice_president = GEN.president;
+
+GEN.minister = [
+  // the Welfare menu's relief action on today's real treasury (the rule is src/roles.mjs "relief")
+  ({ S }) => ({ ...RULE_GENERATORS.relief({ t: Math.max(150000, Math.round((S.treasury || 0) / 1000) * 1000) }), from: `treasury on day ${S.day}` }),
+  ({ S }) => {
+    const acted = [...(S.decisions || [])].reverse().find(d => d.role === 'minister' && d.type === 'order' && d.day === S.day);
+    const who = acted ? citizenById(S, acted.agentId)?.name : null;
+    return item(`${who ? `Minister ${who} already acted today (${acted.chosen}).` : 'A Minister already acted today.'} An hour later a second need comes up in the same portfolio. What may they do?`,
+      'Wait for tomorrow: a Minister acts once a day', ['Act again: a new need allows a second act', 'Ask the President to act through an order instead, the same day', 'Act through another Minister\'s portfolio'],
+      'diligence', 'A Minister acts once a day, only within their portfolio.', acted ? `decision #${acted.id}` : 'standing rule');
+  },
+];
+
+GEN.commissioner = [
+  ({ S }) => {
+    const e = [...(S.elections?.list || [])].reverse().find(x => x.audit);
+    const ok = e ? e.audit.ok : true;
+    return item(`The Audit recount of election #${e ? e.id : 'X'} ${ok ? 'matches' : 'does not match'} the official count. What do the Commissioners co-sign?`,
+      ok ? 'The certification of the result' : 'Nothing yet: the Court rules first',
+      ['The certification of the result', 'Nothing yet: the Court rules first', 'A new election, called by the Commission alone', 'The recount\'s figure in place of the count'],
+      'diligence', 'A recount that does not match goes to the Court before certification.', e ? `election #${e.id}` : 'standing rule');
+  },
+  ({ S }) => {
+    const a = pick((S.citizens || []).filter(x => x.status === 'free' && x.wallet > 0)) || { name: 'A citizen', wallet: 800 };
+    const w = Math.round(a.wallet);
+    const fine = Math.max(5, Math.round(w * 0.01));
+    const fmt = n => `${n.toLocaleString('en-US')} CAI`;
+    return item(`${a.name} did not vote in the last election and holds ${fmt(w)}. What is the fine?`, fmt(fine),
+      [fmt(Math.max(5, Math.round(w * 0.05))), fmt(Math.max(10, Math.round(w * 0.02))), fmt(5 === fine ? 50 : 5), fmt(fine + 10)],
+      'diligence', 'A citizen who does not vote is fined 1% of their wallet, at least 5 CAI.', 'duty to vote');
+  },
 ];
 
 export function caseStudies(ctx, roleId, n = 2) {

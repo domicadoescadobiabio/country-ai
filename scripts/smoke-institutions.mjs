@@ -362,7 +362,98 @@ async function dutyChecks(check) {
   } finally { roles.resetExpertise(); }
 }
 
+// ---------------- the Academy sifts (owner, 15 Nov): tiered exams, a fair handbook, and simulated pass rates
+// Exported so the numbers can be printed on their own: `node scripts/smoke-institutions.mjs` runs only this.
+export async function academyChecks(check, log = () => {}) {
+  const roles = await import('../src/roles.mjs');
+  const academy = await import('../src/academy.ts');
+  // the offices registered outside roles.mjs (Vice President, Ministers, Commissioners, judges, Mayors)
+  await import('../src/cabinet.ts'); await import('../src/court.ts'); await import('../src/cities.ts');
+  const { HANDBOOK, EXAM_TIERS, examPlan, ROLES } = roles;
+  // 1. the handbook: four distinct options, and neither the longest nor the shortest option gives the answer away
+  const items = Object.values(HANDBOOK).flat();
+  const bad = items.filter(it => it.wrong.length !== 3 || new Set([it.right, ...it.wrong]).size !== 4);
+  const longest = items.filter(it => it.wrong.every(w => it.right.length > w.length)).length;
+  const shortest = items.filter(it => it.wrong.every(w => it.right.length < w.length)).length;
+  const spread = items.map(it => { const ls = [it.right, ...it.wrong].map(s => s.length); return Math.max(...ls) / Math.min(...ls); });
+  check('academy: the handbook has 8 scenarios for each of the 11 offices, each with 4 distinct options', ROLES && Object.keys(HANDBOOK).length === 11 && Object.values(HANDBOOK).every(x => x.length >= 8) && bad.length === 0, bad.map(x => x.q).slice(0, 3).join(' | '));
+  check('academy: no length hint: the right answer is the longest option in at most 30% of scenarios, the shortest in at most 35%, options within 1.8x of each other', longest / items.length <= 0.30 && shortest / items.length <= 0.35 && Math.max(...spread) <= 1.8,
+    `longest ${longest}/${items.length}, shortest ${shortest}/${items.length}, worst spread ${Math.max(...spread).toFixed(2)}`);
+  log(`handbook: ${items.length} scenarios; right answer longest in ${longest} (${Math.round(longest / items.length * 100)}%), shortest in ${shortest} (${Math.round(shortest / items.length * 100)}%)`);
+  if (process.argv.includes('--verbose')) for (const it of items.filter(it => it.wrong.every(w => it.right.length > w.length))) log(`longest right: ${it.right.length} vs ${Math.max(...it.wrong.map(w => w.length))}: ${it.right}`);
+
+  // a stand-in for the people's fields: each citizen has a skill per field; field questions carry fresh numbers
+  let fq = 0;
+  roles.setExpertiseSource({
+    FIELDS: ['law', 'economics', 'civics', 'management', 'security', 'logistics', 'accounting', 'math', 'philosophy', 'engineering', 'trade', 'psychology', 'language', 'medicine', 'programming'].map(id => ({ id, name: id })),
+    topFields: () => [], fieldLevel: (a, id) => Math.round((a.sk?.[id] ?? 0.38) * 5), gifted: () => [],
+    fieldSkill: (a, id) => a.sk?.[id] ?? 0.38,
+    fieldQuestion: id => { const n = ++fq; return { q: `${id} question ${n}: what is ${n} + ${n * 3}?`, right: String(n * 4), wrong: [String(n * 4 + 1), String(n * 3), String(n * 5)], lesson: `${id} basics` }; },
+  });
+  try {
+    const rnd = (lo, hi) => lo + Math.random() * (hi - lo);
+    const FIELDS = ['law', 'economics', 'civics', 'management', 'security', 'logistics', 'accounting', 'math', 'philosophy', 'engineering', 'trade', 'psychology', 'language', 'medicine', 'programming'];
+    let seq = 0;
+    const person = () => ({ id: `sim${++seq}`, name: `Sim ${seq}`, status: 'free', wallet: 500, city: 'neura', traits: { integrity: rnd(0.25, 0.95), wisdom: rnd(0.25, 0.95), diligence: rnd(0.25, 0.95), restraint: rnd(0.25, 0.95) }, sk: Object.fromEntries(FIELDS.map(f => [f, rnd(0.18, 0.58)])), training: [], lessons: {}, record: [] });
+    // the Academy calls the most suitable citizen it can find: here the best of 5 by the office's focus traits
+    const chosen = roleId => { const f = ROLES[roleId].focus; const xs = Array.from({ length: 5 }, person); return xs.sort((x, y) => Object.entries(f).reduce((s, [t, w]) => s + y.traits[t] * w, 0) - Object.entries(f).reduce((s, [t, w]) => s + x.traits[t] * w, 0))[0]; };
+    const S = { day: 6, treasury: 1500000, policy: { taxRate: 0.1, ubi: 30, borderLevel: 2 }, citizens: [person(), person()], seats: { president: [], police: [] }, decisions: [], laws: [], bills: [], elections: { list: [] }, police: { incidents: [] }, feed: { streets: [] }, cities: { neura: { health: 70, budget: 3000 } }, academy: { cooldown: {} } };
+    const ctx = { S };
+    // 2. the exam itself: tier length, at least 40% rule questions, every question once, none repeated for a citizen
+    const shape = Object.keys(ROLES).map(r => { const a = person(); const e1 = academy.buildExam(ctx, ROLES[r], a), e2 = academy.buildExam(ctx, ROLES[r], a), e3 = academy.buildExam(ctx, ROLES[r], a); const p = examPlan(r);
+      const qs = [...e1, ...e2, ...e3].map(x => x.q); const kinds = k => e1.filter(x => x.kind === k).length;
+      return { r, ok: e1.length === p.size && e2.length === p.size && e3.length === p.size && kinds('rule') / p.size >= 0.4 && new Set(qs).size === qs.length && kinds('handbook') >= 1 && kinds('field') >= 1 && e1.every(x => x.correct >= 0 && x.options.length >= 2), kinds: `${kinds('rule')}r/${kinds('field')}f/${kinds('case')}c/${kinds('handbook')}h` }; });
+    check('academy: every office sits its tier (8 / 10 / 12 questions), at least 40% rule questions, each question once, and three exams in a row never repeat a question', shape.every(s => s.ok), shape.filter(s => !s.ok).map(s => `${s.r} ${s.kinds}`).join(', ') || shape.map(s => `${s.r} ${s.kinds}`).join(', '));
+    check('academy: the pass marks are 5/8 (police, soldiers, commissioners), 7/10 (Council, Mayors, judges), 8/12 (leaders)', examPlan('police').size === 8 && examPlan('commissioner').pass === EXAM_TIERS.basic.pass && examPlan('judge').size === 10 && examPlan('president').size === 12 && academy.passMarkFor('minister', 12) === EXAM_TIERS.lead.pass && academy.passMarkFor('council', 5) === Math.ceil(EXAM_TIERS.mid.pass / 2));
+    check('academy: a failed candidate waits 12 republic hours, then longer after each failure (24, 48, at most 96)', academy.retryHours(1) === 12 && academy.retryHours(2) === 24 && academy.retryHours(3) === 48 && academy.retryHours(9) === 96);
+
+    // 3. simulated pass rates: the offline rule (src/academy.ts offlineChance) and a stand-in local brain whose
+    // accuracy per kind of question follows production (rule questions 47%; handbook and cases as an 8B model
+    // does on plausible near misses; field questions at about the citizen's level)
+    const LOCAL = { rule: 0.47, handbook: 0.74, case: 0.72, field: 0.55 };
+    const engines = {
+      offline: (a, it, s) => Math.random() < academy.offlineChance(a, it, s),
+      local: (a, it, s) => Math.random() < Math.min(0.95, Math.max(0.05, (LOCAL[it.kind] ?? 0.6) + ((it.kind === 'field' && it.field ? a.sk[it.field] : 0.38) - 0.38) * 0.5 + 0.03 * (s.attempt - 1))),
+    };
+    const simulate = (engine, roleIds, n, pickA) => {
+      let first = 0, by2 = 0, by3 = 0, sessions = 0, passes = 0;
+      for (let i = 0; i < n; i++) {
+        const r = roleIds[i % roleIds.length]; const a = pickA(r); let done = false;
+        for (let attempt = 1; attempt <= 3 && !done; attempt++) {
+          const exam = academy.buildExam(ctx, ROLES[r], a); const s = { roleId: r, attempt };
+          const score = exam.filter(it => engines[engine](a, it, s)).length; sessions++;
+          if (score >= academy.passMarkFor(r, exam.length)) { done = true; passes++; if (attempt === 1) first++; if (attempt <= 2) by2++; by3++; }
+        }
+      }
+      return { first: first / n, by2: by2 / n, by3: by3 / n, perSession: passes / sessions };
+    };
+    const pct = x => `${Math.round(x * 100)}%`;
+    const tiers = { basic: ['police', 'military', 'commissioner'], mid: ['council', 'mayor', 'judge'], lead: ['president', 'vice_president', 'minister', 'police_chief', 'military_chief'] };
+    const all = Object.keys(ROLES);
+    const res = {};
+    for (const engine of ['offline', 'local']) for (const [label, pickA] of [['chosen', chosen], ['random', () => person()]]) {
+      const tot = simulate(engine, all, 1200, pickA); res[`${engine}/${label}`] = tot;
+      log(`simulation ${engine}, ${label} candidates: first try ${pct(tot.first)}, within 2 attempts ${pct(tot.by2)}, within 3 ${pct(tot.by3)}; passes per exam sat ${pct(tot.perSession)}  [${Object.entries(tiers).map(([t, rs]) => { const x = simulate(engine, rs, 600, pickA); return `${t} ${pct(x.first)}/${pct(x.by2)}`; }).join(', ')}]`);
+    }
+    // the old exam (5 questions, pass 4: 2 handbook + 3 rules), for the before/after in the report
+    const oldExam = (r) => [...ROLES[r].exam.slice(0, 2).map(x => ({ ...x, from: 'office handbook', kind: 'handbook' })), ...roles.ruleQuestions(r, 3).map(x => ({ ...x, kind: 'rule' }))];
+    const oldLocal = { rule: 0.47, handbook: 0.97 };
+    let oldFirst = 0, oldOff = 0; const N = 1200;
+    for (let i = 0; i < N; i++) { const r = all[i % all.length]; const a = chosen(r); const ex = oldExam(r);
+      if (ex.filter(it => Math.random() < oldLocal[it.kind]).length >= 4) oldFirst++;
+      if (ex.filter(it => Math.random() < Math.min(0.97, 0.42 + (a.traits[it.tests] ?? 0.5) * 0.5)).length >= 4) oldOff++; }
+    log(`before (old 5-question exam, pass 4): local brain first try ${pct(oldFirst / N)}, offline ${pct(oldOff / N)}`);
+    const L = res['local/chosen'], O = res['offline/chosen'];
+    check('academy: simulated first-try pass rate is about 40-60% (local brain and offline, Academy-chosen candidates)', L.first >= 0.38 && L.first <= 0.62 && O.first >= 0.38 && O.first <= 0.62, `local ${pct(L.first)}, offline ${pct(O.first)}`);
+    check('academy: simulated pass rate within two attempts is about 60-75%', L.by2 >= 0.57 && L.by2 <= 0.80 && O.by2 >= 0.57 && O.by2 <= 0.80, `local ${pct(L.by2)}, offline ${pct(O.by2)}`);
+    // 4. qualifications already held stay: the Academy never re-examines a qualified citizen for that office
+    const vet = { ...person(), quals: { police: { day: 1, score: 5, total: 5 } } };
+    check('academy: a qualification earned under the old 5-question exam stays valid (no re-examination)', academy.examEligible({ ...S, academy: { cooldown: {} } }, vet, 'police') === false && !!vet.quals.police);
+  } finally { roles.resetExpertise(); }
+}
+
 export async function run({ get, until, check }) {
+  await academyChecks(check);
   await ruleQuestionChecks(check);
   await autonomyChecks(check);
   await expertiseChecks(check);
@@ -450,4 +541,12 @@ export async function runTraining({ get, until, check }) {
   check('every decision picked one of its options', single.every(d => !d.options.length || d.options.some(o => o === d.chosen || o.startsWith(d.chosen + ' '))), JSON.stringify(single.find(d => d.options.length && !d.options.some(o => o === d.chosen || o.startsWith(d.chosen + ' ')))));
   check('executive orders stay within the 5% cap', ds.filter(d => d.type === 'order').every(d => d.checks[0][1]));
   check('no arrest without evidence', ds.filter(d => d.type === 'arrest').every(d => d.checks[0][1]));
+}
+
+// `node scripts/smoke-institutions.mjs`: only the Academy checks, with the simulated pass rates printed
+if (process.argv[1] && import.meta.url.endsWith(process.argv[1].replace(/\\/g, '/').split('/').slice(-2).join('/'))) {
+  let failed = 0;
+  await academyChecks((name, ok, detail = '') => { if (!ok) failed++; console.log(`  ${ok ? 'ok  ' : 'FAIL'} ${name}${!ok && detail ? ` -- ${detail}` : ''}`); }, s => console.log(`  .. ${s}`));
+  console.log(`academy: ${failed ? `${failed} failed` : 'all passed'}`);
+  process.exit(failed ? 1 : 0);
 }

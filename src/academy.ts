@@ -2,20 +2,30 @@
 // Elected offices (President, Council, Mayors): passing seats the agent (transitional, until elections).
 // Appointed offices (police, military, their heads): passing only QUALIFIES the agent; the chain of
 // command (src/command.mjs) appoints from the qualified pool (constitution Art. 2, 10, 11).
-import { ROLES, ROLE_ORDER, ruleQuestions, fieldQuestionFor, topFieldsText, giftedText, giftedFor, OFFICE_FIELDS } from './roles.mjs';
+import { ROLES, ROLE_ORDER, ruleQuestions, fieldQuestionFor, topFieldsText, giftedText, giftedFor, OFFICE_FIELDS, examPlan, HANDBOOK, fieldSkillOf } from './roles.mjs';
 import { constitutionText, CONSTITUTION } from './constitution.mjs';
 import { clamp, chance, pick, shuffle } from './util.ts';
 import { think } from './brains.ts';
 import { candidatesFor, onSworn } from './careers.ts';
+import { caseStudies } from './cases.mjs';
 import type { Ctx, State, Citizen } from './types.ts';
 
 export const LETTERS = ['A', 'B', 'C', 'D'];
-const EXAM_SIZE = 5; // questions drawn from the (bigger) bank for each entrance exam
-const RETRY_HOURS = 6; // a failed candidate waits this long before retraining for the same office
+// a failed candidate waits before sitting the same office again: 12 republic hours after the first failure,
+// doubling after each further one (12, 24, 48, at most 96 hours); the lessons they missed are written down
+export const RETRY_HOURS = 12;
+export const retryHours = (attempt: number) => RETRY_HOURS * Math.min(8, 2 ** Math.max(0, (attempt || 1) - 1));
+const SEEN_MAX = 150; // question fingerprints kept per citizen (about a dozen exams), so no exam repeats a question
 
 export function freshAcademy() {
   return { current: null, cooldown: {}, graduates: 0, failures: 0, sessions: 0 };
 }
+// pass rates the owner can read: per office (all exams and first attempts) and per kind of question
+const STATS = (S: State) => {
+  const A = S.academy; A.stats ||= { byRole: {}, byKind: {} };
+  A.stats.byRole ||= {}; A.stats.byKind ||= {};
+  return A.stats;
+};
 
 export function vacancies(S: State, roleId: string) {
   return ROLES[roleId].seats - (S.seats[roleId]?.length || 0);
@@ -87,22 +97,52 @@ function chooseCandidate(ctx: Ctx, roleId: string) {
 // Turn a bank item ({q, right, wrong[], tests, lesson}) into a question with shuffled options.
 export function buildItem(item: any) {
   const options = shuffle([item.right, ...item.wrong]);
-  return { q: item.q, tests: item.tests, lesson: item.lesson, from: item.from, options, correct: options.indexOf(item.right) };
+  return { q: item.q, tests: item.tests, lesson: item.lesson, from: item.from, kind: item.kind || kindOf(item), field: item.field || null, options, correct: options.indexOf(item.right) };
 }
-// Each entrance exam: two handbook scenarios (judgement) and three rule questions generated with fresh numbers
-// and near-miss options (knowledge of the law plus arithmetic), so picking the most reasonable-sounding answer
-// is no longer enough to pass 4 of 5.
-const RULE_ITEMS = 3;
-// and, when the people's fields of knowledge offer one (src/expertise.ts), one question from a field the office
-// works in (law for a judge, security for the police, ...) takes the place of a handbook scenario
-function buildExam(role: any) {
-  const rules = ruleQuestions(role.id, RULE_ITEMS);
-  const field = fieldQuestionFor(role.id);
-  const extra = field ? [field] : [];
-  return shuffle([...shuffle(role.exam).slice(0, EXAM_SIZE - rules.length - extra.length), ...rules, ...extra]).map(buildItem);
+export const kindOf = (item: any) => (item?.from === 'rule question' ? 'rule' : String(item?.from || '').startsWith('field:') ? 'field' : item?.from === 'office handbook' || !item?.from ? 'handbook' : 'case');
+// a short fingerprint of a question's text (the same scenario never comes back to the same citizen)
+const fp = (q: string) => { let h = 2166136261; const s = String(q); for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619); return (h >>> 0).toString(36); };
+// Each entrance exam (owner, 15 Nov): the office's tier sets the length and the pass mark (src/roles.mjs
+// EXAM_TIERS). Rule questions with fresh numbers and near-miss options make up at least 40%; then questions from
+// the fields the office works in (src/expertise.ts), case studies from what really happened (src/cases.mjs), and
+// handbook scenarios for the rest. Every question appears once per exam and never one this citizen already had
+// in an earlier exam; when a source runs dry, fresh rule questions fill the gap, so the length never shrinks.
+export function buildExam(ctx: Ctx | { S: State }, role: any, a: Citizen | null = null) {
+  const plan = examPlan(role.id);
+  const seen = new Set<string>(a?.examSeen || []); const used = new Set<string>();
+  const out: any[] = [];
+  const take = (it: any, kind: string) => { if (!it || typeof it.q !== 'string' || out.length >= plan.size) return false; const k = fp(it.q); if (seen.has(k) || used.has(k)) return false; used.add(k); out.push({ ...it, kind }); return true; };
+  const freshRules = (n: number) => { for (let tries = 0; n > 0 && tries < n * 8 + 8; tries++) for (const it of ruleQuestions(role.id, Math.min(n, 6))) if (n > 0 && take(it, 'rule')) n--; };
+  freshRules(plan.rules);
+  for (let n = plan.field, tries = 0; n > 0 && tries < plan.field * 4; tries++) if (take(fieldQuestionFor(role.id), 'field')) n--;
+  let cases: any[] = []; try { cases = caseStudies(ctx, role.id, plan.cases + 2) || []; } catch { cases = []; }
+  for (let n = plan.cases, i = 0; n > 0 && i < cases.length; i++) if (take(cases[i], 'case')) n--;
+  const bank = Object.hasOwn(HANDBOOK, role.id) ? HANDBOOK[role.id] : role.exam || [];
+  for (const it of shuffle(bank)) take({ ...it, from: 'office handbook' }, 'handbook');
+  freshRules(plan.size - out.length);
+  if (a) a.examSeen = [...(a.examSeen || []), ...used].slice(-SEEN_MAX);
+  return shuffle(out).map(buildItem);
 }
+// the pass mark of an exam: the tier's mark, scaled if the exam came out shorter than planned
+export const passMarkFor = (roleId: string, n: number) => { const p = examPlan(roleId); return Math.ceil(p.pass * n / p.size); };
 
 function attemptsFor(a: Citizen, roleId: string) { return a.training.filter(t => t.roleId === roleId).length + 1; }
+
+// The offline answer (no model in reach): the chance of the right letter. An entrance exam leans on what the
+// citizen really knows: the trait the question tests, and their skill in the field it asks (a field question)
+// or in the fields the office works in (everything else), each kind with its own base (a rule question needs
+// the rule and the arithmetic, so it starts lower than a handbook scenario); a later attempt carries written
+// lessons. In-service drills keep their own formula (src/training.ts; their recall rule is the owner's).
+const OFFLINE_BASE: Record<string, number> = { handbook: 0.31, case: 0.25, rule: 0.17, field: 0.13 };
+const AVG_SKILL = 0.38; // the people's average skill in an office's core fields (owner's figure: 0.34-0.43)
+export function offlineChance(a: Citizen, item: any, session: any) {
+  const trait = a.traits?.[item.tests] ?? 0.5;
+  if (session.drill || session.practice || !item.kind) return clamp(0.42 + trait * 0.5 + 0.12 * ((session.attempt || 1) - 1) + (session.bonus || 0), 0.05, 0.97);
+  const fields = item.kind === 'field' && item.field ? [item.field] : OFFICE_FIELDS[session.roleId] || [];
+  const skills = fields.map(f => fieldSkillOf(a, f)).filter(v => v != null) as number[];
+  const skill = skills.length ? Math.max(...skills) : AVG_SKILL;
+  return clamp((OFFLINE_BASE[item.kind] ?? 0.3) + trait * 0.3 + skill * 0.4 + 0.03 * ((session.attempt || 1) - 1) + (session.bonus || 0), 0.05, 0.95);
+}
 
 // session: { attempt, bonus?, drill? } - bonus comes from in-office skill and experience.
 export async function answer(ctx: Ctx, a: Citizen, role: any, item: any, session: any) {
@@ -122,20 +162,19 @@ export async function answer(ctx: Ctx, a: Citizen, role: any, item: any, session
     // agents with their own brain must answer themselves: no answer counts as wrong
     if (a.brain) return { idx: -1, reason: r.engine.startsWith('offline (') ? 'no answer in time' : 'no valid answer', engine: r.engine };
   }
-  const trait = a.traits[item.tests] ?? 0.5;
-  const p = clamp(0.42 + trait * 0.5 + 0.12 * ((session.attempt || 1) - 1) + (session.bonus || 0), 0.05, 0.97);
-  if (chance(p)) return { idx: item.correct, reason: '', engine: 'offline' };
+  if (chance(offlineChance(a, item, session))) return { idx: item.correct, reason: '', engine: 'offline' };
   return { idx: pick(item.options.map((_, i) => i).filter(i => i !== item.correct)), reason: '', engine: 'offline' };
 }
 
 function start(ctx: Ctx, roleId: string, a: Citizen) {
   const role = ROLES[roleId];
-  const session = { sid: `exam:${roleId}:${a.id}:${Date.now()}`, roleId, agentId: a.id, attempt: attemptsFor(a, roleId), step: 0, exam: buildExam(role), answers: [], startedAt: Date.now() };
+  const exam = buildExam(ctx, role, a);
+  const session = { sid: `exam:${roleId}:${a.id}:${Date.now()}`, roleId, agentId: a.id, attempt: attemptsFor(a, roleId), step: 0, exam, pass: passMarkFor(roleId, exam.length), tier: examPlan(roleId).tier, answers: [], startedAt: Date.now() };
   const A = ctx.S.academy; (A.rooms ||= []).push(session); A.current = A.rooms[0];
   A.sessions++;
   const again = session.attempt > 1 ? ` Attempt ${session.attempt}, carrying ${(a.lessons[roleId] || []).length} written lessons.` : '';
   const top = topFieldsText(a, 3); const g = giftedText(ctx.S, a);
-  ctx.say('academy', a.id, `Enrolling for ${role.title}. Reading the constitution (${CONSTITUTION.length} articles) and the office charter.${again}${top ? ` Strongest fields: ${top}.` : ''}${g ? ` Gifted in ${g}.` : ''}`, { kind: 'enroll', roleId });
+  ctx.say('academy', a.id, `Enrolling for ${role.title}: ${exam.length} questions, ${session.pass} to pass. Reading the constitution (${CONSTITUTION.length} articles) and the office charter.${again}${top ? ` Strongest fields: ${top}.` : ''}${g ? ` Gifted in ${g}.` : ''}`, { kind: 'enroll', roleId });
 }
 
 async function examStep(ctx: Ctx, session: any) {
@@ -147,10 +186,11 @@ async function examStep(ctx: Ctx, session: any) {
   const { idx, reason, engine } = res;
   const ok = idx === item.correct;
   const chosen = idx >= 0 ? item.options[idx] : '(no answer)';
-  session.answers.push({ q: item.q, chosen, right: item.options[item.correct], ok, reason, lesson: item.lesson });
+  session.answers.push({ q: item.q, kind: item.kind || kindOf(item), chosen, right: item.options[item.correct], ok, reason, lesson: item.lesson });
   session.step++;
   // generated rule questions are counted apart, so a rise in failures can be traced to them (and tuned)
   if (item.from === 'rule question') { const r = (ctx.S.academy.rules ||= { asked: 0, right: 0 }); r.asked++; if (ok) r.right++; }
+  const k = (STATS(ctx.S).byKind[item.kind || kindOf(item)] ||= { asked: 0, right: 0 }); k.asked++; if (ok) k.right++;
   // a self-run agent that lets a question time out has walked out of the exam: the Academy has one exam room,
   // so it does not wait another 2.5 minutes per question (a silent agent could otherwise stall every office)
   if (a.brain?.type === 'remote' && idx < 0 && reason === 'no answer in time') {
@@ -173,9 +213,14 @@ function finish(ctx: Ctx, session: any) {
   const total = session.exam.length;
   const missed = session.answers.filter(x => !x.ok).map(x => x.lesson);
   a.lessons[role.id] = [...new Set([...(a.lessons[role.id] || []), ...missed])];
-  const passed = score >= role.passMark && (role.appointed || role.elected || vacancies(S, role.id) > 0);
+  // the session's own pass mark (the tier's, set when it began); a 5-question session begun before the tiers
+  // keeps the old mark of 4
+  const mark = session.pass ?? 4;
+  const passed = score >= mark && (role.appointed || role.elected || vacancies(S, role.id) > 0);
   if (a.training.length >= 20) a.training.splice(0, a.training.length - 19);
-  a.training.push({ roleId: role.id, attempt: session.attempt, score, total, passed, ts: Date.now(), answers: session.answers });
+  a.training.push({ roleId: role.id, attempt: session.attempt, score, total, pass: mark, passed, ts: Date.now(), answers: session.answers });
+  const st = (STATS(S).byRole[role.id] ||= { sessions: 0, passed: 0, first: 0, firstPassed: 0 });
+  st.sessions++; if (passed) st.passed++; if (session.attempt === 1) { st.first++; if (passed) st.firstPassed++; }
   if (passed && (role.appointed || role.elected)) {
     (a.quals ||= {})[role.id] = { day: S.day, score, total };
     (a.skill ||= {})[role.id] ??= Math.round((score / total) * 100) / 100;
@@ -197,9 +242,10 @@ function finish(ctx: Ctx, session: any) {
     ctx.record?.('sworn', a.id, { office: role.id, score, total, attempt: session.attempt, mandate: 'academy (transitional, until elections)' });
   } else {
     S.academy.failures++;
-    (S.academy.cooldown[a.id] ||= {})[role.id] = Date.now() + RETRY_HOURS * ctx.hourMs(); // a timestamp, not a tick count
+    const wait = retryHours(session.attempt);
+    (S.academy.cooldown[a.id] ||= {})[role.id] = Date.now() + wait * ctx.hourMs(); // a timestamp, not a tick count
     const note = missed.length ? ` Lessons written down: ${missed.join(' ')}` : '';
-    ctx.say('academy', a.id, `Failed ${role.title}: ${score}/${total} (needs ${role.passMark}).${note}`, { kind: 'fail', roleId: role.id });
+    ctx.say('academy', a.id, `Failed ${role.title}: ${score}/${total} (needs ${mark}). May sit it again in ${wait} hours.${note}`, { kind: 'fail', roleId: role.id });
     ctx.log('academy', `${a.name} failed ${role.title} ${score}/${total}`);
   }
 }
