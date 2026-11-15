@@ -234,7 +234,8 @@ export async function doAct(ctx: Ctx, a: Citizen, j: any, engine: string, offere
     what = 'rest'; line = 'is a student: lectures, not shifts, so rested';
   } else if (what === 'work' && isUnemployed(a)) {
     // looking for work: no pay; the job market (src/jobs.ts) hires a few each republic day
-    a.workedDay = S.day; line = `looked for work at the job centre in ${cityName(a.city)}`;
+    // counted as its own act, never as work (byAct and the diary say what really happened)
+    a.workedDay = S.day; what = 'job_hunt'; line = `looked for work at the job centre in ${cityName(a.city)}`;
   } else if (what === 'work') {
     // only a field the menu offered (their own best fields); anything else is plain work
     const f = cleanText(j?.field, 20).toLowerCase();
@@ -470,7 +471,7 @@ export function placeOf(what: string, a: Citizen, shopAmt = 0, workField: string
   if (what === 'shop') return shopAmt <= 20 ? 'supermarket' : shopAmt <= 30 ? 'market' : 'mall';
   // a citizen with a post works their extra shift at their own workplace
   // the job centre for those looking for work; else the roster post, else the building of their job (src/jobs.ts)
-  if (what === 'work' && isUnemployed(a)) return 'community_hall';
+  if (what === 'job_hunt' || (what === 'work' && isUnemployed(a))) return 'community_hall';
   if (what === 'work') { const j = jobById((a as any).job); return (S && workplaceOf(S, a)?.type) || (j && j.place) || workPlace(workField || talentsOf(a).job[0] || null); }
   if (what === 'volunteer' || what === 'talk' || what === 'help') return 'community_hall';
   if (what === 'study') return isStudent(a) ? 'university' : 'library';
@@ -606,7 +607,7 @@ const OFFICE_SEAT: Record<string, string> = JOB_SEATS; // one list with the job 
 const hourOf = (S: State, now: number) => ((((now - (S.foundedAt || now)) % DAY_MS) + DAY_MS) % DAY_MS) / DAY_MS * 24;
 const jobNow = (S: State, a: Citizen, now = Date.now()) => jobPlaceNow(S, a, hourOf(S, now), nightOf(S, DAY_MS, now) != null);
 const ACT_CODE: Record<string, string> = { work: 'working', shop: 'shopping', study: 'studying', apply: 'applying', run: 'campaigning', talk: 'talking', help: 'helping',
-  volunteer: 'volunteering', rest: 'resting', gossip: 'chatting' };
+  volunteer: 'volunteering', rest: 'resting', gossip: 'chatting', job_hunt: 'looking for work' };
 export function whereabouts(S: State, cityId: string, now = Date.now()) {
   const night = nightOf(S, DAY_MS, now) != null; const shift = night ? 'night' : 'day'; const W = windowMs();
   const h = ((((now - (S.foundedAt || now)) % DAY_MS) + DAY_MS) % DAY_MS) / DAY_MS * 24;

@@ -127,7 +127,7 @@ export const isUnemployed = (a: Citizen | null | undefined) => !!a && !a.office 
 export function jobOf(S: State, a: Citizen | null | undefined): JobView {
   if (!a) return { id: 'unemployed', title: 'Looking for work', place: null, major: null };
   if (a.office) return { id: 'official', title: ROLES[a.office]?.title || 'Official', place: OFFICE_SEAT[a.office] || null, major: null };
-  if (isStudent(a)) { const top = topFields(a, 1)[0]; return { id: 'student', title: 'University student', place: 'university', major: top ? fieldName(top.id) : null }; }
+  if (isStudent(a)) { const top = topFields(a, 1)[0]; return { id: 'student', title: 'University student', place: 'university', major: (a as any).major || (top ? fieldName(top.id) : null) }; }
   const id = (a as any).job;
   if (id === 'unemployed') return { id, title: 'Looking for work', place: null, major: null };
   const j = jobById(id) || jobById(bioJob(a)); // before the first assignment: the job in their bio
@@ -162,15 +162,63 @@ export function cityQuotas(city: string, workers: number) {
   }
   return q;
 }
-export const unemployedTarget = (adults: number) => (adults <= 0 ? 0 : Math.max(1, Math.round(adults * UNEMPLOYED_SHARE)));
-// the first sentence of a generated bio follows the job; a founder's own words stay
-function setJob(a: Citizen, id: string, day: number) {
+// at least one per city, for a real city (20 working-age adults or more); a hamlet of a few (tests) may have none
+export const unemployedTarget = (adults: number) => (adults <= 0 ? 0 : adults < 20 ? Math.round(adults * UNEMPLOYED_SHARE) : Math.max(1, Math.round(adults * UNEMPLOYED_SHARE)));
+// ---------------------------------------------------------------- the bio says what they do now (owner, 16 Nov)
+// The first sentence of a generated bio ("<what> in <city>.") always follows the citizen's job, for everyone:
+//   a worker "Barista in Lumen Bay."; a student "University student (economics) in Lumen Bay."; someone looking for
+//   work "Looking for work in Kernel Falls. Used to be a builder."; an official "Mayor in Port Token."; the
+//   underworld their cover job. The rest of the bio is never touched. A founder's own words and the bio an agent's
+//   owner wrote (a.brain, ticket #724) stay as written. When someone stops working (studies, takes an office, loses
+//   their job) their talents keep leaning on the trade they had (a.skillsFrom, src/population.mjs); a new job brings
+//   new talents with it, as before.
+const BIO_RE = /^([^.]+?) in ([^.]+)\.\s*(.*)$/s;
+const CITY_NAMES = new Set(CITIES.map(c => c.name));
+const aOr = (w: string) => (/^[aeiou]/i.test(w) ? 'an' : 'a');
+export function bioFirst(S: State, a: Citizen): string | null {
+  const city = cityName(String(a.city));
+  if (a.office) return `${ROLES[a.office]?.title || 'Official'} in ${city}.`;
+  if (isStudent(a)) return `University student (${majorOf(a)}) in ${city}.`;
+  if ((a as any).job === 'unemployed') { const was = jobById((a as any).formerJob); return `Looking for work in ${city}.${was ? ` Used to be ${aOr(was.title)} ${was.title.toLowerCase()}.` : ''}`; }
+  const j = jobById((a as any).job); return j ? `${j.title} in ${city}.` : null;
+}
+// a student's major: their best field when they became a student, kept (the bio does not change with every lesson)
+function majorOf(a: Citizen) { if (!(a as any).major) { const top = topFields(a, 1)[0]; (a as any).major = top ? fieldName(top.id) : 'general studies'; } return String((a as any).major); }
+// set the first sentence; true when the bio changed
+export function syncBio(S: State, a: Citizen): boolean {
+  if (!a || a.brain) return false;
+  const m = String(a.bio || '').match(BIO_RE); if (!m || !CITY_NAMES.has(m[2].trim())) return false; // a founder's own words
+  const first = bioFirst(S, a); if (!first) return false;
+  const working = !!jobById((a as any).job) && !a.office && !isStudent(a);
+  if (working) delete (a as any).skillsFrom;              // a job: talents follow it
+  else if (!(a as any).skillsFrom && bioJob(a)) (a as any).skillsFrom = `${m[1]} in ${m[2]}`; // keep leaning on the old trade
+  const rest = m[3].replace(/^Used to be an? [^.]+\.\s*/, '');
+  const next = `${first}${rest ? ` ${rest}` : ''}`;
+  if (next === a.bio) return false;
+  a.bio = next; return true;
+}
+function setJob(a: Citizen, id: string, day: number, S?: State) {
+  const prev = (a as any).job;
+  if (id === 'unemployed') (a as any).formerJob = jobById(prev) ? prev : bioJob(a) || (a as any).formerJob || null;
   (a as any).job = id; (a as any).jobSince = day;
-  // an agent with its own brain (an immigrant or a hosted agent) keeps the bio its owner wrote (ticket #724)
-  if (a.brain) return;
-  const j = jobById(id); const city = cityName(String(a.city));
-  const m = String(a.bio || '').match(/^([^.]+?) in ([^.]+)\.\s*(.*)$/s);
-  if (j && m && m[2].trim() === city) a.bio = `${j.title} in ${city}.${m[3] ? ` ${m[3]}` : ''}`;
+  syncBio(S as any, a);
+}
+// every bio once in line with the job (bios v2: students, those looking for work and officials kept their old trade's
+// first sentence under v1); only bios that change are written; one ledger entry
+export function syncAllBios(ctx: Ctx, force = false) {
+  const { S } = ctx; const st = ((S as any).jobs ||= {});
+  if (!force && st.bioV === 2) return null;
+  let changed = 0;
+  for (const a of S.citizens || []) {
+    if ((a as any).job === 'unemployed' && !(a as any).formerJob) (a as any).formerJob = bioJob(a);
+    if (syncBio(S, a)) changed++;
+  }
+  if (!force) {
+    st.bioV = 2;
+    if (!ctx.ledgerHas?.('job_bios', { v: 2 })) ctx.record?.('job_bios', 'state', { v: 2, day: S.day, changed, rule: 'the first sentence of a generated bio says the job now: students, those looking for work, officials and workers; founders and own-brain agents keep their own words' });
+  }
+  st.bioAt = Date.now();
+  return changed;
 }
 export function assignJobs(ctx: Ctx) {
   const { S } = ctx;
@@ -218,7 +266,12 @@ export function assignJobs(ctx: Ctx) {
 export function jobsTick(ctx: Ctx) {
   const { S } = ctx;
   assignJobs(ctx);
-  const st = (S as any).jobs; if (st.day === S.day) return null;
+  const st = (S as any).jobs;
+  // bios in line with jobs: once for everyone (v2), then every minute for whoever changed (an office taken or left,
+  // a student chosen or gone): only the bios that change are written
+  if (st.bioV !== 2) syncAllBios(ctx);
+  else if (Date.now() - (st.bioAt || 0) >= 60000) syncAllBios(ctx, true);
+  if (st.day === S.day) return null;
   st.day = S.day;
   const byCity = new Map<string, Citizen[]>();
   for (const a of S.citizens || []) if (eligibleAdult(a) && a.city) (byCity.get(a.city) || byCity.set(a.city, []).get(a.city)!).push(a);

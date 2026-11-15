@@ -51,7 +51,8 @@ check('the underworld keep an ordinary job as cover; the held keep theirs', S.ci
 check('no children\'s pupils: nobody\'s job or lesson is in a primary, middle or high school', !jobs.JOBS.some(j => school.CHILDREN_SCHOOLS.includes(j.place)) && !views.some(v => school.CHILDREN_SCHOOLS.includes(v.place)));
 // the bio follows the job; a founder's own words stay
 const changed = S.citizens.filter((a, i) => a.bio !== before[i].bio);
-check('a generated bio\'s first sentence follows the job ("Barista in Port Token."), the rest stays; a founder\'s bio is untouched', changed.length > 0 && changed.every(a => { const j = jobs.jobById(a.job); return j && a.bio.startsWith(`${j.title} in `); }) && founder.bio === 'Calm and careful. Believes in quiet work.' && changed.every(a => a.bio.split('. ').slice(1).join('. ') === before[S.citizens.indexOf(a)].bio.split('. ').slice(1).join('. ')), JSON.stringify(changed.slice(0, 2).map(a => a.bio)));
+const restOf = b => String(b).replace(/^[^.]+\.\s*/, '').replace(/^Used to be an? [^.]+\.\s*/, '');
+check('a generated bio\'s first sentence follows the job ("Barista in Port Token.", "Looking for work in ..."), the rest stays; a founder\'s bio is untouched', changed.length > 0 && changed.every(a => a.bio.startsWith(jobs.bioFirst(S, a))) && founder.bio === 'Calm and careful. Believes in quiet work.' && changed.every(a => restOf(a.bio) === restOf(before[S.citizens.indexOf(a)].bio)), JSON.stringify(changed.slice(0, 2).map(a => a.bio)));
 check('an agent with its own brain keeps the bio its owner wrote, and still has a job (ticket #724)', S.citizens[3].bio === before[3].bio && typeof S.citizens[3].job === 'string', JSON.stringify([S.citizens[3].bio, S.citizens[3].job]));
 check('talents follow the new job (a barista leans on cooking)', S.citizens.filter(a => a.job === 'barista').every(a => pop.talentsOf(a).job.includes('cooking')));
 // once only, the same after a restart, one ledger entry
@@ -60,6 +61,40 @@ jobs.assignJobs(ctx);
 // (a restart before the state was saved: neither the students nor the jobs were saved; the ledger was)
 const S2 = { ...S, citizens: before, jobs: undefined, school: undefined }; jobs.assignJobs({ ...ctx, S: S2 });
 check('the first assignment runs once, gives the same jobs after a restart before saving, with one ledger entry', S.citizens.map(a => `${a.id}:${a.job}`).join() === snap && before.map(a => `${a.id}:${a.job}`).join() === snap && ledger.filter(e => e.kind === 'jobs').length === 1, `${ledger.filter(e => e.kind === 'jobs').length} entries`);
+
+// ---- every bio's first sentence says the job now (owner, 16 Nov: students and those looking for work still had their old trade)
+{
+  const talentsBefore = new Map(S.citizens.filter(a => a.occupation === 'student').slice(0, 50).map(a => [a.id, JSON.stringify(pop.talentsOf(a))]));
+  const n0 = ledger.length;
+  S.jobs.day = S.day; jobs.jobsTick(ctx); // the bios v2 pass runs in the job tick (the market itself waits for the next day)
+  const gen = S.citizens.filter(a => !a.brain && a !== founder);
+  const off = gen.filter(a => !a.bio.startsWith(jobs.bioFirst(S, a)));
+  check('every generated bio\'s first sentence is the job now: workers, university students (with their major), those looking for work, officials', !off.length && gen.some(a => /^University student \([a-z ]+\) in /.test(a.bio)) && gen.some(a => /^Looking for work in [A-Z][^.]+\. Used to be an? [a-z]/.test(a.bio)) && /^President in /.test(S.citizens[0].bio) && /^Mayor in /.test(S.citizens[1].bio), JSON.stringify(off.slice(0, 3).map(a => [a.bio.slice(0, 60), jobs.bioFirst(S, a)])));
+  check('the rest of every bio is unchanged; a founder and an own-brain agent keep their own words', S.citizens.every((a, i) => restOf(a.bio) === restOf(before[i].bio)) && founder.bio === 'Calm and careful. Believes in quiet work.' && S.citizens[3].bio === before[3].bio);
+  check('a student\'s talents do not move when their bio says "University student" (they keep leaning on their old trade)', [...talentsBefore].every(([id, t]) => JSON.stringify(pop.talentsOf(S.citizens.find(a => a.id === id))) === t));
+  const bioEntries = ledger.slice(n0).filter(e => e.kind === 'job_bios');
+  const bios = S.citizens.map(a => a.bio).join('|');
+  check('the bios pass runs once, with one ledger entry, and again changes nothing', bioEntries.length === 1 && bioEntries[0].data.changed > 0 && jobs.syncAllBios(ctx, true) === 0 && S.citizens.map(a => a.bio).join('|') === bios, JSON.stringify(bioEntries.map(e => e.data)));
+  // every change of job changes the first sentence
+  const w = S.citizens.find(a => jobs.jobById(a.job) && !a.brain && a !== founder && /^[A-Z]/.test(a.bio));
+  const was = jobs.jobById(w.job).title.toLowerCase(); const city = CITIES.find(c => c.id === w.city).name;
+  const st0 = S.citizens.find(a => a.occupation === 'student' && !a.brain && a !== founder && /^University student/.test(a.bio));
+  w.job = 'unemployed'; w.formerJob = jobs.JOBS.find(j => j.title.toLowerCase() === was).id; jobs.syncBio(S, w);
+  const lost = w.bio;
+  w.job = 'chef'; jobs.syncBio(S, w); const hired = w.bio;
+  w.office = 'mayor'; jobs.syncBio(S, w); const took = w.bio; w.office = null; jobs.syncBio(S, w); const left = w.bio;
+  check('losing a job, finding one, taking and leaving an office: the first sentence follows each time', lost.startsWith(`Looking for work in ${city}. Used to be ${/^[aeiou]/.test(was) ? 'an' : 'a'} ${was}.`) && hired.startsWith(`Chef in ${city}. `) && !/Used to be/.test(hired) && took.startsWith(`Mayor in ${city}.`) && left.startsWith(`Chef in ${city}.`), JSON.stringify([lost, hired, took, left].map(b => b.slice(0, 70))));
+  st0.occupation = 'adult'; st0.job = 'barista'; jobs.syncBio(S, st0);
+  check('a student who leaves the university for a job: the bio says the job', st0.bio.startsWith(`Barista in ${CITIES.find(c => c.id === st0.city).name}.`), st0.bio.slice(0, 60));
+  // a republic that got its jobs before this fix (bios v1: students and the unemployed kept their old trade) is put right once
+  const T = { day: 2, foundedAt: Date.now(), citizens: [], seats: {}, cities: Object.fromEntries(CITIES.map(c => [c.id, { health: 70, budget: 0 }])) };
+  pop.growPopulation(T, 300, { cities: CITIES, seed: 'smoke-jobs-v1', day: 1 });
+  const tl = []; const tctx = { ...ctx, S: T, record: (k, b, d) => { tl.push({ k, d }); return {}; }, ledgerHas: (k, m) => tl.some(e => e.k === k && Object.entries(m).every(([x, v]) => e.d?.[x] === v)) };
+  jobs.assignJobs(tctx); delete T.jobs.bioV; const v1 = T.citizens.map(a => a.bio);
+  for (const a of T.citizens) if (a.occupation === 'student' || a.job === 'unemployed') a.bio = `Accountant in ${CITIES.find(c => c.id === a.city).name}. ${a.bio.replace(/^[^.]+\.\s*/, '').replace(/^Used to be an? [^.]+\.\s*/, '')}`;
+  T.jobs.day = T.day; jobs.jobsTick(tctx); jobs.jobsTick(tctx);
+  check('a republic with bios from before the fix is put right once (one ledger entry), students and the unemployed included', T.citizens.filter(a => !a.brain).every(a => a.bio.startsWith(jobs.bioFirst(T, a))) && tl.filter(e => e.k === 'job_bios').length === 1 && v1.length === T.citizens.length);
+}
 
 // ---- the roster takes the people whose job is the role
 daily._resetStaff();
@@ -96,7 +131,7 @@ const looker = out.find(a => a.status === 'free');
 const m = daily.menu(ctx, looker);
 check('the daily menu of someone looking for work offers the job centre, not a shift', m.items.some(([id, t]) => id === 'work' && /job centre/.test(t)) && !m.items.some(([, t]) => /extra shift/.test(t)));
 const w0 = looker.wallet; await daily.doAct(ctx, looker, { act: 'work' }, 'test', ['work']);
-check('looking for work pays nothing and happens at the community hall (the job centre)', looker.wallet === w0 && /looked for work/.test(looker.diary.at(-1).line) && daily.nowDoing(S, looker.id).place === 'community_hall', JSON.stringify(looker.diary.at(-1)));
+check('looking for work pays nothing, happens at the community hall (the job centre) and is counted as job hunting, never as work', looker.wallet === w0 && /looked for work/.test(looker.diary.at(-1).line) && looker.diary.at(-1).act === 'job_hunt' && daily.nowDoing(S, looker.id).place === 'community_hall' && !S.daily?.byAct?.work, JSON.stringify(looker.diary.at(-1)));
 
 // ---- the job market: a few find work, a few lose it, the number stays small; all on the ledger
 const shares = [];

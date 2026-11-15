@@ -104,8 +104,12 @@ const JOB_FIELDS = {
   'shop assistant': ['trade', 'management'], cashier: ['trade', 'accounting'], coordinator: ['psychology', 'civics'], instructor: ['law', 'civics'], 'exam clerk': ['math', 'accounting'],
   'night stocker': ['logistics'], lecturer: ['language', 'history'],
 };
+// a.skillsFrom: the trade a citizen had when they stopped working (became a student, took an office, lost their job,
+// src/jobs.ts): their talents keep leaning on it while their bio says what they do now
 export function jobFields(a) {
-  const bio = String(a?.bio || '').toLowerCase();
+  // with a.skillsFrom: the old trade in place of the first sentence (and of "Used to be ..."), the rest of the bio as it is
+  const rest = () => String(a?.bio || '').replace(/^[^.]+\.\s*/, '').replace(/^Used to be an? [^.]+\.\s*/, '');
+  const bio = String(a?.skillsFrom ? `${a.skillsFrom}. ${rest()}` : a?.bio || '').toLowerCase();
   const out = [];
   for (const [word, fs] of Object.entries(JOB_FIELDS)) if (bio.includes(word)) for (const f of fs) if (!out.includes(f)) out.push(f);
   return out.slice(0, 3);
@@ -114,7 +118,8 @@ const clamp01 = x => Math.max(0, Math.min(1, x));
 const TALENTS = new Map();
 export function talentsOf(a) {
   const id = String(a?.id || '');
-  const hit = TALENTS.get(id); if (hit && hit.bio === a?.bio) return hit.t;
+  const key = `${a?.skillsFrom || ''}|${a?.bio}`;
+  const hit = TALENTS.get(id); if (hit && hit.bio === key) return hit.t;
   const r = rng(`talent|${id}`);
   const job = jobFields(a);
   const aptitude = {};
@@ -137,7 +142,7 @@ export function talentsOf(a) {
     for (const f of pool) if ((x -= 0.3 + aptitude[f]) < 0) { interests.push(f); break; }
   }
   const t = { interests: interests.slice(0, 3), aptitude, job };
-  TALENTS.set(id, { bio: a?.bio, t });
+  TALENTS.set(id, { bio: key, t });
   return t;
 }
 // skill in a field (0-1): starts from talent (0.1-0.3) and is earned at school; it fades slowly when a field
