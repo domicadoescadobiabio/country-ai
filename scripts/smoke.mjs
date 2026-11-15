@@ -435,7 +435,8 @@ try {
   const dc = await get(`/api/place/data_center?city=${city0}`);
   check('place: the data centre shows the local brain and the school (answers a minute, queue, model, lessons a minute)', ['online', 'model', 'answeredPerMin', 'queued', 'queuedTrain', 'trainExpired', 'lessonsPerMin', 'lessonsToday', 'teachersToday'].every(k => k in dc.board), JSON.stringify(dc.board));
   const dcAll = await get('/api/place/data_center');
-  check('place: the data centre always has technicians on duty, listed first (one city, and every city without ?city=)', dc.board.onDuty >= 1 && dc.occupants.slice(0, dc.board.onDuty).every(o => o.activity === 'on duty')
+  // (the technicians the whereabouts puts in the building now: one studying at their desk is in, not on duty)
+  check('place: the data centre counts the technicians on duty inside and lists them first (one city, and every city without ?city=)', Number.isInteger(dc.board.onDuty) && dc.occupants.slice(0, dc.board.onDuty).every(o => o.activity === 'on duty')
     && dcAll.board.onDuty >= dc.board.onDuty, JSON.stringify({ onDuty: dc.board.onDuty, first: dc.occupants[0], all: dcAll.board.onDuty }));
   const c1 = await get('/api/place/parliament'), c2 = await get('/api/place/parliament');
   check('place: views are cached for 10 s per (type, city) and the city is optional', c1.updatedAt === c2.updatedAt && c1.city === null, JSON.stringify([c1.updatedAt, c2.updatedAt, c1.city]));
@@ -446,9 +447,12 @@ try {
   const wbR = await fetch(`${BASE}/api/whereabouts?city=${city0}`, { headers: { 'accept-encoding': 'gzip' } }); const wbTxt = await wbR.text(); const wb = JSON.parse(wbTxt);
   const WHERE_OK = new Set([...PTYPES, 'home', 'asleep', 'street', 'outside', 'unknown']);
   check('whereabouts: city is required and must be a city (400 otherwise)', wbNone.status === 400 && wbBad.status === 400, `${wbNone.status} ${wbBad.status}`);
-  check('whereabouts: each person is [id, where, act] with a known place, under 150 KB, gzipped', wbR.status === 200 && wb.city === city0 && typeof wb.at === 'number' && typeof wb.night === 'boolean' && Array.isArray(wb.people)
-    && wb.people.every(p => /^[a-z0-9-]{1,40}$/.test(p[0]) && WHERE_OK.has(p[1]) && (p[2] === null || typeof p[2] === 'string')) && Buffer.byteLength(wbTxt) < 150000 && wbR.headers.get('content-encoding') === 'gzip',
-    JSON.stringify({ n: wb.people?.length, more: wb.more, bytes: Buffer.byteLength(wbTxt), first: wb.people?.[0] }));
+  const PORTFOLIOS = ['finance', 'economy', 'home', 'defence', 'justice', 'education', 'welfare', 'technology'];
+  // key: the building (a ministry's portfolio, else a slot 0..65535 the map folds onto its buildings), null elsewhere
+  const keyOk = p => (p[1] === 'ministry' ? PORTFOLIOS.includes(p[3]) : PTYPES.includes(p[1]) ? Number.isInteger(p[3]) && p[3] >= 0 && p[3] < 65536 : p[3] === null);
+  check('whereabouts: each person is [id, where, act, key] with a known place and the key of their building, under 150 KB, gzipped', wbR.status === 200 && wb.city === city0 && typeof wb.at === 'number' && typeof wb.night === 'boolean' && Array.isArray(wb.people)
+    && wb.people.every(p => /^[a-z0-9-]{1,40}$/.test(p[0]) && WHERE_OK.has(p[1]) && (p[2] === null || typeof p[2] === 'string') && keyOk(p)) && Buffer.byteLength(wbTxt) < 150000 && wbR.headers.get('content-encoding') === 'gzip',
+    JSON.stringify({ n: wb.people?.length, more: wb.more, bytes: Buffer.byteLength(wbTxt), first: wb.people?.[0], bad: wb.people?.find(p => !keyOk(p)) }));
   // people are listed in the city where they are now (a minister from another city sits in the capital), so the
   // cities together hold every citizen exactly once
   const allCities = (full.cities || []).map(c => c.id), everyone = (await get('/api/citizens?lite=1&size=1')).total;
@@ -458,6 +462,47 @@ try {
   check('whereabouts: all cities together list every citizen exactly once (each where they are now), all at the same instant', wbAt.size === 1 && seenWb.size + wbMore === everyone && [...seenWb.values()].every(n => n === 1), JSON.stringify({ at: [...wbAt], listed: seenWb.size, more: wbMore, everyone, twice: [...seenWb].filter(([, n]) => n > 1).slice(0, 3) }));
   const wb2 = await get(`/api/whereabouts?city=${city0}`);
   check('whereabouts: cached 30 s per city', wb2.at === wb.at && wb2.people.length === wb.people.length);
+  // --- one place for everyone: every building's interior holds exactly the people the whereabouts puts there, read
+  // from the same snapshot (the map's card count = the interior's count), for every city, type and building key
+  const placeAudit = async () => {
+    const bad = [], snaps = {}; let ats = new Set(), places = 0;
+    for (const c of allCities) { const v = await get(`/api/whereabouts?city=${c}`); snaps[c] = v; ats.add(v.at); }
+    const wbAt0 = [...ats][0];
+    const ids = l => l.map(p => p[0]).sort().join();
+    for (const c of allCities) {
+      const rows = snaps[c].people; let inside = 0;
+      for (const t of PTYPES) {
+        const here = rows.filter(p => p[1] === t);
+        // the whole type, then each building: ministries by portfolio, other types folded onto 1, 2 and 3 buildings
+        const asks = [[null, here]];
+        if (t === 'ministry') for (const pf of PORTFOLIOS) asks.push([`key=${pf}`, here.filter(p => p[3] === pf)]);
+        else for (const m of [2, 3]) for (let i = 0; i < m; i++) asks.push([`key=${i}&of=${m}`, here.filter(p => p[3] % m === i)]);
+        const parts = {};
+        for (const [q, want] of asks) {
+          const v = await get(`/api/place/${t}?city=${c}${q ? `&${q}` : ''}`); places++; ats.add(v.at);
+          const got = v.occupants.map(o => o.id);
+          const same = v.count === want.length && v.count === v.occupants.length + v.more && got.every(id => want.some(p => p[0] === id))
+            && (v.count > 60 || ids(got.map(id => [id])) === ids(want));
+          if (!same) bad.push({ c, t, q, count: v.count, want: want.length, shown: got.length, more: v.more });
+          if (q && q.includes('of=')) parts[q.split('of=')[1]] = (parts[q.split('of=')[1]] || 0) + v.count;
+          if (q?.startsWith('key=') && t === 'ministry') parts.m = (parts.m || 0) + v.count;
+        }
+        // the buildings of a type add up to the type: nobody in two buildings, nobody left out
+        for (const [k, n] of Object.entries(parts)) if (n !== here.length) bad.push({ c, t, split: k, sum: n, want: here.length });
+        inside += here.length;
+      }
+      const elsewhere = rows.filter(p => !PTYPES.includes(p[1])).length;
+      if (inside + elsewhere !== rows.length) bad.push({ c, inside, elsewhere, rows: rows.length });
+    }
+    return { bad, ats, wbAt0, places };
+  };
+  let pa = await placeAudit();
+  if (pa.ats.size > 1) pa = await placeAudit(); // the 30 s snapshot rolled over in the middle: once more, all inside one
+  check('one place for everyone: in all 5 cities, for every type and building key, the interior holds exactly the whereabouts\' people (same snapshot), the buildings of a type add up to it, and buildings + home + outside = the city',
+    pa.bad.length === 0 && pa.ats.size === 1 && pa.places > 5 * PTYPES.length * 5, JSON.stringify({ places: pa.places, snapshots: pa.ats.size, bad: pa.bad.slice(0, 5) }));
+  const kBad = await Promise.all(['key=3&of=3', 'key=-1&of=2', 'key=1&of=65', 'key=x', 'key=1', 'of=2&key=01x'].map(q => fetch(`${BASE}/api/place/library?city=${city0}&${q}`).then(r => r.status)));
+  const kMin = await fetch(`${BASE}/api/place/ministry?key=Finance`);
+  check('place: a building key outside 0 <= i < of <= 64 (or a malformed portfolio) is 400', kBad.every(s => s === 400) && kMin.status === 400, JSON.stringify([...kBad, kMin.status]));
   const wbBurst = []; for (let i = 0; i < 31; i++) wbBurst.push(await fetch(`${BASE}/api/whereabouts?city=${city0}`, { headers: { 'x-forwarded-for': '203.0.113.90' } }));
   const wbLast = wbBurst.at(-1), wbLastBody = await wbLast.json();
   check('whereabouts: 30 reads a minute per IP, the 31st is 429 with retryAfter', wbBurst.slice(0, 30).every(r => r.status === 200) && wbLast.status === 429 && wbLastBody.retryAfter > 0 && Number(wbLast.headers.get('retry-after')) > 0, String(wbLast.status));

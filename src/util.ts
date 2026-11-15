@@ -101,19 +101,25 @@ export function alignClock(c: { foundedAt: number; day: number; hourShift?: numb
 // The People box's whereabouts(S, city) gives { at, hour, night, people: [[id, where, act], ...] } for one city. This
 // cleans it for the public: ids must look like citizen ids, `where` must be a known place (anything else reads as
 // 'unknown'), `act` goes through the caller's text cleaner (length cap, border check), and the answer stays under
-// maxBytes: first the acts go, then the tail of the list (counted in `more`).
-export function cleanWhereabouts(raw: any, opts: { city: string; places: Set<string>; text: (v: unknown, max: number) => string; maxBytes?: number }) {
-  const maxBytes = opts.maxBytes ?? 150000;
-  const people: [string, string, string | null][] = [];
+// maxBytes: first the acts go, then the tail of the list (counted in `more`). With opts.keyOf each row gets a fourth
+// element, the key of the building the person is in (see server.mjs, "one place for everyone"): null when not in one.
+export function cleanWhereabouts(raw: any, opts: { city: string; places: Set<string>; text: (v: unknown, max: number) => string; maxBytes?: number; keyOf?: (id: string, where: string) => string | number | null }) {
+  const people: any[][] = [];
   for (const p of Array.isArray(raw?.people) ? raw.people : []) {
     if (!Array.isArray(p) || typeof p[0] !== 'string' || !/^[a-z0-9-]{1,40}$/.test(p[0])) continue;
     const where = typeof p[1] === 'string' && opts.places.has(p[1]) ? p[1] : 'unknown';
     const act = p[2] == null ? null : opts.text(p[2], 40) || null;
-    people.push([p[0], where, act]);
+    people.push(opts.keyOf ? [p[0], where, act, opts.keyOf(p[0], where) ?? null] : [p[0], where, act]);
   }
   const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
   const out: any = { city: opts.city, at: num(raw?.at) ?? Date.now(), hour: num(raw?.hour), night: raw?.night === true, people, more: 0 };
-  if (JSON.stringify(out).length > maxBytes) for (const p of out.people) p[2] = null;
+  return capWhereabouts(out, opts.maxBytes ?? 150000);
+}
+// a copy of a cleaned answer under maxBytes: first the acts go, then the tail of the list (counted in `more`); the
+// answer passed in is left whole (the server keeps the whole list to count each building)
+export function capWhereabouts(view: any, maxBytes = 150000) {
+  if (!Number.isFinite(maxBytes) || JSON.stringify(view).length <= maxBytes) return view;
+  const out = { ...view, people: view.people.map((p: any[]) => { const q = p.slice(); q[2] = null; return q; }) };
   while (out.people.length && JSON.stringify(out).length > maxBytes) { const cut = Math.max(1, Math.ceil(out.people.length * 0.05)); out.people.length -= cut; out.more += cut; }
   return out;
 }

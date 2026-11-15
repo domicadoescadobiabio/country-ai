@@ -6,11 +6,11 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
-import { loadDotEnv, clamp, uid, slug, cleanText, pick, citizenById, buildInfo, validTz, alignClock, tzInfo, tzMidnight, tzParts, cleanWhereabouts } from './src/util.ts';
+import { loadDotEnv, clamp, uid, slug, cleanText, pick, citizenById, buildInfo, validTz, alignClock, tzInfo, tzMidnight, tzParts, cleanWhereabouts, capWhereabouts } from './src/util.ts';
 import * as dailyMod from './src/daily.ts'; // whereabouts(S, city) when the People box has it (checked at call time)
 import { makeLLM } from './src/llm.ts';
 import { NATION, CURRENCY, CONSTITUTION } from './src/constitution.mjs';
-import { ROLES, ROLE_ORDER, HANDBOOK } from './src/roles.mjs';
+import { ROLES, ROLE_ORDER, HANDBOOK, PORTFOLIO_FIELDS } from './src/roles.mjs';
 import { FOUNDERS, makeCitizen, randomTraits } from './src/citizens.mjs';
 import { growPopulation } from './src/population.mjs';
 import { CITIES, assignCity } from './src/cities.ts';
@@ -516,16 +516,75 @@ function placeOccupant(o) {
     // gifted: true, or a badge text such as "gifted in biology" (the Government box writes the text)
     since: o.since != null && Number.isFinite(Number(o.since)) ? Number(o.since) : null, field: o.field ? placeText(o.field, 40) : null, gifted: o.gifted === true || (typeof o.gifted === 'string' && o.gifted.trim() !== ''), mood };
 }
-function buildPlace(type, city, portfolio) {
+// ---------------------------------------------------------------- one place for everyone (owner, 15 Nov)
+// CONTRACT: the map's building cards and the building interiors count from ONE list, so for every building the
+// number on its card is the number inside.
+//  - whereaboutsSnapshot(): every citizen of every city at one instant (src/daily.ts whereabouts: citizens, officials,
+//    duty guards, civil staff, technicians, prisoners), kept 30 s. Each person is in exactly one row,
+//    [id, where, act, key], in the city where they are now.
+//  - key: the building the person is in when `where` is a building type (PLACE_TYPES), else null.
+//      ministry: the portfolio (finance, economy, home, defence, justice, education, welfare, technology): the
+//        Minister's own (cabinet.portfolios), else the unit of their duty post, else a fixed draw from the id.
+//      every other type: a slot, a whole number 0..65535 fixed by (type, id). The map folds it onto its own buildings
+//        of that type in that city: building index = slot % m, m = how many buildings of that type the city has on
+//        the map, indexes in the map generator's order (data.cities[city].byType[type]).
+//  - GET /api/place/<type>?city=<c>&key=<k>[&of=<m>]: only the people of that building, from the same snapshot.
+//      ministry: key=<portfolio> (portfolio=<p> still works); every other type: key=<i>&of=<m>, 0 <= i < m <= 64
+//      (of defaults to 1), the people whose slot % m === i. Without key: everyone of that type in the city (every
+//      city without city=). count = everyone inside (never cut silently); occupants = the first 60 (staff on duty
+//      first); more = count - occupants shown; at = the snapshot's instant (the same `at` as /api/whereabouts).
+//  - The boxes' placeView() still gives the board and each person's role, activity and detail; someone a box lists
+//    who is not in this building in the snapshot (a defendant held in jail, a citizen waiting for the local brain)
+//    is not an occupant here.
+const PORTFOLIO_IDS = Object.keys(PORTFOLIO_FIELDS);
+const PLACE_SLOTS = 65536, PLACE_OF_MAX = 64;
+const fnv32 = s => { let h = 2166136261; for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619); return h >>> 0; };
+// the key of the building a person is in (see the contract); built once per snapshot
+function placeKeys(night) {
+  const shift = night ? 'night' : 'day';
+  const minister = new Map();
+  for (const [p, id] of Object.entries(S.cabinet?.portfolios || {})) if (id && PORTFOLIO_IDS.includes(p)) minister.set(id, p);
+  const unit = new Map(); // a duty post at a ministry: this shift's post wins
+  for (const p of Object.values(S.command?.duty?.posts || {})) if (p?.type === 'ministry' && PORTFOLIO_IDS.includes(p.unit) && (p.shift === shift || !unit.has(p.id))) unit.set(p.id, p.unit);
+  return (id, where) => {
+    if (!Object.hasOwn(PLACE_TYPES, where)) return null;
+    if (where === 'ministry') return minister.get(id) || unit.get(id) || PORTFOLIO_IDS[fnv32(`ministry|${id}`) % PORTFOLIO_IDS.length];
+    return fnv32(`${where}|${id}`) % PLACE_SLOTS;
+  };
+}
+// does a snapshot row [id, where, act, key] sit in the building asked for
+const inBuilding = (p, type, sel) => p[1] === type && (type === 'ministry' ? !sel.portfolio || p[3] === sel.portfolio : sel.slot == null || (Number.isInteger(p[3]) && p[3] % sel.of === sel.slot));
+// a person the boxes' view does not describe: what the snapshot says
+function plainOccupant(a, p) {
+  const occ = a ? occupationOf(a) : 'citizen';
+  return { id: p[0], name: placeText(a?.name, 40) || p[0], role: a?.office ? placeText(ROLES[a.office]?.title || 'Official', 40) : occ === 'student' ? 'Student' : p[2] === 'on duty' ? 'Staff' : 'Citizen',
+    activity: p[2] || '', detail: '', since: null, field: null, gifted: false, mood: a ? moodLite(a) : null };
+}
+function buildPlace(type, city, sel) {
+  const snap = whereaboutsSnapshot();
   let v = null;
   try {
-    v = placeViews[type] ? placeViews[type](S, city, { portfolio }) : governmentPlace(S, type, city, { portfolio }) ?? peoplePlace(S, type, city);
+    v = placeViews[type] ? placeViews[type](S, city, { portfolio: sel.portfolio }) : governmentPlace(S, type, city, { portfolio: sel.portfolio }) ?? peoplePlace(S, type, city);
     v ||= placeFallback();
   } catch (e) { logActivity('state', `place ${type}: ${String(e?.message || e).slice(0, 80)}`); v = placeFallback(); }
-  const all = (Array.isArray(v.occupants) ? v.occupants : []).map(placeOccupant).filter(Boolean);
-  const out = { type, city, title: placeText(v.title, 80) || PLACE_TYPES[type] + (city ? ` · ${CITIES.find(c => c.id === city)?.name || city}` : ''), updatedAt: Date.now(),
-    occupants: all.slice(0, PLACE_MAX_OCC), board: placeBoard(v.board && typeof v.board === 'object' ? v.board : {}), more: Math.max(0, Number(v.more) || 0) + Math.max(0, all.length - PLACE_MAX_OCC) };
-  // under 40 KB: fewer people first (counted in `more`), then the board itself
+  // the boxes' rows describe people (role, activity, detail); who is inside comes from the snapshot alone
+  const described = new Map();
+  (Array.isArray(v.occupants) ? v.occupants : []).forEach((o, i) => { const r = placeOccupant(o); if (r && !described.has(r.id)) described.set(r.id, { r, i }); });
+  const rows = [];
+  for (const c of city ? [city] : CITIES.map(x => x.id)) for (const p of snap.full.get(c)?.people || []) {
+    if (!inBuilding(p, type, sel)) continue;
+    const d = described.get(p[0]);
+    const r = d ? { ...d.r, activity: d.r.activity || p[2] || '' } : plainOccupant(citizenById(S, p[0]), p);
+    rows.push({ r, duty: p[2] === 'on duty' ? 1 : 0, i: d ? d.i : Infinity });
+  }
+  rows.sort((x, y) => y.duty - x.duty || x.i - y.i || x.r.name.localeCompare(y.r.name));
+  const board = placeBoard(v.board && typeof v.board === 'object' ? v.board : {});
+  if (type === 'data_center') board.onDuty = rows.filter(x => x.duty).length; // the technicians inside now
+  const key = type === 'ministry' ? sel.portfolio : sel.slot;
+  const out = { type, city, key: key ?? null, of: type !== 'ministry' && sel.slot != null ? sel.of : null,
+    title: placeText(v.title, 80) || PLACE_TYPES[type] + (city ? ` · ${CITIES.find(c => c.id === city)?.name || city}` : ''), updatedAt: Date.now(), at: snap.at,
+    count: rows.length, occupants: rows.slice(0, PLACE_MAX_OCC).map(x => x.r), board, more: Math.max(0, rows.length - PLACE_MAX_OCC) };
+  // under 40 KB: fewer people shown first (counted in `more`; count stays), then the board itself
   while (JSON.stringify(out).length > PLACE_MAX_BYTES && out.occupants.length) { out.occupants.pop(); out.more++; }
   if (JSON.stringify(out).length > PLACE_MAX_BYTES) out.board = { note: 'Too much to show.' };
   return out;
@@ -543,14 +602,27 @@ function handlePlace(req, res, type) {
   const u = new URL(req.url, 'http://x');
   const cq = u.searchParams.get('city'); const city = cq == null || cq === '' ? null : CITIES.some(c => c.id === cq) ? cq : undefined;
   if (city === undefined) return send(res, 400, { error: 'unknown city' });
-  const pq = u.searchParams.get('portfolio'); const portfolio = type === 'ministry' && pq ? (/^[a-z][a-z_]{0,23}$/.test(pq) ? pq : undefined) : null;
-  if (portfolio === undefined) return send(res, 400, { error: 'portfolio: lowercase letters and _ only' });
-  const key = `${type}|${city || ''}|${portfolio || ''}`;
-  const hit = placeCache.get(key);
-  if (hit && Date.now() - hit.at < PLACE_CACHE_MS) return send(res, 200, hit.view);
-  const view = buildPlace(type, city, portfolio);
-  // at most 500 cached views (33 types x 6 cities is ~200): odd portfolio names cannot grow the cache
-  if (placeCache.size < 500) placeCache.set(key, { at: Date.now(), view });
+  // which building: a ministry by its portfolio (key= or the older portfolio=), any other type by key=<i>&of=<m>
+  const sel = { portfolio: null, slot: null, of: 1 };
+  const kq = type === 'ministry' ? (u.searchParams.get('key') || u.searchParams.get('portfolio')) : u.searchParams.get('key');
+  if (kq) {
+    if (type === 'ministry') {
+      if (!/^[a-z][a-z_]{0,23}$/.test(kq)) return send(res, 400, { error: 'portfolio: lowercase letters and _ only' });
+      sel.portfolio = kq;
+    } else {
+      const oq = u.searchParams.get('of'); const i = /^\d{1,2}$/.test(kq) ? Number(kq) : NaN, m = oq == null ? 1 : /^\d{1,2}$/.test(oq) ? Number(oq) : NaN;
+      if (!(m >= 1 && m <= PLACE_OF_MAX && i >= 0 && i < m)) return send(res, 400, { error: `key=<i>&of=<m>: 0 <= i < m <= ${PLACE_OF_MAX}` });
+      sel.slot = i; sel.of = m;
+    }
+  }
+  const snapAt = whereaboutsSnapshot().at;
+  const ck = `${type}|${city || ''}|${sel.portfolio || ''}|${sel.slot ?? ''}|${sel.of}`;
+  const hit = placeCache.get(ck);
+  // kept 10 s, and never past the snapshot it was counted from (the map's cards read the same snapshot)
+  if (hit && hit.snap === snapAt && Date.now() - hit.at < PLACE_CACHE_MS) return send(res, 200, hit.view);
+  const view = buildPlace(type, city, sel);
+  // at most 500 cached views: odd keys cannot grow the cache
+  if (placeCache.size < 500 || placeCache.has(ck)) placeCache.set(ck, { at: Date.now(), snap: snapAt, view });
   return send(res, 200, view);
 }
 // the robot card on the map: what a citizen is doing now (src/daily.ts nowDoing), its texts cleaned like a building's
@@ -585,21 +657,26 @@ function handleWhereabouts(req, res) {
   if (!city || !CITIES.some(c => c.id === city)) return send(res, 400, { error: 'city: one of ' + CITIES.map(c => c.id).join(', ') });
   const wait = whereaboutsLimited(req);
   if (wait) { res.setHeader('retry-after', String(wait)); return send(res, 429, { error: `slow down: ${WHEREABOUTS_PER_MIN} reads a minute`, retryAfter: wait }); }
-  return send(res, 200, whereaboutsSnapshot().get(city));
+  return send(res, 200, whereaboutsSnapshot().views.get(city));
 }
 // Every city at the same instant, kept 30 s: an official sits in the capital by day and sleeps at home at night, so
 // cities worked out at different moments could show one person in two cities, or in none (a few ms per city).
+// full: every row with its building key (the interiors count from it); views: the same, under 150 KB per city.
 function whereaboutsSnapshot() {
   const hit = whereCache.get('all');
-  if (hit && Date.now() - hit.at < 30000) return hit.views;
-  const now = Date.now(), views = new Map();
+  if (hit && Date.now() - hit.at < 30000) return hit;
+  const now = Date.now(), views = new Map(), full = new Map();
+  let keyOf = null;
   for (const { id: city } of CITIES) {
     let raw = null;
     try { raw = whereaboutsRaw(city, now); } catch (e) { logActivity('state', `whereabouts ${city}: ${String(e?.message || e).slice(0, 80)}`); raw = { people: [] }; }
-    views.set(city, cleanWhereabouts(raw, { city, places: WHERE_PLACES, text: placeText, maxBytes: 150000 }));
+    keyOf ||= placeKeys(raw?.night === true);
+    const whole = cleanWhereabouts(raw, { city, places: WHERE_PLACES, text: placeText, maxBytes: Infinity, keyOf });
+    full.set(city, whole); views.set(city, capWhereabouts(whole, 150000));
   }
-  whereCache.set('all', { at: now, views });
-  return views;
+  const snap = { at: now, views, full };
+  whereCache.set('all', snap);
+  return snap;
 }
 // GET /api/citizens?lite=1 for the map: the same page of a city is asked by every visitor, so it is kept 60 s (only
 // plain listings: no search text, no office filter; at most 300 pages kept)
