@@ -96,6 +96,13 @@ const JOB_FIELDS = {
   historian: ['history'], painter: ['art'], singer: ['music'], athlete: ['sport'], farmer: ['agriculture'], soldier: ['security', 'sport'],
   guard: ['security'], police: ['law', 'security'], diplomat: ['civics', 'language'], philosopher: ['philosophy'], chemist: ['chemistry'],
   manager: ['management'], trader: ['trade'], mathematician: ['math'], programmer: ['programming'], coach: ['sport', 'psychology'],
+  // the job catalog (src/jobs.ts, owner 16 Nov): the roster's roles and the 20 new jobs
+  'news anchor': ['language', 'civics'], 'news editor': ['language', 'history'], 'street vendor': ['cooking', 'trade'], chef: ['cooking'], barista: ['cooking'],
+  'bank teller': ['accounting', 'economics'], firefighter: ['security', 'sport'], 'postal worker': ['logistics'], 'train driver': ['engineering', 'logistics'],
+  mechanic: ['engineering', 'physics'], pharmacist: ['chemistry', 'medicine'], 'hotel receptionist': ['language', 'management'], barber: ['art'],
+  'construction worker': ['engineering'], technician: ['programming', 'engineering'], 'office clerk': ['accounting', 'management'], 'factory worker': ['engineering', 'logistics'],
+  'shop assistant': ['trade', 'management'], cashier: ['trade', 'accounting'], coordinator: ['psychology', 'civics'], instructor: ['law', 'civics'], 'exam clerk': ['math', 'accounting'],
+  'night stocker': ['logistics'], lecturer: ['language', 'history'],
 };
 export function jobFields(a) {
   const bio = String(a?.bio || '').toLowerCase();
