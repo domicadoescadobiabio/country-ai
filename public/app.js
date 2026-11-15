@@ -280,7 +280,7 @@ const PANELS = {
     const g = govCard(); if (g) out.push(g);
     for (const r of st.config.roles) {
       out.push(h('div', { class: 'card' }, h('h4', { text: `${r.title} · ${r.seats} seat${r.seats > 1 ? 's' : ''}` }),
-        h('p', { text: r.charter }), h('p', { text: `Entrance exam: ${r.questions} scenarios drawn from a handbook of ${r.bank}, pass mark ${r.passMark}.` })));
+        h('p', { text: r.charter }), h('p', { text: examLine(r) }), firstTry(r.id)));
     }
     return out;
   },
@@ -596,6 +596,21 @@ function govCard() {
   const plans = (st.feed.palace || []).filter(m => m.kind === 'plan').slice(-3).reverse();
   if (plans.length) card.append(h('h4', { class: 'sub', text: 'Leaders\' work plans (#palace)' }), plans.map(m => h('div', { class: 'list-row' }, h('small', { text: `${cit(m.agentId)?.name || m.agentId} · day ${m.day}` }), h('div', { class: 'q', text: m.text }))));
   return card;
+}
+// The entrance exam mixes rule, field, real-case and handbook questions; its size and pass mark come per office
+// from config.roles (examSize when the server sends it, else questions).
+const num = v => (Number.isFinite(Number(v)) && v !== null && v !== '' ? Number(v) : null);
+function examLine(r) {
+  const q = num(r.examSize) ?? num(r.questions), p = num(r.passMark);
+  if (!q) return 'Entrance exam: rules, field, real cases and handbook questions.';
+  return `Entrance exam: ${q} questions (rules, field, real cases, handbook), pass mark ${p ?? '-'} of ${q}.`;
+}
+// first-attempt pass rate for an office, when academy.stats.byRole has it (sessions, passed, first, firstPassed)
+function firstTry(roleId) {
+  const s = st.academy?.stats?.byRole?.[roleId]; if (!s || typeof s !== 'object') return null;
+  const first = num(s.first) || 0, ok = num(s.firstPassed) || 0, all = num(s.sessions) || 0, passed = num(s.passed) || 0;
+  if (!first && !all) return null;
+  return h('p', { class: 'lesson', text: `First attempt: ${ok}/${first} passed${first ? ` (${pct(ok / first)})` : ''} · all exams: ${passed}/${all}${all ? ` (${pct(passed / all)})` : ''}` });
 }
 // a citizen's school record: undefined = not asked yet (asks now), null = loading, false = none
 function schoolFor(id) {
