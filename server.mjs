@@ -10,7 +10,7 @@ import { loadDotEnv, clamp, uid, slug, cleanText, pick, citizenById, buildInfo, 
 import * as dailyMod from './src/daily.ts'; // whereabouts(S, city) when the People box has it (checked at call time)
 import { makeLLM } from './src/llm.ts';
 import { NATION, CURRENCY, CONSTITUTION } from './src/constitution.mjs';
-import { ROLES, ROLE_ORDER } from './src/roles.mjs';
+import { ROLES, ROLE_ORDER, HANDBOOK } from './src/roles.mjs';
 import { FOUNDERS, makeCitizen, randomTraits } from './src/citizens.mjs';
 import { growPopulation } from './src/population.mjs';
 import { CITIES, assignCity } from './src/cities.ts';
@@ -383,8 +383,20 @@ function academyView() {
     // rule questions in entrance exams (src/academy.ts): how many were asked and how many answered right
     rules: S.academy.rules || { asked: 0, right: 0 },
     current: rooms[0] ? view(rooms[0]) : null, rooms: rooms.map(view),
+    // pass rates (src/academy.ts): per office (exams, passed, first attempts and first-attempt passes) and per kind of
+    // question (asked, right); offices must be real offices, kinds short lowercase words, every value a whole number
+    stats: academyStats(S.academy.stats),
   };
 }
+function academyStats(st) {
+  const n = v => (Number.isInteger(v) && v >= 0 ? v : 0);
+  const byRole = {}, byKind = {};
+  for (const [r, x] of Object.entries(st?.byRole || {})) if (Object.hasOwn(ROLES, r) && x && typeof x === 'object') byRole[r] = { sessions: n(x.sessions), passed: n(x.passed), first: n(x.first), firstPassed: n(x.firstPassed) };
+  for (const [k, x] of Object.entries(st?.byKind || {}).slice(0, 30)) if (/^[a-z][a-z0-9_]{0,23}$/.test(k) && x && typeof x === 'object') byKind[k] = { asked: n(x.asked), right: n(x.right) };
+  return { byRole, byKind };
+}
+// questions an exam for an office can draw: its own exam bank and the office handbook (src/roles.mjs)
+const bankSize = r => (ROLES[r].exam?.length || 0) + (Array.isArray(HANDBOOK?.[r]) ? HANDBOOK[r].length : 0);
 // the share of lessons with a teacher right now, as the school paces it (null if the school has not paced yet)
 const schoolPaceShare = () => { try { const v = Number(teacherPace()?.share); return Number.isFinite(v) ? Math.round(v * 1000) / 1000 : null; } catch { return null; } };
 // the school's own teacher pacing (src/school.ts schoolState(S).teacher, with the live pace from teacherPace() for
@@ -610,7 +622,7 @@ function fullState() {
       stateParts: [...STATE_PARTS].filter(k => Object.hasOwn(compact, k)),
       nation: NATION, currency: CURRENCY, ca: CFG.ca, engine: llm.enabled ? 'llm' : 'offline', engineLabel: llm.label, tickSec: S.tickSec, dayMs: CFG.dayMs, foundedAt: S.foundedAt,
       allowGuest: CFG.allowGuest, allowImmigration: CFG.allowImmigration, hostedBrains: vaultReady(), channels: CHANNELS,
-      roles: ROLE_ORDER.map(r => ({ id: r, title: ROLES[r].title, seats: ROLES[r].seats, channel: ROLES[r].channel, passMark: ROLES[r].passMark, questions: Math.min(5, ROLES[r].exam.length), bank: ROLES[r].exam.length, req: requirement(r), term: TERMS[r] || null, charter: ROLES[r].charter, oath: ROLES[r].oath })),
+      roles: ROLE_ORDER.map(r => ({ id: r, title: ROLES[r].title, seats: ROLES[r].seats, channel: ROLES[r].channel, passMark: ROLES[r].passMark, questions: ROLES[r].examSize ?? Math.min(5, ROLES[r].exam.length), tier: ROLES[r].examTier || null, bank: bankSize(r), req: requirement(r), term: TERMS[r] || null, charter: ROLES[r].charter, oath: ROLES[r].oath })),
       constitution: CONSTITUTION, constitutionVersion: S.constitutionVersion || 1, amendments: S.amendments || [], appointed: ROLE_ORDER.filter(r => ROLES[r].appointed),
     },
     // 10,000 citizens do not fit in one response: the notable ones here, everyone through /api/citizens

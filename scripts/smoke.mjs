@@ -186,9 +186,18 @@ try {
   const pres = s1.citizens.find(a => a.id === s1.seats.president[0]);
   const pt = pres?.training.find(t => t.roleId === 'president' && t.passed);
   check('president passed the exam (>= pass mark)', pt && pt.score >= s1.config.roles[0].passMark, JSON.stringify(pt && { score: pt.score }));
-  check('exam answers are recorded', pt && pt.answers.length === 5 && pt.answers.every(a => a.q && a.chosen));
+  // the exam is as long as the office's tier says (8-12 questions, the President 12)
+  const presRole = s1.config.roles.find(r => r.id === 'president');
+  check('exam answers are recorded (one per question of the exam)', pt && pt.answers.length === pt.total && pt.total === presRole?.questions && pt.answers.every(a => a.q && a.chosen), JSON.stringify(pt && { answers: pt.answers.length, total: pt.total, questions: presRole?.questions }));
+  check('config.roles says each office\'s exam length (8-12), pass mark and bank (own questions + handbook)', s1.config.roles.every(r => Number.isInteger(r.questions) && r.questions >= 8 && r.questions <= 12 && Number.isInteger(r.passMark) && r.passMark <= r.questions && Number.isInteger(r.bank) && r.bank > 0)
+    && presRole?.questions === 12, JSON.stringify(s1.config.roles.map(r => [r.id, r.questions, r.passMark, r.bank, r.tier])));
   const ar = s1.academy?.rules;
   check('academy publishes rule questions asked and answered right', ar && Number.isInteger(ar.asked) && Number.isInteger(ar.right) && ar.right <= ar.asked, JSON.stringify(ar));
+  const ast = s1.academy?.stats, rs = ast?.byRole?.president;
+  check('academy publishes pass rates per office (sessions, passed, first, firstPassed) and per kind of question (asked, right)',
+    rs && rs.passed >= 1 && rs.passed <= rs.sessions && rs.firstPassed <= rs.first && rs.first <= rs.sessions
+    && Object.keys(ast.byRole).every(r => s1.config.roles.some(x => x.id === r))
+    && Object.keys(ast.byKind).length > 0 && Object.values(ast.byKind).every(k => Number.isInteger(k.asked) && Number.isInteger(k.right) && k.right <= k.asked), JSON.stringify(ast));
 
   const s2 = await until(s => s.orders?.length >= 2, 30000);
   check('president issued executive orders', s2.orders.length >= 2);
