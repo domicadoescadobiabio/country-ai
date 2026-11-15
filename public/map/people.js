@@ -52,13 +52,20 @@ export class People {
     else { const b = this.agents.homeFor(p.id, p.city); p.h = b ? { b, x: b.x, z: b.z, address: null } : null; }
     return p.h;
   }
-  // the building a 'where' means: home for home/asleep, else the nearest building of that type to their home in
-  // the city where they are (the same one every time, so nobody jumps)
+  // the building a 'where' means: home for home/asleep; else the building the server's key names (contract in
+  // server.mjs): a ministry by its portfolio, any other type pool[key % pool.length] with pool = the buildings of that
+  // type in the city where they are, in the generator's order (the same in every browser, and what /api/place folds
+  // with key=<i>&of=<m>). Only without a key: the nearest building of that type to their home.
   placeOf(p) {
     const h = this.homeOf(p); const w = p.where;
     if (!w || w === 'home' || w === 'asleep' || OUTSIDE.has(w)) return h ? h.b : null;
     const c = this.data.cities[p.at] || this.data.cities[p.city];
-    let pool = c?.byType?.[w] || [];
+    const own = c?.byType?.[w] || [];
+    // with a key the server has said which building; when the map has no such building in that city, the person is
+    // on no card (rather than on a wrong one): /api/place would not count them there either
+    if (w === 'ministry' && typeof p.key === 'string') return own.find(b => b.extra?.portfolio === p.key) || null;
+    if (Number.isInteger(p.key) && p.key >= 0) return own.length ? own[p.key % own.length] : null;
+    let pool = own;
     if (!pool.length) for (const cc of Object.values(this.data.cities)) if (cc.byType?.[w]?.length) { pool = cc.byType[w]; break; }
     if (!pool.length) return null;
     if (pool.length === 1 || !h || p.at !== p.city) return pool[hash(p.id) % pool.length];
@@ -74,11 +81,14 @@ export class People {
       let where = typeof row[1] === 'string' ? row[1] : 'home'; const act = typeof row[2] === 'string' ? row[2].slice(0, 40) : null;
       if (where === 'unknown') where = 'home'; // not known: counted at home (asleep now arrives as itself)
       const was = p.b;
+      // key (4th column): a portfolio for a ministry, a slot 0..65535 for any other building type, else null
+      const key = row[3]; p.key = typeof key === 'string' && /^[a-z][a-z_]{0,23}$/.test(key) ? key : Number.isInteger(key) && key >= 0 && key < 65536 ? key : null;
       p.where = where; p.act = act; p.at = city; p.seen = true; seen.add(p.id);
       p.b = this.placeOf(p);
       if (was && p.b !== was) { p.from = was; moved.push(p); }
     }
     this.real = true; this.at = Number(view?.at) || Date.now();
+    (this.cityAt ||= {})[city] = Number(view?.at) || 0; // the snapshot each city's counts come from
     return moved;
   }
   // nobody's whereabouts yet (or the endpoint failed): everyone at home by day, asleep at night (an estimate)

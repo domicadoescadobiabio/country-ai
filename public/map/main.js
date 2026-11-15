@@ -301,7 +301,12 @@ function peopleSection(b) {
     const c = { asleep: 0, home: 0, out: 0 }; for (const p of list) { const k = kindOf(p); if (k === 'asleep') c.asleep++; else if (k === 'home') c.home++; else c.out++; }
     box.append(h('h4', { text: `Residents: ${list.length.toLocaleString('en-US')} citizen${list.length === 1 ? '' : 's'}` }),
       h('p', { class: 'note', text: list.length ? `${c.asleep} asleep · ${c.home} at home · ${c.out} out${people.real ? '' : ' (estimate)'}. Homes cannot be entered.` : 'Nobody lives here in this republic yet.' }));
-  } else box.append(h('h4', { text: `Inside now: ${list.length.toLocaleString('en-US')}${people.real ? '' : ' (estimate)'}` }));
+  } else {
+    box.append(h('h4', { text: `Inside now: ${list.length.toLocaleString('en-US')}${people.real ? '' : ' (estimate)'}` }));
+    // the latest snapshot for this city (what the interior would show); the card redraws if it changed
+    const before = people.cityAt?.[b.city];
+    syncCity(b.city).then(() => { if (people.cityAt?.[b.city] !== before && st.selected === b && !st.agent && !$('#info').hidden && !inside) showBuilding(b); });
+  }
   if (!list.length) return box;
   let page = 0, q = '';
   const ul = h('ul', { class: 'people-list' }); const nav = h('div', { class: 'pager' });
@@ -359,6 +364,16 @@ async function loadPeople() {
   // no whereabouts at all (older server, or it failed): the counts are an estimate, and the streets keep the
   // previous sample of walkers so the city does not look empty
   return ok > 0;
+}
+// Bring one city's counts to the snapshot an interior (or a check) was read from: a card and the interior of the same
+// building must say the same number. At most once every 10 s per city, and never inside a 429 wait.
+const cityAsked = {};
+async function syncCity(city, at) {
+  if (!people || !data.cities[city]) return false;
+  if (at && people.cityAt?.[city] === at) return true;
+  if (Date.now() < whereWait || Date.now() - (cityAsked[city] || 0) < 10000) return false;
+  cityAsked[city] = Date.now();
+  try { const v = await whereabouts(city); if (!v) return false; const moved = people.apply(city, v); people.index(); syncRobots(moved); renderPeopleHud(); cityButtons(); return !at || v.at === at; } catch { return false; }
 }
 // robots for the people outside: the city in view and the nearest to the camera first, up to ROBOT_CAP robots in all
 function syncRobots(moved = []) {
@@ -434,7 +449,14 @@ const INSIDE = new Set(['parliament', 'palace', 'vp_office', 'ministry', 'const_
 const INSIDE_CH = { parliament: ['parliament', 'council'], palace: ['palace', 'cabinet'], vp_office: ['palace', 'cabinet'], ministry: ['cabinet', 'palace'], const_court: ['court'], court: ['court'], prison: ['police', 'court'], jail: ['police', 'court'],
   academy: ['academy'], police_academy: ['academy', 'police'], military_academy: ['academy', 'border'], police_hq: ['police'], police_station: ['police'], military_hq: ['border'], army_base: ['border'], border_post: ['border'],
   election_comm: ['election'], city_hall: ['cityhall'], data_center: ['life'] };
-const placeUrl = (type, b) => `/api/place/${encodeURIComponent(type)}?city=${encodeURIComponent(b.city || '')}${type === 'ministry' && b.extra?.portfolio ? `&portfolio=${encodeURIComponent(b.extra.portfolio)}` : ''}`;
+// which building of its type in its city (the server's key contract): a ministry by its portfolio, any other type
+// key=<index in the city's buildings of that type, generator order>&of=<how many> (the same pool as people.placeOf)
+function placeKey(b) {
+  if (b.type === 'ministry') return b.extra?.portfolio ? `&key=${encodeURIComponent(b.extra.portfolio)}` : '';
+  const pool = data.cities[b.city]?.byType?.[b.type] || []; const i = pool.indexOf(b);
+  return i >= 0 && pool.length <= 64 ? `&key=${i}&of=${pool.length}` : ''; // (more than 64 of a type: the whole city)
+}
+const placeUrl = (type, b) => `/api/place/${encodeURIComponent(type)}?city=${encodeURIComponent(b.city || '')}${placeKey(b)}`;
 // the server's view, or (while that building's view is not written yet, or the server is older) one built here
 // from /api/state, like details() does
 async function placeFor(type, b) {
@@ -442,8 +464,10 @@ async function placeFor(type, b) {
     const r = await fetch(placeUrl(type, b), { cache: 'no-store' });
     if (r.ok) {
       const p = await r.json();
-      const empty = !(p.occupants || []).length && !p.more && Object.keys(p.board || {}).every(k => k === 'note');
-      if (!empty) return p;
+      // the building's card counts from the same snapshot as this interior
+      if (p && Number.isFinite(p.count) && p.at) syncCity(b.city, p.at);
+      const empty = !(p.occupants || []).length && !p.more && !p.count && Object.keys(p.board || {}).every(k => k === 'note');
+      if (!empty || Number.isFinite(p.count)) return p; // a counted building is the truth even when nobody is in it
     }
   } catch { /* offline or no endpoint: build it here */ }
   await refreshParts(type);
@@ -542,7 +566,7 @@ async function enterBuilding(b, push = true) {
   if (entering || inside || !INSIDE.has(b.type)) return; entering = true;
   const box = $('#enter'); $('#enterTitle').textContent = `Entering ${b.name}`; box.hidden = false; enterStep(8, 'Opening the doors…');
   try {
-    insideMod ||= await import('./interior.js?v=4'); enterStep(40, 'Reading who is inside…');
+    insideMod ||= await import('./interior.js?v=6'); enterStep(40, 'Reading who is inside…');
     const place = await placeFor(b.type, b); enterStep(75, 'Furnishing the room…');
     await new Promise(r => setTimeout(r, 30));
     renderer.setAnimationLoop(null); controls.enabled = false; // the map pauses where it is (and ignores drags)
@@ -771,6 +795,45 @@ function layoutInfo() {
   if (H - top - bottom < 220) top = 64;
   root.setProperty('--info-top', `${Math.round(top)}px`); root.setProperty('--info-bottom', `${Math.round(bottom)}px`);
   if (!info.hidden) info.scrollTop = Math.min(info.scrollTop, info.scrollHeight);
+}
+// /map.html?selftest=places[&city=neura][&from=0&n=40][&gap=1100]: for every building with an inside (not homes, not
+// the children's schools), are the people on its card the people /api/place counts for that building? Each answer is
+// compared with the city's whereabouts of the SAME snapshot (`at`): when they differ the whereabouts are read again.
+// One building view every `gap` ms (the server allows 60 a minute), whereabouts at most when the snapshot moved.
+async function placesTest() {
+  const qs = new URLSearchParams(location.search);
+  const out = h('div', { class: 'selftest', text: 'places test: loading the citizens…' }); document.body.append(out);
+  const t0 = performance.now(); while (!people?.counts && performance.now() - t0 < 20000) await new Promise(r => setTimeout(r, 300));
+  if (!people?.counts) { out.textContent = 'places test: the citizens did not load'; return; }
+  const gap = Math.min(5000, Math.max(0, Number(qs.get('gap') ?? 1100) || 0)), from = Math.max(0, Number(qs.get('from')) || 0), n = Math.max(1, Number(qs.get('n')) || 1e9);
+  const onlyCity = Object.hasOwn(data.cities, qs.get('city') || '') ? qs.get('city') : null;
+  const list = [];
+  for (const [cid, c] of Object.entries(data.cities)) { if (onlyCity && cid !== onlyCity) continue; for (const type of INSIDE) if (!CHILD_SCHOOLS.has(type)) for (const b of c.byType?.[type] || []) list.push(b); }
+  const todo = list.slice(from, from + n); const bad = []; let done = 0, people0 = 0, reread = 0;
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const readCity = async c => { for (let k = 0; k < 3; k++) { if (Date.now() < whereWait) await sleep(whereWait - Date.now() + 200); const v = await whereabouts(c); if (v) { people.apply(c, v); people.index(); reread++; return v.at; } } return null; };
+  const askPlace = async b => { for (let k = 0; k < 3; k++) { const r = await fetch(placeUrl(b.type, b), { cache: 'no-store' }); if (r.status === 429) { await sleep(1000 * (Number(r.headers.get('retry-after')) || 60)); continue; } return r.ok ? r.json() : null; } return null; };
+  for (const b of todo) {
+    let p = await askPlace(b); if (gap) await sleep(gap);
+    if (p && p.at && people.cityAt?.[b.city] !== p.at) { await readCity(b.city); if (people.cityAt?.[b.city] !== p.at) { p = await askPlace(b); if (gap) await sleep(gap); if (p && people.cityAt?.[b.city] !== p.at) await readCity(b.city); } }
+    done++;
+    if (!p || !Number.isFinite(p.count)) { bad.push(`${b.name} (${b.city}): no count from /api/place`); continue; }
+    const pool = data.cities[b.city].byType[b.type] || [];
+    // more than 64 of a type: the server answers for the whole city, so compare the whole city
+    const card = new Set((pool.length > 64 && b.type !== 'ministry' ? pool : [b]).flatMap(x => (people.inB.get(x.idx) || []).map(q => q.id)));
+    const ids = (p.occupants || []).map(o => o.id); people0 += p.count;
+    const missing = ids.filter(id => !card.has(id)), sameAt = people.cityAt?.[b.city] === p.at;
+    if (card.size !== p.count || missing.length) {
+      const why = [...card].slice(0, 2).map(id => { const q = people.byId.get(id); return `${id} ${q?.where}/${q?.key}`; }).join(', ');
+      bad.push(`${b.name} (${b.city}): card ${card.size}, inside ${p.count}${missing.length ? `, ${missing.length} not on the card` : ''}${sameAt ? '' : ' (snapshots differ)'}${qs.has('why') ? ` [${why}; place key ${p.key}/${p.of}]` : ''}`);
+    }
+    out.textContent = `places test: ${done}/${todo.length} buildings · mismatches so far ${bad.length}${bad.length ? `: ${bad.slice(-3).join(' · ')}` : ''}`;
+  }
+  out.textContent = `places test: ${done} buildings (${todo.length} of ${list.length}${onlyCity ? ` in ${onlyCity}` : ''}, from ${from}) · ${people0} people inside · whereabouts re-read ${reread}× · mismatches: ${bad.length ? bad.slice(0, 8).join(' · ') + (bad.length > 8 ? ` · +${bad.length - 8} more` : '') : 'none'}`;
+  // and the building the owner asked about: the Ministry of Finance's card
+  const fin = data.buildings.find(x => x.type === 'ministry' && x.extra?.portfolio === 'finance');
+  if (fin && qs.get('open') !== 'no') { flyTo(fin.x, fin.z, 320, 600); select(null); showBuilding(fin); }
+  return out.textContent;
 }
 // /map.html?at=police_hq&selftest=layout: once the citizens are in, is anything drawn over the open info panel?
 function layoutTest() {
@@ -1132,6 +1195,7 @@ async function boot() {
   if (qs.get('selftest') === 'pick') setTimeout(pickTest, 1200); // after the robots have walked out for a while
   if (qs.get('selftest') === 'people') peopleTest();
   if (qs.get('selftest') === 'layout') layoutTest();
+  if (qs.get('selftest') === 'places') placesTest();
   $('#lyShadows').checked = false; setShadows(false);
   $('#lyShadows').addEventListener('change', e => setShadows(e.target.checked));
   $('#lyAgents').addEventListener('change', e => { agents.visible = e.target.checked; });

@@ -390,10 +390,12 @@ export function enter(opts) {
   }
   function setPlace(p) {
     place = p || place; drawScreens(room, type, place);
-    const total = (place.occupants || []).length + (Number(place.more) || 0);
+    // count: everyone inside in the server's snapshot (the building's card on the map counts the same snapshot)
+    const total = Number.isFinite(place.count) ? place.count : (place.occupants || []).length + (Number(place.more) || 0);
     // who keeps the building: the shift on duty and how many staff (board.onDuty from the server)
     const od = place.board?.onDuty && typeof place.board.onDuty === 'object' ? place.board.onDuty : null;
-    const duty = od ? ` · ${typeof od.shift === 'string' ? od.shift : 'on'} shift: ${Number(od.staff) || 0} on duty` : '';
+    // with a count from the snapshot only the shift is named (the board's staff number may cover more than this building)
+    const duty = od ? ` · ${typeof od.shift === 'string' ? od.shift : 'on'} shift${Number.isFinite(place.count) ? '' : `: ${Number(od.staff) || 0} on duty`}` : '';
     head.replaceChildren(h('b', { text: place.title || type }), h('span', { text: `${total.toLocaleString('en-US')} inside${duty} · updated ${fmtTime(place.updatedAt || Date.now(), { seconds: true })}` }));
     const placed = placeAll((place.occupants || []).slice(0, MAX_BOTS));
     const old = new Map(bots.map(b => [b.o.id, b]));

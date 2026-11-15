@@ -201,7 +201,9 @@ function capitalPlan(out, r, city, { claim, place, free, at, N }) {
   // then the Council House and the palace at the head of the axis (the "three arms": palace, council, court).
   claim('monument', 0, -3, 2, 2);
   const MIN = ['finance', 'economy', 'home', 'defence', 'justice', 'education', 'welfare', 'technology'];
-  MIN.forEach((m, k) => { const side = k % 2 ? 2 : -1; const row = -5 - Math.floor(k / 2); if (free(side, row)) claim('ministry', side, row, 1, 1, { portfolio: m }); });
+  // every portfolio gets its building (the server places each minister and their staff in their own ministry):
+  // on the axis when that block is free, else the nearest free block
+  MIN.forEach((m, k) => { const side = k % 2 ? 2 : -1; const row = -5 - Math.floor(k / 2); if (free(side, row)) claim('ministry', side, row, 1, 1, { portfolio: m }); else place('ministry', side, row, 1, 1, { portfolio: m }); });
   for (let row = -5; row >= -8; row--) if (free(0, row) && free(1, row)) claim('park', 0, row, 2, 1, { mall: true });
   const pal = free(0, -11, 2, 2) ? claim('palace', 0, -11, 2, 2) : place('palace', 0, -11, 2, 2);
   if (free(0, -9, 2, 1)) claim('parliament', 0, -9, 2, 1); else place('parliament', 0, -9, 2, 1);
