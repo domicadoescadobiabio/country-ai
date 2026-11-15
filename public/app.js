@@ -243,7 +243,8 @@ async function searchCitizens() {
 // tab is open; only checked ids and plain numbers are kept
 const JOB_ID = /^[a-z0-9_]{1,40}$/;
 async function loadJobs() {
-  if (st.jobsAt && Date.now() - st.jobsAt < 60000) return; st.jobsAt = Date.now();
+  // while jobs are being assigned the answer is not cached and changes at once: ask again every 10 s (else every minute)
+  if (st.jobsAt && Date.now() - st.jobsAt < (st.jobs && !st.jobs.ready ? 10000 : 60000)) return; st.jobsAt = Date.now();
   try {
     const r = await fetch('/api/jobs'); if (!r.ok) return; const j = await r.json(); const n = v => (Number.isFinite(Number(v)) ? Number(v) : 0);
     st.jobs = { list: (Array.isArray(j?.jobs) ? j.jobs : []).filter(x => x && JOB_ID.test(String(x.id))).map(x => ({ id: String(x.id), title: String(x.title || x.id).slice(0, 40), isNew: x.isNew === true })),
@@ -251,6 +252,8 @@ async function loadJobs() {
       // ready: false until the first job assignment (ticket #749; a server without the field counts as ready)
       ready: j?.ready !== false, assignedDay: Number.isFinite(Number(j?.assignedDay)) && j?.assignedDay != null ? Number(j.assignedDay) : null };
     if (st.tab === 'citizens') renderPanel();
+    // not ready yet: look again in 10 s while the Citizens tab stays open (one timer at a time)
+    if (!st.jobs.ready && !st.jobsTimer) st.jobsTimer = setTimeout(() => { st.jobsTimer = null; if (st.tab === 'citizens') loadJobs(); }, 10500);
   } catch { /* an older server: no job filter */ }
 }
 // The open tab keeps itself fresh. The state stream (SSE 'state', < 30 KB, about every 20 s) always carries the
