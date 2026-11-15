@@ -638,12 +638,24 @@ function schoolFor(id) {
   st.sch[id] = null; loadCitizen(id); // the same request brings the whole profile
   return null;
 }
+// barter lessons (school.barter: asked, right, rightShare|null, byLevel {1..5: [asked, right]}): trading goods
+// without a new currency. One line, plus how each level goes when there is more than one.
+function barterRows(b) {
+  if (!b || typeof b !== 'object' || !(num(b.asked) > 0)) return [];
+  const asked = num(b.asked), share = num(b.rightShare) ?? (asked ? (num(b.right) || 0) / asked : null);
+  const rows = [['Barter lessons', `${asked.toLocaleString('en-US')}${share == null ? '' : `, ${Math.round(share * 100)}% right`}`]];
+  const lv = Object.entries(b.byLevel && typeof b.byLevel === 'object' ? b.byLevel : {})
+    .filter(([k, v]) => /^[1-5]$/.test(k) && Array.isArray(v) && num(v[0]) > 0).sort((x, y) => x[0] - y[0])
+    .map(([k, v]) => `L${k} ${Math.round((num(v[1]) || 0) / num(v[0]) * 100)}% of ${num(v[0])}`);
+  if (lv.length > 1) rows.push(['Barter by level', lv.join(' · ')]);
+  return rows;
+}
 // the night school in public: fields studied, the talent programme and where the teachers' time goes
 function schoolPanel() {
   const s = st.school; const n = v => Number(v) || 0; const out = [];
   out.push(h('div', { class: 'card' }, h('h4', { text: 'Night school' }),
     h('p', { text: 'Citizens study after work with the local brain; a paid teacher explains some lessons. Each citizen picks a field from their interests, work and goal; a share of lessons stays on the core: civics, law and ethics.' }),
-    kv([['Lessons today', n(s.lessonsToday)], ['Lessons (all time)', n(s.lessons)], ['Answered right', s.lessons ? pct(n(s.correct) / n(s.lessons)) : '-'], ['Students', n(s.students)], ['Fields chosen by the student', n(s.choices)], ['Core lessons (civics, law, ethics)', pct(s.coreShare)], ['Teacher calls (all time)', n(s.teacherCalls)]])));
+    kv([['Lessons today', n(s.lessonsToday)], ['Lessons (all time)', n(s.lessons)], ['Answered right', s.lessons ? pct(n(s.correct) / n(s.lessons)) : '-'], ['Students', n(s.students)], ['Fields chosen by the student', n(s.choices)], ['Core lessons (civics, law, ethics)', pct(s.coreShare)], ['Teacher calls (all time)', n(s.teacherCalls)], ...barterRows(s.barter)])));
   const fields = Array.isArray(s.fields) ? s.fields : [];
   out.push(h('div', { class: 'card' }, h('h4', { text: `Fields studied (${fields.length})` }), fields.length ? fields.map(f => h('div', { class: 'trait wide' },
     h('span', { text: f.name }), h('div', { class: 'bar' }, h('i', { style: `width:${Math.round(Math.min(5, n(f.avgLevel)) / 5 * 100)}%` })), h('span', { text: `${n(f.students)} · L${n(f.avgLevel).toFixed(1)}` }))) : h('p', { text: 'No one has studied a field yet.' })));
