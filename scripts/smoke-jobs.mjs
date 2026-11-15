@@ -108,7 +108,7 @@ jobs.jobsTick(ctx); const again = ledger.filter(e => e.kind === 'job_change').le
 check('the job market runs once a republic day', again === changes.length);
 // counts for /api/jobs
 const jc = jobs.jobCounts(S);
-check('jobCounts: per job and city, those looking for work and their share', jc.jobs.length === jobs.JOBS.length && Object.keys(jc.byCity).length === 5 && jc.unemployed === S.citizens.filter(a => a.job === 'unemployed' && !a.office && a.occupation !== 'student').length && jc.unemployedShare > 0 && jc.unemployedShare < 0.03, JSON.stringify({ u: jc.unemployed, s: jc.unemployedShare }));
+check('jobCounts: per job and city, those looking for work and their share, ready once the first assignment has run (ticket #747)', jc.ready === true && jc.assignedDay === 4 && jobs.jobCounts({ citizens: S.citizens.slice(0, 5) }).ready === false && jc.jobs.length === jobs.JOBS.length && Object.keys(jc.byCity).length === 5 && jc.unemployed === S.citizens.filter(a => a.job === 'unemployed' && !a.office && a.occupation !== 'student').length && jc.unemployedShare > 0 && jc.unemployedShare < 0.03, JSON.stringify({ u: jc.unemployed, s: jc.unemployedShare }));
 // a newcomer gets a job with room
 const born = pop.growPopulation(S, 10001, { cities: CITIES, seed: 'smoke-jobs-new', day: 13 })[0];
 S.day = 13; jobs.jobsTick(ctx);

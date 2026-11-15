@@ -209,7 +209,7 @@ export function assignJobs(ctx: Ctx) {
       setJob(a, id, S.day);
     }
   }
-  Object.assign(st, { v: 1, day: S.day, at: Date.now(), assigned, unemployed, changed, hired: 0, lost: 0 });
+  Object.assign(st, { v: 1, day: S.day, assignedDay: S.day, at: Date.now(), assigned, unemployed, changed, hired: 0, lost: 0 });
   if (!ctx.ledgerHas?.('jobs', { v: 1 })) ctx.record?.('jobs', 'state', { v: 1, day: S.day, assigned, unemployed, changed, rule: 'the job in the bio while it has room, then the best suited by talent for each job with room; about 1.5% looking for work, at least one per city' });
   return st;
 }
@@ -278,6 +278,9 @@ export function jobCounts(S: State) {
   const adults = (S.citizens || []).filter((a: Citizen) => eligibleAdult(a)).length;
   return { jobs: JOBS.map(j => ({ id: j.id, title: j.title, place: j.place, fields: j.fields, shift: j.shift, isNew: !!j.isNew })), byCity, total,
     unemployed: total.unemployed || 0, unemployedShare: adults ? Math.round((total.unemployed || 0) / adults * 1000) / 1000 : 0,
+    // ready: the first assignment has run (before it, jobs are read from the bios and anyone whose bio names no job
+    // of the catalog counts as looking: ticket #747); assignedDay: its republic day (the market starts the day after)
+    ready: (S as any).jobs?.v === 1, assignedDay: Number.isFinite((S as any).jobs?.assignedDay) ? (S as any).jobs.assignedDay : null, // (null on a republic assigned before #747: the ledger 'jobs' entry has its day)
     hired: (S as any).jobs?.hired || 0, lost: (S as any).jobs?.lost || 0 };
 }
 // the catalog's field ids are all real fields (checked by the tests)
