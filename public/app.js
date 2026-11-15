@@ -247,7 +247,9 @@ async function loadJobs() {
   try {
     const r = await fetch('/api/jobs'); if (!r.ok) return; const j = await r.json(); const n = v => (Number.isFinite(Number(v)) ? Number(v) : 0);
     st.jobs = { list: (Array.isArray(j?.jobs) ? j.jobs : []).filter(x => x && JOB_ID.test(String(x.id))).map(x => ({ id: String(x.id), title: String(x.title || x.id).slice(0, 40), isNew: x.isNew === true })),
-      unemployed: n(j?.unemployed), share: Math.min(1, n(j?.unemployedShare)), hired: n(j?.hired), lost: n(j?.lost) };
+      unemployed: n(j?.unemployed), share: Math.min(1, n(j?.unemployedShare)), hired: n(j?.hired), lost: n(j?.lost),
+      // ready: false until the first job assignment (ticket #749; a server without the field counts as ready)
+      ready: j?.ready !== false, assignedDay: Number.isFinite(Number(j?.assignedDay)) && j?.assignedDay != null ? Number(j.assignedDay) : null };
     if (st.tab === 'citizens') renderPanel();
   } catch { /* an older server: no job filter */ }
 }
@@ -400,7 +402,8 @@ const PANELS = {
         ['Path', Object.entries(pop.byFaction || {}).map(([k, n]) => `${k} ${n}`).join(' · ')],
         ...((n => (typeof n === 'number' ? [['University students', `${n.toLocaleString('en')} (they study, they do not work)`]] : []))(st.stats?.students ?? pop.students)), ['Thinks with', Object.entries(pop.byFamily || {}).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k, n]) => `${k} ${n}`).join(' · ')],
         ['Wallets', pop.wallets ? `median ${cai(pop.wallets.median)}, max ${cai(pop.wallets.max)}` : '-'],
-        ...(st.jobs ? [['Jobs', `${st.jobs.list.length} kinds · ${st.jobs.unemployed.toLocaleString('en')} looking for work (${pct(st.jobs.share)}) · hired ${st.jobs.hired.toLocaleString('en')} · lost ${st.jobs.lost.toLocaleString('en')}`]] : [])]));
+        ...(st.jobs ? [['Jobs', !st.jobs.ready ? 'assigning jobs…'
+          : `${st.jobs.list.length} kinds · ${st.jobs.unemployed.toLocaleString('en')} looking for work (${pct(st.jobs.share)}) · hired ${st.jobs.hired.toLocaleString('en')} · lost ${st.jobs.lost.toLocaleString('en')}${st.jobs.assignedDay != null ? ` · assigned on day ${st.jobs.assignedDay}` : ''}`]] : [])]));
     loadJobs();
     // filter by job: the catalog's, plus students, officials and those looking for work
     const jobSel = h('select', { 'aria-label': 'Filter by job', onchange: e => { st.cq = { ...st.cq, job: e.target.value, page: 1 }; searchCitizens(); } },
