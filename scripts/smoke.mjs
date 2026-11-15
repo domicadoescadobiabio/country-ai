@@ -516,10 +516,11 @@ try {
   check('archive reads: the 61st request in a minute from one IP gets 429 with retry-after', burst.slice(0, 60).every(s => s === 200) && burst[60] === 429 && over.status === 429 && Number(over.headers.get('retry-after')) > 0, JSON.stringify({ last: burst.slice(-2), decisions: over.status }));
   const other = await viaProxy('203.0.113.10'); const local = await fetch(BASE + '/api/ledger?limit=1');
   check('archive reads: other IPs and local callers are not blocked', other.status === 200 && local.status === 200, `${other.status} ${local.status}`);
-  // the server reads an oversize body to its end and answers 413 (a cut socket would be a reset here, not a crash)
-  const big = async (p, n) => { try { return (await postRaw(p, 'x'.repeat(n))).status; } catch (e) { return `socket closed: ${e.cause?.code || e.message}`; } };
-  const r9 = await big('/api/say', 9000), r9b = await big('/api/say', 200000);
-  check('large body rejected', [413, 429].includes(r9) && [413, 429].includes(r9b), JSON.stringify([r9, r9b]));
+  // the server reads an oversize body to its end (up to 64 KB) and answers 413; beyond that it cuts the connection,
+  // which the client sees as a closed socket (also a refusal, never a crash here)
+  const big = async (p, n) => { try { return (await postRaw(p, 'x'.repeat(n))).status; } catch (e) { return 'closed'; } };
+  const r9 = await big('/api/say', 9000), r9m = await big('/api/say', 60000), r9b = await big('/api/say', 200000);
+  check('large body rejected (413 up to 64 KB, beyond that 413 or the connection is cut)', [413, 429].includes(r9) && [413, 429].includes(r9m) && [413, 429, 'closed'].includes(r9b), JSON.stringify([r9, r9m, r9b]));
 
   // --- extra institution checks
   const extra = await import('./smoke-institutions.mjs').catch(() => null);

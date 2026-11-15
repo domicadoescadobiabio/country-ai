@@ -758,8 +758,9 @@ function send(res, code, body, type = 'application/json; charset=utf-8') {
   });
 }
 // A body over BODY_MAX is refused with 413, but read to its end first (up to BODY_DRAIN_MAX, then the connection is
-// cut): a socket destroyed while the client is still sending makes the client see a reset instead of the 413.
-const BODY_MAX = 8192, BODY_DRAIN_MAX = 1 << 20;
+// cut): a socket destroyed while the client is still sending makes the client see a reset instead of the 413. 64 KB
+// keeps what one request can make the server read small (Security #701).
+const BODY_MAX = 8192, BODY_DRAIN_MAX = 64 * 1024;
 const tooLarge = () => Object.assign(new Error('body too large'), { code: 413 });
 function readBody(req) {
   return new Promise((resolve, reject) => {
