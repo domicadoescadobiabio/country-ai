@@ -396,9 +396,106 @@ export const BANKS: Record<string, Bank> = {
     [4, 'Why update software?', 'To fix known security holes', ['To make it slower', 'For new colours only', 'It is never needed'], 'Updates patch holes attackers already know.'],
   ], case: ['A message claims to be from the Police and asks every citizen to log in through a new link today. What do you do and why?', ['verify', 'link', 'police', 'official', 'report', 'never']] },
 };
-// a field question at a level: law and civics also use the republic's own rule questions
+// ---------------------------------------------------------------- barter (owner, 15 Nov)
+// "No real currency yet, that comes later; first a barter system, as lessons." Only lessons: nothing in the
+// economy, daily life, wallets, tax or basic income changes, and CAI stays as it is. Citizens learn to trade goods
+// and work directly (rates, chains, three-way trades, value from hours of work, goods that spoil or cannot be split,
+// promises of goods, cheating and the law, why barter gets hard in a big city), as groundwork for a later currency
+// update. Fresh goods and numbers each time; the key is worked out by code (solveBarter reads it back from the text).
+// Level 1-2: simple rates; 3-5: chains, three parties, promises and risks. Never a word about money or currency.
+const GOODS = ['bread', 'fish', 'firewood', 'tool', 'carpenter hour', 'medicine jar', 'cloth roll', 'rice sack', 'data-centre power hour', 'robot repair', 'egg basket', 'salt bag'];
+const PERISH = ['fish', 'bread', 'egg basket'], LASTING = ['rice sack', 'salt bag', 'tool', 'cloth roll'], WHOLE = ['tool', 'robot repair', 'cloth roll'];
+const ownGoods = (n: number) => [...GOODS].sort(() => Math.random() - 0.5).slice(0, n).map(g => cleanText(g, 30));
+// three different wrong numbers: the near misses given, then the neighbours of the right one if those ran short
+const nums = (right: number, cands: number[]) => [...new Set([...cands, right + 1, right + 2, right - 1, right + 3].map(x => Math.round(x)).filter(x => x > 0 && x !== right))].slice(0, 3).map(String);
+const BARTER_LESSONS = [
+  'At a fixed rate, multiply: k of the dearer good is worth k times its rate in the cheaper one.',
+  'Follow a chain of rates step by step, multiplying each rate along the way.',
+  'When nobody wants what their neighbour has, a ring of trades (each gives to whoever wants their good) can satisfy all.',
+  'A fair barter by work: goods that take more hours to make are worth more of the quicker ones.',
+  'Goods that spoil lose their value fast; lasting goods store value for later.',
+  'A good that cannot be split makes small trades hard: you must find change in other goods or another partner.',
+  'A promise of goods later is safer written down, with a witness and a delivery date.',
+  'A false scale or a broken promise is cheating: keep the evidence and report it to the police.',
+  'With barter every pair of goods needs its own rate; a shared measure of value would need only one per good.',
+];
+const barterNote = (k: number) => `#barter.k${k}`;
+const B = (k: number, q: string, right: string, wrong: string[], level: number) => ({ ...mcq(cleanText(q, 400), right, wrong, BARTER_LESSONS[k], 'wisdom'), barter: level, note: barterNote(k) });
+export function barterItem(level: number): any {
+  const L = clamp(Math.round(level) || 1, 1, 5);
+  const kinds = L <= 1 ? [0, 0, 3, 4] : L === 2 ? [0, 1, 3, 4, 7] : L === 3 ? [1, 2, 3, 5, 6, 7] : [1, 1, 2, 5, 6, 7, 8];
+  const k = pick(kinds);
+  if (k === 0) { // one rate
+    const [x, y] = ownGoods(2); const a = ri(2, 6), n = ri(2, 5 + 2 * L);
+    return B(0, `Barter rates: ${a} × ${x} = 1 × ${y}. How many ${x} do you get for ${n} × ${y}?`, String(a * n), nums(a * n, [a + n, a * n + a, a * (n + 1), a * n - a, n]), L);
+  }
+  if (k === 1) { // a chain of 2 or 3 rates
+    const steps = L >= 4 ? 3 : 2; const g = ownGoods(steps + 1); const r = Array.from({ length: steps }, () => ri(2, 5)); const n = ri(1, 3);
+    const rates = r.map((v, i) => `${v} × ${g[i]} = 1 × ${g[i + 1]}`).join('; ');
+    const prod = r.reduce((p, v) => p * v, 1) * n; const sum = r.reduce((p, v) => p + v, 0) * n;
+    return B(1, `Barter rates: ${rates}. How many ${g[0]} do you get for ${n} × ${g[steps]}?`, String(prod), nums(prod, [sum, prod / r[0], prod + r[0], prod * 2, prod - r.at(-1)!]), L);
+  }
+  if (k === 2) { // three parties, nobody wants their neighbour's good directly: a ring
+    const [p1, p2, p3] = [...PEOPLE].sort(() => Math.random() - 0.5).slice(0, 3); const [g1, g2, g3] = ownGoods(3);
+    // p1 has g1 wants g2; p2 has g2 wants g3; p3 has g3 wants g1  ->  each gives their good to whoever wants it
+    const people = [[p1, g1], [p2, g2], [p3, g3]] as const;
+    const flow = (dest: string[]) => people.map(([p, g], i) => `${p} gives the ${g} to ${dest[i]}`).join(', ');
+    const right = flow([p3, p1, p2]);
+    const others = [[p2, p3, p1], [p2, p1, p1], [p3, p3, p1], [p2, p3, p2], [p3, p1, p1], [p2, p1, p2]].map(flow).sort(() => Math.random() - 0.5);
+    return B(2, `${p1} has ${g1} and wants ${g2}. ${p2} has ${g2} and wants ${g3}. ${p3} has ${g3} and wants ${g1}. Which set of trades gives all three what they want?`, right, others, L);
+  }
+  if (k === 3) { // value from hours of work
+    const [x, y] = ownGoods(2); const h2 = ri(1, 3), m = ri(2, 4), h1 = h2 * m, n = ri(1, 4);
+    return B(3, `1 × ${x} takes ${h1} hours of work; 1 × ${y} takes ${h2} hour${h2 === 1 ? '' : 's'}. Trading by hours of work, how many ${y} is a fair trade for ${n} × ${x}?`, String(n * m), nums(n * m, [n, n * h1, n * m + 1, m, n * h2]), L);
+  }
+  if (k === 4) { // goods that spoil vs goods that last
+    const p = pick(PERISH), d = pick(LASTING);
+    return B(4, `Your ${p} spoils in a day; your neighbour's ${d} keeps for months. Which is better for storing value until next month?`, `The ${d}: it keeps its value over time.`, [`The ${p}: fresh goods are worth more later.`, `Neither: no good keeps any value at all.`, `Both: any two goods store value the same.`], L);
+  }
+  if (k === 5) { // a good that cannot be split
+    const big = pick(WHOLE), small = pick(GOODS.filter(g => g !== big)); const n = ri(4, 9);
+    return B(5, `One ${big} is worth ${n} × ${small}, but you need only 1 × ${small}. What is the problem with this barter?`, `A ${big} cannot be split, so you need change in other goods.`, [`A ${small} is always worth more than a ${big}.`, `Barter forbids trading goods of unequal value.`, `You must give ${n} of the ${big} for one ${small}.`], L);
+  }
+  if (k === 6) { // a promise of goods later
+    const [p1, p2] = [...PEOPLE].sort(() => Math.random() - 0.5).slice(0, 2); const [x, y] = ownGoods(2); const a = ri(2, 9), b = ri(2, 9);
+    return B(6, `${p1} gives ${p2} ${a} × ${x} today; ${p2} promises ${b} × ${y} next week. What makes this promise safer?`, 'Write it down with a witness and a delivery date.', ['Nothing: neighbours always keep every promise.', 'Ask for the goods twice to be quite sure.', 'Keep it secret so that nobody can interfere.'], L);
+  }
+  if (k === 7) { // cheating and the law
+    const [x] = ownGoods(1); const kg = ri(3, 12);
+    return B(7, `A trader's scale shows ${kg} kg of ${x}, but it weighs ${kg - 1} kg at home. What is the right step under the republic's law?`, 'Report it to the police with the weights as evidence.', ['Cheat the trader back at your very next trade.', 'Break the trader\'s scale in front of everyone.', 'Accept it: every scale in the city is a bit off.'], L);
+  }
+  // k === 8: why barter gets hard in a big city: a rate for every pair of goods
+  const g = ri(5, 30); const pairs = g * (g - 1) / 2; const n = ri(2, 10) * 1000;
+  return B(8, `In a city of ${fmt(n)} citizens trading ${g} kinds of goods by barter, how many different exchange rates are needed between pairs of goods?`, String(pairs), nums(pairs, [g * (g - 1), g, g * g, pairs + g]), L);
+}
+// the answer to a barter question from its own text (tests and fake agents), or null
+function solveBarter(q: string): string | null {
+  let m = q.match(/^Barter rates: (.+)\. How many (.+) do you get for (\d+) × (.+)\?$/);
+  if (m) {
+    const val = new Map<string, number>([[m[2], 1]]);
+    const pairs = m[1].split('; ').map(s => s.match(/^(\d+) × (.+) = 1 × (.+)$/)).filter(Boolean) as RegExpMatchArray[];
+    for (let pass = 0; pass < pairs.length; pass++) for (const p of pairs) if (val.has(p[2]) && !val.has(p[3])) val.set(p[3], Number(p[1]) * val.get(p[2])!);
+    return val.has(m[4]) ? String(Number(m[3]) * val.get(m[4])!) : null;
+  }
+  m = q.match(/^(\w+) has (.+) and wants (.+)\. (\w+) has (.+) and wants (.+)\. (\w+) has (.+) and wants (.+)\. Which set of trades gives all three what they want\?$/);
+  if (m) { const ps = [[m[1], m[2], m[3]], [m[4], m[5], m[6]], [m[7], m[8], m[9]]]; return ps.map(([p, g]) => `${p} gives the ${g} to ${ps.find(x => x[2] === g)?.[0]}`).join(', '); }
+  m = q.match(/^1 × (.+) takes (\d+) hours of work; 1 × (.+) takes (\d+) hours?\. Trading by hours of work, how many .+ is a fair trade for (\d+) × .+\?$/);
+  if (m) return String(Number(m[5]) * Number(m[2]) / Number(m[4]));
+  m = q.match(/^Your (.+) spoils in a day; your neighbour's (.+) keeps for months\. Which is better for storing value until next month\?$/);
+  if (m) return `The ${m[2]}: it keeps its value over time.`;
+  m = q.match(/^One (.+) is worth \d+ × .+, but you need only 1 × .+\. What is the problem with this barter\?$/);
+  if (m) return `A ${m[1]} cannot be split, so you need change in other goods.`;
+  if (/^\w+ gives \w+ \d+ × .+ today; \w+ promises \d+ × .+ next week\. What makes this promise safer\?$/.test(q)) return 'Write it down with a witness and a delivery date.';
+  if (/^A trader's scale shows \d+ kg of .+, but it weighs \d+ kg at home\. What is the right step under the republic's law\?$/.test(q)) return 'Report it to the police with the weights as evidence.';
+  m = q.match(/^In a city of [\d,]+ citizens trading (\d+) kinds of goods by barter, how many different exchange rates are needed between pairs of goods\?$/);
+  if (m) { const g = Number(m[1]); return String(g * (g - 1) / 2); }
+  return null;
+}
+// a field question at a level: law and civics also use the republic's own rule questions; trade and economics
+// teach barter in half of their questions (owner, 15 Nov)
 function fieldItem(field: string, level: number) {
   const b = BANKS[field]; if (!b) return null;
+  if ((field === 'trade' || field === 'economics') && Math.random() < 0.5) return barterItem(level);
   if (field === 'law' && Math.random() < 0.6) { const k = pick(SETS.law.filter(x => typeof GEN[x] === 'function')); return k ? { ...GEN[k](), note: `#rule.${k}` } : null; }
   if (field === 'civics' && Math.random() < 0.6) { const i = ri(0, CIVICS.length - 1); return { ...CIVICS[i](), note: `#civ.${i}` }; }
   const calcs = b.calc.map((c, i) => [c, i] as [Calc, number]).filter(([c]) => c.min <= level && level <= c.max);
@@ -418,6 +515,7 @@ export function noteText(key: string) {
   const [, a, kind, n] = m;
   if (a === 'rule') { const k = `${kind}${n}`; const g = SETS.law.includes(k) && Object.hasOwn(GEN, k) ? GEN[k] : null; return typeof g === 'function' ? cleanText(g().lesson, 120) : ''; }
   if (a === 'civ') { const f = CIVICS[Number(n)]; return f ? cleanText(f().lesson, 120) : ''; }
+  if (a === 'barter') return kind === 'k' && BARTER_LESSONS[Number(n)] ? cleanText(BARTER_LESSONS[Number(n)], 120) : '';
   const b = Object.hasOwn(BANKS, a) ? BANKS[a] : null; if (!b) return '';
   if (kind === 'c') return cleanText(b.calc[Number(n)]?.lesson || '', 120);
   if (kind === 'f') return cleanText(b.facts[Number(n)]?.[4] || '', 120);
@@ -509,6 +607,7 @@ export function solveFieldQuestion(text: string): string | null {
     CIVICS.forEach((c, i) => { if (i !== 2) { const it = c(); FACT_KEY!.set(it.q, it.right); } }); // the third has numbers
   }
   if (FACT_KEY.has(q)) return FACT_KEY.get(q)!;
+  const bt = solveBarter(q); if (bt != null) return bt;
   for (const [re, f] of SOLVERS) { const m = q.match(re); if (m) return f(m); }
   return null;
 }
@@ -779,7 +878,7 @@ function fieldLesson(ctx: Ctx, a: Citizen, base: any, now: number) {
   const raw = fieldItem(field, level); if (!raw) return null;
   const it = buildItem(raw);
   const options = it.options.map((o: string, i: number) => `${LETTERS[i]}) ${o}`);
-  return { ...b, kind: 'mcq', item: it, note: raw.note, options, format: 'letter', system: sys, user: `Question: ${it.q}\n${options.join('\n')}\n\nReply with only the letter of your answer, then " - " and one short reason.` };
+  return { ...b, kind: 'mcq', item: it, note: raw.note, barter: raw.barter || null, options, format: 'letter', system: sys, user: `Question: ${it.q}\n${options.join('\n')}\n\nReply with only the letter of your answer, then " - " and one short reason.` };
 }
 
 // ---------------------------------------------------------------- running lessons
@@ -817,11 +916,12 @@ function startLesson(ctx: Ctx, a: Citizen, night: number | null, now: number) {
     return { ...base, kind: 'free', card, format: 'json', system: lessonPrompt(S, a, sub),
       user: `Training card (fictional, not a real rule of the republic yet): ${card.title}\n${card.text}\n${card.question}\nReply with JSON only: {"decision":"<what you do, max 25 words>","reason":"<why, citing a rule or a fact, max 30 words>"}` };
   }
-  const raw = sub === 'economy' ? (Math.random() < 0.5 ? economyItem(S) : ruleItem('economy') || economyItem(S)) : sub === 'law' ? ruleItem('law') : sub === 'ethics' ? ethicsItem() : civicsItem();
+  // economy: half of it is barter now (owner, 15 Nov), at the level of the citizen's economy skill
+  const raw = sub === 'economy' ? (Math.random() < 0.5 ? barterItem(fieldLevel(skillOf(a, 'economy'))) : Math.random() < 0.5 ? economyItem(S) : ruleItem('economy') || economyItem(S)) : sub === 'law' ? ruleItem('law') : sub === 'ethics' ? ethicsItem() : civicsItem();
   if (!raw) return null;
   const it = buildItem(raw);
   const options = it.options.map((o: string, i: number) => `${LETTERS[i]}) ${o}`);
-  return { ...base, kind: 'mcq', item: it, options, format: 'letter', system: lessonPrompt(S, a, sub), user: `Question: ${it.q}\n${options.join('\n')}\n\nReply with only the letter of your answer, then " - " and one short reason.` };
+  return { ...base, kind: 'mcq', item: it, options, format: 'letter', barter: raw.barter || null, note: raw.barter ? raw.note : undefined, system: lessonPrompt(S, a, sub), user: `Question: ${it.q}\n${options.join('\n')}\n\nReply with only the letter of your answer, then " - " and one short reason.` };
 }
 function grade(ctx: Ctx, a: Citizen, L: any, text: string) {
   const { S } = ctx; const p = profile(a);
@@ -857,6 +957,11 @@ function grade(ctx: Ctx, a: Citizen, L: any, text: string) {
   if (note) { p.lessons.push({ subject: sub, text: note, day: S.day }); if (p.lessons.length > MAX_LESSONS) p.lessons.splice(0, p.lessons.length - MAX_LESSONS); }
   noteLesson(a.id, L, score >= 0.5, now); // for the building interiors (who studies what, right or wrong)
   const s = SC(S); s.stats.total++; s.stats.today++; s.stats.localCalls++; if (score >= 0.5) s.stats.correct++;
+  // barter lessons (owner, 15 Nov): asked and right, in all and per level, for the public state
+  if (L.barter) {
+    const b = (s.barter ||= { asked: 0, right: 0, byLevel: {} }); b.asked++; if (score >= 0.5) b.right++;
+    const lv = (b.byLevel[clamp(Number(L.barter) || 1, 1, 5)] ||= [0, 0]); lv[0]++; if (score >= 0.5) lv[1]++;
+  }
   if (L.field) { s.byField ||= {}; s.byField[L.field] = (s.byField[L.field] || 0) + 1; s.stats.fieldLessons = (s.stats.fieldLessons || 0) + 1; }
   if (L.night != null) {
     s.night.studied++; if (score >= 0.5) s.night.correct++;
@@ -1196,6 +1301,9 @@ export function schoolState(S: State) {
   }
   return { lessonsToday: s.stats.today, lessons: s.stats.total, correct: s.stats.correct, teacherCalls: s.stats.teacherCalls, teacherAnswers: s.stats.teacherAnswers, localCalls: s.stats.localCalls,
     choices: s.stats.choices || 0, fieldLessons: s.stats.fieldLessons || 0, coreShare: CORE_SHARE,
+    // barter lessons: how many, how many right, per level [asked, right]
+    barter: { asked: s.barter?.asked || 0, right: s.barter?.right || 0, rightShare: s.barter?.asked ? round(s.barter.right / s.barter.asked, 2) : null,
+      byLevel: Object.fromEntries([1, 2, 3, 4, 5].map(l => [l, (s.barter?.byLevel?.[l] || [0, 0]).map((x: any) => Number(x) || 0)])) },
     // the teachers' pacing for budget.train: the share of lessons with a teacher now, teacher-only lessons, data kept
     teacher: { shareNow: pace.share, shareBase: TEACHER_SHARE, behind: pace.behind, orShortUsd: round(pace.short, 4), concurrency: maxTeaching(), pacedAt: pace.pacedAt,
       teacherOnly: s.stats.teacherOnly || 0, teacherOnlyToday: s.stats.tday?.day === S.day ? s.stats.tday.teacherOnly || 0 : 0, teacherOnlyKept: s.stats.teacherOnlyKept || 0,

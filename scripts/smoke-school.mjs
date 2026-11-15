@@ -10,7 +10,7 @@ const { workerPull, workerAnswer, _resetLocal } = await import('../src/brains.ts
 const { institution: daily, menu, doAct, dayPrompt } = await import('../src/daily.ts');
 const { schoolScore, act } = await import('../src/careers.ts');
 const pop = await import('../src/population.mjs');
-const { LETTERS } = await import('../src/academy.ts');
+const { LETTERS, buildItem } = await import('../src/academy.ts');
 const { RAID_PAYLOADS } = await import('../src/military.ts');
 
 const round2 = x => Math.round(x * 1000) / 1000;
@@ -241,6 +241,25 @@ check('the morning after, one night-school summary in #life', said.filter(m => m
   const thin = ['philosophy', 'civics', 'law'].map(f => [f, [1, 2, 3, 4, 5].map(lv => new Set(Array.from({ length: 300 }, () => school.fieldItem(f, lv).q)).size)]);
   console.log(`  (distinct questions in 300 draws, levels 1-5: ${JSON.stringify(thin)})`);
   check('the thin fields (philosophy, civics, law) have many different questions at every level', thin.every(([, ns]) => ns.every(n => n >= 40)), JSON.stringify(thin));
+  // ---- barter lessons (owner, 15 Nov): only lessons, no currency; the key is worked out by code
+  {
+    const items = Array.from({ length: 800 }, (_, i) => school.barterItem(1 + (i % 5)));
+    const bad = items.filter(it => school.solveFieldQuestion(it.q) !== it.right);
+    check('barter: the key of 800 random barter questions is right (worked out again from the text)', !bad.length, JSON.stringify(bad.slice(0, 2).map(it => [it.q, it.right, school.solveFieldQuestion(it.q)])));
+    check('barter: every question has 4 different options', items.every(it => it.wrong.length === 3 && new Set([it.right, ...it.wrong]).size === 4), JSON.stringify(items.find(it => it.wrong.length !== 3 || new Set([it.right, ...it.wrong]).size !== 4)));
+    const chains = items.filter(it => (it.q.match(/ = 1 × /g) || []).length >= 2), three = items.filter(it => /Which set of trades gives all three/.test(it.q)), chain3 = items.filter(it => (it.q.match(/ = 1 × /g) || []).length === 3);
+    check('barter: chains of rates and three-party trades are asked (3-step chains at level 4-5)', chains.length > 30 && three.length > 30 && chain3.length > 10 && chain3.every(it => it.barter >= 4), `${chains.length} chains, ${chain3.length} of 3 steps, ${three.length} three-party`);
+    check('barter: level 1 is simple (one rate, hours of work, spoiling goods), never chains or three parties', items.filter(it => it.barter === 1).every(it => /^#barter\.k[034]$/.test(it.note)));
+    const pos = [0, 0, 0, 0]; for (const it of items) pos[buildItem(it).correct]++;
+    check('barter: the right option is spread over A-D', pos.every(n => n > items.length * 0.15), JSON.stringify(pos));
+    const longest = items.filter(it => it.wrong.every(w => String(it.right).length > String(w).length)).length;
+    check('barter: the right answer is not given away by being the longest option', longest <= items.length * 0.4, `${longest} of ${items.length} longest`);
+    const money = items.find(it => /\bCAI\b|currenc|\bcoins?\b|money|token|\bcash\b|\bprices?\b/i.test([it.q, it.right, ...it.wrong, it.lesson].join(' ')));
+    check('barter: no money, coins or currency anywhere in a barter question, its options or its lesson', !money, JSON.stringify(money));
+    const fromField = f => Array.from({ length: 400 }, (_, i) => school.fieldItem(f, 1 + (i % 5))).filter(it => it.barter).length / 400;
+    check('barter: about half of the trade and economics field questions are barter', [fromField('trade'), fromField('economics')].every(x => x > 0.35 && x < 0.65), JSON.stringify([fromField('trade'), fromField('economics')]));
+    check('barter: a barter note key points at real server text', /cannot be split/.test(school.noteText('#barter.k5')) && school.noteText('#barter.k99') === '');
+  }
   const qs = new Set(Array.from({ length: 12 }, () => school.fieldItem('physics', 3).q));
   check('calculations use fresh random numbers (cannot be memorised)', qs.size >= 5, String(qs.size));
   // levels follow skill; talent speeds learning; unused fields fade slowly
@@ -815,6 +834,34 @@ for (const phase of ['night', 'day']) {
 {
   at(22); const evening = school.nightOf(S); at(26); const pastMidnight = school.nightOf(S); at(12); const noon = school.nightOf(S);
   check('20:00 on day N to 06:00 on day N+1 is one night; daytime is none', evening === pastMidnight && evening != null && noon === null, `${evening} ${pastMidnight} ${noon}`);
+}
+
+// ---- barter in the running school (owner, 15 Nov): trade and the economy core, counted in school.barter
+{
+  school._resetSchool(); _resetLocal();
+  const traders = Array.from({ length: 40 }, (_, i) => ({ id: `b${i}`, name: `Barter ${i}`, city: 'neura', status: 'free', wallet: 300, traits, bio: 'Merchant in Neura City.', diary: [], practice: {}, quals: {}, record: [], lessons: {}, joinedDay: 0, training: [] }));
+  const BS = { day: 7, foundedAt: Date.now() - (6 * 24 + 11) * 3600000, policy: { wage: 100, taxRate: 0.1, ubi: 20 }, cities: { neura: { health: 70, budget: 0 } }, treasury: 0, citizens: traders, seats: {}, elections: { list: [] }, applications: {}, police: { incidents: [] }, academy: { rooms: [] }, feed: {} };
+  for (const a of traders) { school.profile(a); a.school.focus = { day: BS.day, field: 'trade', chosen: true }; }
+  const bctx = { ...ctx, S: BS, agent: id => BS.citizens.find(x => x.id === id), llm: { ...llm, enabled: false } };
+  const seen = [];
+  for (let r = 0; r < 10; r++) {
+    workerPull(1, 'ollama/test'); BS.school ||= {}; BS.school.lastAt = Date.now() - 600000; for (const a of traders) a.schoolSession = null;
+    await school.schoolTick(bctx); await school.schoolTick(bctx);
+    for (const j of workerPull(16, 'ollama/test').filter(x => /^school:/.test(x.id))) {
+      const L = school._pending().find(x => x.id === j.id); if (!L) continue;
+      if (L.barter) seen.push({ field: L.field, subject: L.subject, domain: school.domainOf(L), q: L.item.q });
+      if (L.kind === 'mcq') workerAnswer(j.id, `${LETTERS[L.item.correct]} - by the rates`);
+      else if (L.kind === 'choose') workerAnswer(j.id, 'A - trade');
+      else workerAnswer(j.id, GOOD);
+    }
+    await school.schoolTick(bctx);
+  }
+  const bv = school.schoolState(BS).barter;
+  check('barter lessons run in the school and are counted in school.barter (asked, right, per level)', bv.asked > 0 && bv.right > 0 && bv.right <= bv.asked && Object.values(bv.byLevel).reduce((n, l) => n + l[0], 0) === bv.asked && (bv.rightShare === null || (bv.rightShare >= 0 && bv.rightShare <= 1)), JSON.stringify(bv));
+  check('barter lessons keep the field\'s dataset domain (trade, economics, or core_economy for the economy core)', seen.length > 0 && seen.every(x => ['trade', 'economics', 'core_economy'].includes(x.domain)) && seen.every(x => !/\bCAI\b/.test(x.q)), JSON.stringify(seen.slice(0, 3)));
+  const notes = traders.flatMap(a => Object.values(a.school?.notes?.trade || {}).flat()).filter(n => /^#barter\./.test(n));
+  check('a right barter answer leaves a barter note in the trader\'s notebook, pointing at server text', notes.length > 0 && notes.every(n => school.noteText(n)), JSON.stringify(notes.slice(0, 3)));
+  school._resetSchool(); _resetLocal();
 }
 
 console.log(`smoke:school: ${pass} passed, ${fail} failed`);
