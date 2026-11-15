@@ -33,11 +33,12 @@ export function generateCountry(state) {
   // sky-bridges across the narrow gaps between districts (capital to each district, and between neighbours)
   const ids = Object.keys(out.cities);
   const cap = out.cities.neura || out.cities[ids[0]];
+  // each bridge lands on a street corner at the edge of both districts (walkers step from the street onto the deck):
+  // the edge corner of a nearest to b's centre, then the edge corner of b nearest to that one
   const bridge = (a, b, w) => {
-    const dx = b.cx - a.cx, dz = b.cz - a.cz, d = Math.hypot(dx, dz); if (!d) return;
-    const ux = dx / d, uz = dz / d, ra = a.radius * 0.86, rb = b.radius * 0.86;
-    if (d - ra - rb < 40) return;
-    out.roads.push({ a: [a.cx + ux * ra, a.cz + uz * ra], b: [b.cx - ux * rb, b.cz - uz * rb], w, kind: 'bridge' });
+    const A = nearestEdgeCorner(a, b.cx, b.cz); if (!A) return;
+    const B = nearestEdgeCorner(b, A[0], A[1]); if (!B) return;
+    out.roads.push({ a: A, b: B, w, kind: 'bridge', from: a.id, to: b.id });
   };
   for (const id of ids) if (out.cities[id] !== cap) bridge(cap, out.cities[id], 22);
   const ring = ids.filter(id => out.cities[id] !== cap).sort((p, q) => Math.atan2(out.cities[p].cz, out.cities[p].cx) - Math.atan2(out.cities[q].cz, out.cities[q].cx));
@@ -45,6 +46,20 @@ export function generateCountry(state) {
   // the airport sits on its own pad just outside the ring, south of the capital
   if (out.cities.neura) addAirport(out, cap.cx - 150, cap.cz + cap.radius + 1650, 'neura');
   return out;
+}
+
+// A street corner is the point between four block cells (u+0.5, v+0.5 in grid units). An edge corner touches at least
+// one block of the district and at least one cell outside it.
+export function nearestEdgeCorner(city, x, z) {
+  let best = null, bd = Infinity;
+  const has = (i, j) => city.grid.has(i + ',' + j);
+  for (let u = -city.N - 2; u <= city.N + 1; u++) for (let v = -city.N - 2; v <= city.N + 1; v++) {
+    const n = has(u, v) + has(u + 1, v) + has(u, v + 1) + has(u + 1, v + 1);
+    if (!n || n === 4) continue;
+    const px = city.cx + (u + 0.5) * PITCH, pz = city.cz + (v + 0.5) * PITCH; const d = (px - x) ** 2 + (pz - z) ** 2;
+    if (d < bd) { bd = d; best = [px, pz]; }
+  }
+  return best;
 }
 
 function buildCity(out, c, plan) {
@@ -68,6 +83,27 @@ function buildCity(out, c, plan) {
     const b = { i, j, x: cx + i * PITCH, z: cz + j * PITCH, d, a, used: null, city: c.id };
     city.grid.set(key(i, j), b); city.blocks.push(b);
   }
+  // no islands: keep only the blocks joined to the district's main land (sharing a side or a corner, so a street
+  // reaches them); a stray block out on its own could only be reached through the empty space
+  {
+    // the river's own cells join its two banks here (its bridges carry the streets across)
+    const river = (i, j) => plan.river && Math.abs(i - Math.round(3 * Math.sin(j / 5))) === 0 && Math.hypot(i, j) <= N + 1;
+    const seen = new Set(); let main = null;
+    for (const b of city.blocks) {
+      const k0 = key(b.i, b.j); if (seen.has(k0)) continue;
+      const comp = [b]; seen.add(k0);
+      for (let q = 0; q < comp.length; q++) for (let di = -1; di <= 1; di++) for (let dj = -1; dj <= 1; dj++) {
+        const i = comp[q].i + di, j = comp[q].j + dj, k = key(i, j); if (seen.has(k)) continue;
+        const n = city.grid.get(k) || (river(i, j) ? { i, j, water: true } : null);
+        if (n) { seen.add(k); comp.push(n); }
+      }
+      if (!main || comp.filter(x => !x.water).length > main.filter(x => !x.water).length) main = comp;
+    }
+    if (main && main.length < city.blocks.length) {
+      const keep = new Set(main); city.blocks = city.blocks.filter(b => keep.has(b));
+      for (const [k, b] of [...city.grid]) if (!keep.has(b)) city.grid.delete(k);
+    }
+  }
   const at = (i, j) => city.grid.get(key(i, j));
   const L = (N + 12) * PITCH;
   // only a harbour strip of water (a neon-lit bay), not an ocean of empty blue
@@ -79,6 +115,7 @@ function buildCity(out, c, plan) {
     const ri = Math.round(3 * Math.sin(j / 5)); if (ri !== Math.round(3 * Math.sin((j + 1) / 5))) continue;
     if (!(at(ri - 1, j) || at(ri - 1, j + 1)) || !(at(ri + 1, j) || at(ri + 1, j + 1))) continue;
     const x = cx + ri * PITCH, z = cz + (j + 0.5) * PITCH;
+    (city.riverBridges ||= []).push({ i: ri, j }); // the street between rows j and j+1 crosses river column i here
     out.grounds.push({ x, z, w: PITCH + 4, d: 16, color: '#555a61', y: 0.9 });
     out.parts.push({ b: -1, shape: 'box', x, y: 0, z: z - 8.5, sx: PITCH + 4, sy: 2.2, sz: 1, color: '#a8a29e' }, { b: -1, shape: 'box', x, y: 0, z: z + 8.5, sx: PITCH + 4, sy: 2.2, sz: 1, color: '#a8a29e' });
   }

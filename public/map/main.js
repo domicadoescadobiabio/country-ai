@@ -5,7 +5,7 @@ import { EffectComposer } from '../vendor/three/EffectComposer.js';
 import { RenderPass } from '../vendor/three/RenderPass.js';
 import { UnrealBloomPass } from '../vendor/three/UnrealBloomPass.js';
 import { OutputPass } from '../vendor/three/OutputPass.js';
-import { generateCountry, hash } from './gen.js';
+import { generateCountry, hash, PITCH } from './gen.js';
 import { buildWorld, buildLife, pick, night, clock, buildCoverage, COVERAGE } from './world.js';
 import { Agents, moodOf } from './agents.js';
 import { People, HOUSING, kindOf } from './people.js';
@@ -669,21 +669,37 @@ const sparks = new THREE.InstancedMesh(new THREE.SphereGeometry(1.5, 8, 6), new 
 sparks.frustumCulled = false; sparks.count = 0; scene.add(sparks);
 const sp = new THREE.Object3D(); const spc = new THREE.Color();
 let arcList = [];
-function arcPoint(a, o, t, lift) { return [a.x + (o.x - a.x) * t, 10 + Math.sin(Math.PI * t) * lift, a.z + (o.z - a.z) * t]; }
+// Feelings no longer arc through the empty space between districts: each bond is a thin line of light laid along the
+// walking route between the two (streets and bridges, routes.js), a little above the ground, with lights travelling
+// along it. The route is made again only when one of them has moved more than 40 m (at most once a second).
+const ARC_Y = 1.6;
+function bondRoute(a, b, now) {
+  const r = b.route;
+  if (r && now - r.t < 1000) return r;
+  if (r && Math.hypot(a.x - r.ax, a.z - r.az) < 40 && Math.hypot(b.a.x - r.bx, b.a.z - r.bz) < 40) return r;
+  const p = agents.routes.route(a.x, a.z, b.a.x, b.a.z, 0);
+  const cum = [0]; for (let i = 1; i < p.length; i++) cum.push(cum[i - 1] + Math.hypot(p[i][0] - p[i - 1][0], p[i][1] - p[i - 1][1]));
+  return (b.route = { p, cum, len: cum[cum.length - 1] || 1, t: now, ax: a.x, az: a.z, bx: b.a.x, bz: b.a.z });
+}
+function alongRoute(r, t) { // the point at fraction t of the route's length
+  const d = t * r.len; let i = 1; while (i < r.cum.length - 1 && r.cum[i] < d) i++;
+  const k = (d - r.cum[i - 1]) / ((r.cum[i] - r.cum[i - 1]) || 1); const [x1, z1] = r.p[i - 1], [x2, z2] = r.p[i] || r.p[i - 1];
+  return [x1 + (x2 - x1) * k, ARC_Y, z1 + (z2 - z1) * k];
+}
 function drawArcs(now) {
   const a = st.agent; if (!a || !arcList.length) { arcs.visible = false; sparks.count = 0; return; }
-  const pos = new Float32Array(arcList.length * ARC_N * 6); const colr = new Float32Array(arcList.length * ARC_N * 6);
-  let n = 0;
+  const routes = arcList.map(b => bondRoute(a, b, now));
+  const segs = routes.reduce((n, r) => n + Math.max(1, r.p.length - 1), 0);
+  const pos = new Float32Array(segs * 6); const colr = new Float32Array(segs * 6);
+  let n = 0, j = 0;
   arcList.forEach((b, k) => {
-    const o = b.a; const c = new THREE.Color(BOND_COLOR[b.kind] || '#67e8f9');
-    const lift = 30 + Math.hypot(o.x - a.x, o.z - a.z) * 0.18;
-    for (let i = 0; i < ARC_N; i++) for (let e = 0; e < 2; e++) {
-      const [x, y, z] = arcPoint(a, o, (i + e) / ARC_N, lift); const j = (k * ARC_N + i) * 6 + e * 3;
-      pos[j] = x; pos[j + 1] = y; pos[j + 2] = z; colr[j] = c.r * 1.3; colr[j + 1] = c.g * 1.3; colr[j + 2] = c.b * 1.3;
+    const r = routes[k]; const c = new THREE.Color(BOND_COLOR[b.kind] || '#67e8f9');
+    for (let i = 0; i + 1 < r.p.length; i++) for (let e = 0; e < 2; e++) {
+      const [x, z] = r.p[i + e]; pos[j] = x; pos[j + 1] = ARC_Y; pos[j + 2] = z; colr[j] = c.r * 1.3; colr[j + 1] = c.g * 1.3; colr[j + 2] = c.b * 1.3; j += 3;
     }
-    const dist = Math.hypot(o.x - a.x, o.z - a.z); const size = Math.min(4, 0.8 + dist / 400);
+    const size = Math.min(3, 0.8 + r.len / 600);
     for (let s = 0; s < SPARKS; s++) {
-      const t = ((now / 2600) + s / SPARKS) % 1; const [x, y, z] = arcPoint(a, o, t, lift);
+      const t = ((now / (2600 + r.len * 2)) + s / SPARKS) % 1; const [x, y, z] = alongRoute(r, t);
       sp.position.set(x, y, z); sp.scale.setScalar(size * (0.6 + 0.4 * Math.sin(t * Math.PI))); sp.updateMatrix(); sparks.setMatrixAt(n, sp.matrix);
       sparks.setColorAt(n, spc.copy(c).multiplyScalar(2.6)); n++;
     }
@@ -835,6 +851,51 @@ async function placesTest() {
   if (fin && qs.get('open') !== 'no') { flyTo(fin.x, fin.z, 320, 600); select(null); showBuilding(fin); }
   return out.textContent;
 }
+// /map.html?selftest=routes[&n=3000]: thousands of walks between random points of every district (inside one district,
+// and between every pair of districts) plus every walk under way now, each point checked every 2 m: on a district, a
+// river bridge or a bridge between districts? Then one robot walks across a bridge, with the camera on it.
+function routesTest() {
+  const qs = new URLSearchParams(location.search); const N = Math.min(20000, Math.max(50, Number(qs.get('n')) || 3000));
+  const R = agents.routes; const cities = Object.values(data.cities); const rnd = rngT(7);
+  const pointIn = c => { const b = c.blocks[Math.floor(rnd() * c.blocks.length)]; return [b.x + (rnd() - 0.5) * 60, b.z + (rnd() - 0.5) * 60]; };
+  let routes = 0, off = 0, pts = 0, cross = 0, worst = null; const t0 = performance.now();
+  const check = (p, why) => {
+    const r = R.offPoints(p, 2); routes++; off += r.off; pts += r.n;
+    if (r.off && !worst) { // where: the first point off the ground
+      let at = ''; for (let k = 0; k + 1 < p.length && !at; k++) { const [x1, z1] = p[k], [x2, z2] = p[k + 1]; const m = Math.max(1, Math.ceil(Math.hypot(x2 - x1, z2 - z1) / 2)); for (let s = 0; s <= m; s++) { const x = x1 + (x2 - x1) * s / m, z = z1 + (z2 - z1) * s / m; if (!R.onGround(x, z)) { at = `leg ${k}/${p.length - 1} at ${x.toFixed(0)},${z.toFixed(0)}`; break; } } }
+      const e1 = p[0], e2 = p[p.length - 1], c1 = R.cityAt(e1[0], e1[1]), c2 = R.cityAt(e2[0], e2[1]);
+      const cell = (c, q) => c ? `${Math.round((q[0] - c.cx) / PITCH)},${Math.round((q[1] - c.cz) / PITCH)}` : '-';
+      worst = `${why}: ${r.off} of ${r.n}, ${at}${R.lastWhy ? `, ${R.lastWhy}` : ''}, from cell ${cell(c1, e1)} (${c1?.id}) to ${cell(c2, e2)} (${c2?.id})`;
+    }
+  };
+  for (let k = 0; k < N; k++) {
+    const A = cities[k % cities.length], B = k % 3 === 0 ? A : cities[Math.floor(rnd() * cities.length)];
+    const [x1, z1] = pointIn(A), [x2, z2] = pointIn(B); if (A !== B) cross++;
+    R.lastWhy = null; check(R.route(x1, z1, x2, z2, (k % 7) - 3), `${A.id} -> ${B.id}`);
+  }
+  const make = (performance.now() - t0) / N;
+  let walking = 0; for (const a of agents.list) if (a.state === 'walk' && a.path?.length) { walking++; check(a.path.slice(a.seg), `robot ${a.name || a.id}`); }
+  const out = h('div', { class: 'selftest', text: `routes test: ${routes.toLocaleString('en-US')} routes (${cross.toLocaleString('en-US')} between districts, ${walking} robots walking now) · ${pts.toLocaleString('en-US')} points checked every 2 m · off-road points: ${off}${worst ? ` (first: ${worst})` : ''} · ${make.toFixed(2)} ms per route` });
+  document.body.append(out);
+  // the walk across a bridge, to see it: a robot back and forth between the two ends of the capital's first bridge
+  const br = R.bridges.find(b => b.a.c.id === 'neura') || R.bridges[0];
+  const a = agents.list.find(x => x.name && !x.seat && !x.scene) || agents.list[0];
+  if (br && a) {
+    a.x = br.a.x; a.z = br.a.z;
+    const go = () => agents.walkTo(a, br.b.x, br.b.z, () => agents.walkTo(a, br.a.x, br.a.z, go));
+    go(); a.liveUntil = Infinity; select(a); markOn(a, 120000);
+    // already 40% of the way along its route (the same path it walks), so a picture a few seconds in shows it mid-bridge
+    for (let left = br.len * 0.4; left > 0 && a.seg < a.path.length - 1;) {
+      const [x2, z2] = a.path[a.seg + 1]; const d = Math.hypot(x2 - a.x, z2 - a.z);
+      if (d <= left) { a.x = x2; a.z = z2; a.seg++; left -= d; } else { a.x += (x2 - a.x) / d * left; a.z += (z2 - a.z) / d * left; left = 0; }
+    }
+    // the camera follows the walker (the bridge is long), just behind and above
+    const follow = () => { controls.target.set(a.x, 0, a.z); camera.position.set(a.x + 110, 120, a.z + 140); if (!inside) requestAnimationFrame(follow); };
+    follow();
+  }
+  return out.textContent;
+}
+function rngT(seed) { let s = seed >>> 0; return () => { s = (s + 0x6D2B79F5) >>> 0; let t = s; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
 // /map.html?at=police_hq&selftest=layout: once the citizens are in, is anything drawn over the open info panel?
 function layoutTest() {
   const out = h('div', { class: 'selftest', text: 'layout test…' }); document.body.append(out);
@@ -1196,6 +1257,7 @@ async function boot() {
   if (qs.get('selftest') === 'people') peopleTest();
   if (qs.get('selftest') === 'layout') layoutTest();
   if (qs.get('selftest') === 'places') placesTest();
+  if (qs.get('selftest') === 'routes') setTimeout(routesTest, 1500); // after the robots have started walking
   $('#lyShadows').checked = false; setShadows(false);
   $('#lyShadows').addEventListener('change', e => setShadows(e.target.checked));
   $('#lyAgents').addEventListener('change', e => { agents.visible = e.target.checked; });

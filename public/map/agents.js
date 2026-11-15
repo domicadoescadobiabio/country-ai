@@ -5,6 +5,7 @@
 import * as THREE from '../vendor/three/three.module.js';
 import { ACT_DEST, ACT_COLOR, MOODS, ACT_MOOD } from './catalog.js';
 import { PITCH, BLOCK, hash, rng } from './gen.js';
+import { Routes } from './routes.js';
 
 const SPEED = 46; // metres per second on screen (time-lapse)
 const tmp = new THREE.Object3D(); const col = new THREE.Color(); const m4 = new THREE.Matrix4(); const pv = new THREE.Vector3();
@@ -22,6 +23,7 @@ export const moodOf = a => (a.mood && MOODS[a.mood] ? a.mood : ACT_MOOD[a.act] |
 export class Agents {
   constructor(scene, data, max = 3200) {
     this.data = data; this.max = max; this.list = []; this.byId = new Map(); this.r = rng('agents');
+    this.routes = new Routes(data); // every walk: streets, river bridges, bridges between districts (routes.js)
     // one robot = body + head + visor + antenna light, four instanced meshes sharing one matrix per robot
     const part = (geo, mat) => { const m = new THREE.InstancedMesh(geo, mat, max); m.count = 0; m.frustumCulled = false; return m; };
     this.body = part(new THREE.CapsuleGeometry(1.45, 1.3, 4, 10).translate(0, 2.25, 0), new THREE.MeshLambertMaterial({ color: '#ffffff', emissive: '#241a52' }));
@@ -87,7 +89,7 @@ export class Agents {
   // run a training track ('loop'), or walk a route first and then stand ('walk' with a.after).
   pin(a, x, z) { a.state = 'pin'; a.x = x; a.z = z; a.path = null; }
   loop(a, track, phase) { a.state = 'loop'; a.track = track; a.t = phase; }
-  walkTo(a, x, z, after) { a.path = route(this.cityOf(a.city), a.x, a.z, x, z, 0); a.seg = 0; a.state = 'walk'; a.target = { x, z }; a.after = after; }
+  walkTo(a, x, z, after) { a.path = this.routes.route(a.x, a.z, x, z, 0); a.seg = 0; a.state = 'walk'; a.target = { x, z }; a.after = after; }
 
   // background population: n per city. people[cityId] = real citizens from /api/citizens?lite=1 (id, name, home,
   // mood): each robot is one of them, so every robot opens a real card. A city with no list (offline, error) falls
@@ -162,7 +164,7 @@ export class Agents {
     a.act = act || (a.seat ? a.seat : 'rest');
     if (!dest) { a.target = a.door || a.home; } else a.target = dest;
     if (!a.seat || act) a.color = ACT_COLOR[act] || ACT_COLOR.rest;
-    a.path = route(this.cityOf(a.city), a.x, a.z, a.target.x, a.target.z, (hash(a.id) % 7) - 3);
+    a.path = this.routes.route(a.x, a.z, a.target.x, a.target.z, (hash(a.id) % 7) - 3);
     a.seg = 0; a.state = 'walk'; a.dest = dest;
   }
   update(dt, now) {
@@ -180,7 +182,7 @@ export class Agents {
         a.wait -= dt;
         if (a.wait <= 0 && !(a.pokeT && now - a.pokeT < 2500)) {
           if (a.state === 'stay' && a.street) this.go(a, 'talk');
-          else if (a.state === 'stay') { const hm = a.door || a.home; a.target = hm; a.path = route(this.cityOf(a.city), a.x, a.z, hm.x, hm.z, (hash(a.id) % 7) - 3); a.seg = 0; a.state = 'walk'; a.dest = null; }
+          else if (a.state === 'stay') { const hm = a.door || a.home; a.target = hm; a.path = this.routes.route(a.x, a.z, hm.x, hm.z, (hash(a.id) % 7) - 3); a.seg = 0; a.state = 'walk'; a.dest = null; }
           else if (a.seat) this.go(a, null);
           else if (a.street) this.go(a, 'talk'); // outside: from square to park to food stall, never home
           else this.go(a, pickWeighted(this.r, this.weights));
@@ -254,10 +256,3 @@ export class Agents {
 
 function pickWeighted(r, w) { let sum = 0; for (const v of Object.values(w)) sum += v; let x = r() * sum; for (const [k, v] of Object.entries(w)) { x -= v; if (x <= 0) return k; } return 'talk'; }
 
-// Walk along the street grid: out to the nearest street corner, along x, along z, into the destination.
-function route(city, x1, z1, x2, z2, lane) {
-  if (!city) return [[x1, z1], [x2, z2]];
-  const snap = (v, c) => c + (Math.round((v - c) / PITCH - 0.5) + 0.5) * PITCH;
-  const rx1 = snap(x1, city.cx) + lane, rz1 = snap(z1, city.cz) + lane, rx2 = snap(x2, city.cx) + lane, rz2 = snap(z2, city.cz) + lane;
-  return [[x1, z1], [rx1, z1], [rx1, rz1], [rx2, rz1], [rx2, rz2], [x2, rz2], [x2, z2]];
-}

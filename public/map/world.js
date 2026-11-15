@@ -120,10 +120,12 @@ export function buildWorld(scene, data, { shadows }) {
     scene.add(mesh); meshes.push(mesh);
   }
 
-  // ---------------------------------------------------------------- sky-bridges between districts
+  // ---------------------------------------------------------------- bridges between districts
+  // level with the streets (the deck's top at street height): people walk from a street corner of one district across
+  // to a street corner of the next (routes.js); nobody walks through the empty space between districts
   for (const r of data.roads) {
     const dx = r.b[0] - r.a[0], dz = r.b[1] - r.a[1]; const len = Math.hypot(dx, dz); const rot = -Math.atan2(dz, dx);
-    const Y = 16;
+    const Y = -0.85;
     const deck = new THREE.Mesh(new THREE.BoxGeometry(len, 2, r.w), new THREE.MeshLambertMaterial({ color: '#141933' }));
     deck.position.set((r.a[0] + r.b[0]) / 2, Y, (r.a[1] + r.b[1]) / 2); deck.rotation.y = rot; scene.add(deck);
     for (const side of [-1, 1]) {
