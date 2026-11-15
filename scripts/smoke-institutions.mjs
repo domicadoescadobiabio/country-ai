@@ -336,6 +336,10 @@ async function dutyChecks(check) {
     }
     for (const port of Object.keys(roles.PORTFOLIO_FIELDS)) for (const now of [DAY, NIGHT]) if (!placeView(S, 'ministry', 'neura', { portfolio: port, now }).occupants.length) bare.push(`ministry:${port}`);
     check('duty: placeView of all government types x all 5 cities, day and night: never 0 people', bare.length === 0, bare.slice(0, 8).join(' '));
+    // one ministry (no Minister seated in this test): only its own guard and clerk, not the staff of all eight
+    const mDay = placeView(S, 'ministry', 'neura', { portfolio: 'welfare', now: DAY }), mNight = placeView(S, 'ministry', 'neura', { portfolio: 'welfare', now: NIGHT });
+    check('duty: a ministry asked by portfolio counts only its own staff (2 by day, 1 at night), even with no Minister seated', mDay.board.onDuty.staff === 2 && mNight.board.onDuty.staff === 1 && [...mDay.occupants, ...mNight.occupants].every(o => /welfare/.test(o.detail)) && placeView(S, 'ministry', 'neura', { portfolio: '__proto__', now: DAY }).board.onDuty.staff === 16,
+      JSON.stringify({ day: mDay.board.onDuty, night: mNight.board.onDuty, details: mDay.occupants.map(o => o.detail) }));
     const standIns = views.filter(([t]) => Object.hasOwn(cmd.DUTY_PLAN, t)).flatMap(([t, c, s, v]) => v.occupants.filter(o => /standing in/.test(o.detail)).map(() => `${t}@${c}/${s}`));
     check('duty: with the roster filled nobody needs to stand in at a guarded building', standIns.length === 0, standIns.slice(0, 5).join(' '));
     const roleSet = new Set(views.flatMap(([, , , v]) => v.occupants.map(o => o.role)));

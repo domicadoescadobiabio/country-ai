@@ -12,7 +12,7 @@
 //                     short server-written lesson go into that official's next prompts
 //   work plans        leaders write a short plan every 3 days, shown in their prompts and in #palace
 // Laws run by themselves: the basic income set by law is paid every day from the treasury (Art. 4), not by order.
-import { ROLES, loadExpertise, topFieldsText, giftedText, civilOnDuty } from './roles.mjs';
+import { ROLES, PORTFOLIO_FIELDS, loadExpertise, topFieldsText, giftedText, civilOnDuty } from './roles.mjs';
 import { onDuty, siteFor, sitesOf, capitalOf, postingOf, standInGuard, dutyShift, CORPS, DUTY_PLAN } from './command.ts';
 import { constitutionText } from './constitution.mjs';
 import { pick, chance, cai, round, cleanText, clamp, shuffle, citizenById } from './util.ts';
@@ -429,11 +429,13 @@ export function placeView(S: State, type: string, city: string | null = null, q:
     for (const o of offices) for (const a of seated(S, o)) occupants.push(occ(S, a, ROLES[o].title, S.orderedDay === day && o === 'president' ? 'order issued today' : 'at the desk', a.workPlan ? `plan: ${a.workPlan.text}` : '', a.sworn?.day ?? null));
     board = { lastOrders: (S.orders || []).slice(-3).map(o => ({ day: o.day, text: short(o.text, 140) })), orderToday: S.orderedDay === day, plans: occupants.length ? seated(S, 'president').concat(seated(S, 'vice_president')).filter(a => a.workPlan).map(a => ({ by: a.name, day: a.workPlan.day, text: short(a.workPlan.text, 200) })) : [] };
   } else if (type === 'ministry') {
-    const port = q?.portfolio && S.cabinet?.portfolios && Object.hasOwn(S.cabinet.portfolios, q.portfolio) ? q.portfolio : null;
+    // one of the eight fixed portfolios, whether or not a Minister holds it today (a vacant ministry still has its
+    // guard and clerk, and only theirs are counted)
+    const port = typeof q?.portfolio === 'string' && Object.hasOwn(PORTFOLIO_FIELDS, q.portfolio) ? q.portfolio : null;
     title = port ? `Ministry: ${port}` : 'The Ministries';
     const ports = port ? [port] : Object.keys(S.cabinet?.portfolios || {});
     for (const p of ports) {
-      const m = who(S, S.cabinet.portfolios[p]); if (!m) continue;
+      const m = who(S, S.cabinet?.portfolios?.[p]); if (!m) continue;
       const d = lastDecision(S, x => x.agentId === m.id && x.role === 'minister' && x.type === 'order');
       occupants.push(occ(S, m, `Minister (${p})`, d ? (d.day === day ? `acted today: ${d.chosen}` : `last act day ${d.day}: ${d.chosen}`) : 'no act yet', d ? d.outcome : '', m.sworn?.day ?? null));
     }
