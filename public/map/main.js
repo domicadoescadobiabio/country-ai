@@ -12,7 +12,7 @@ import { People, HOUSING, kindOf } from './people.js';
 import { Scenes, SCENE_COLOR } from './scenes.js';
 import { TYPES, CATS, ACT_COLOR, REP, MOODS, BOND_COLOR } from './catalog.js';
 import { setClock, fmtTime, hourOf, clockDetail } from '../clock.js'; // every time on the map is the republic's (ET)
-import { jobLine, workingLine } from '../jobs.js?v=1'; // everyone's job (citizen.job)
+import { jobLine, workingLine, actLabel } from '../jobs.js?v=2'; // everyone's job (citizen.job), act labels
 import { newsTicker, TEST_NEWS } from '../news.js?v=1'; // Republic News, running in the people HUD
 
 const $ = s => document.querySelector(s);
@@ -268,7 +268,7 @@ function showBuilding(b) {
   const w = workers(b);
   if (w.length) body.append(h('h4', { text: 'Works here' }), h('ul', {}, w.slice(0, 40).map(p => h('li', {}, h('b', { text: p.name }), h('span', { text: p.role })))));
   const inside = agents.list.filter(a => a.dest === b && a.state === 'stay' && a.name).slice(0, 12);
-  if (inside.length) body.append(h('h4', { text: 'Inside now' }), h('ul', {}, inside.map(a => h('li', {}, h('b', { text: a.name }), h('span', { text: a.act })))));
+  if (inside.length) body.append(h('h4', { text: 'Inside now' }), h('ul', {}, inside.map(a => h('li', {}, h('b', { text: a.name }), h('span', { text: actLabel(a.act) })))));
   const live = people?.counts ? [] : agents.list.filter(a => a.home === b && a.name && !a.scene).slice(0, 12); // the real list is below
   if (live.length) body.append(h('h4', { text: 'Lives here' }), h('ul', {}, live.map(a => h('li', {}, h('b', { text: a.name }), h('span', { text: a.seat ? roleTitle(a.seat) : 'citizen' })))));
   if (people?.counts) body.append(peopleSection(b));
@@ -290,9 +290,9 @@ const statusOf = p => {
   if (k === 'prison') return `Inside ${p.b?.name || (p.where === 'jail' ? 'the jail' : 'the prison')}${p.act ? ` · ${p.act}` : ''}`;
   // whereabouts act 'working': at their job ("Working as Barista · Cafe 2")
   if (p.act === 'working') return `${workingLine(p, personOffice(p))} · ${p.b?.name || p.where}`;
-  return `Inside ${p.b?.name || p.where}${p.act ? ` · ${p.act}` : ''}`;
+  return `Inside ${p.b?.name || p.where}${p.act ? ` · ${actLabel(p.act)}` : ''}`;
 };
-const shortStatus = (p, b) => { const k = kindOf(p); return k === 'asleep' ? 'asleep' : k === 'home' ? 'at home' : k === 'out' ? 'outside' : p.b === b ? (p.act || 'here') : `out at ${p.b?.name || p.where}`; };
+const shortStatus = (p, b) => { const k = kindOf(p); return k === 'asleep' ? 'asleep' : k === 'home' ? 'at home' : k === 'out' ? 'outside' : p.b === b ? (p.act ? actLabel(p.act) : 'here') : `out at ${p.b?.name || p.where}`; };
 // the title of a person's office (officials), for their job line
 const personOffice = p => (p?.office ? roleTitle(p.office) : null);
 const jobText = p => jobLine(p, personOffice(p)) || 'Citizen';
@@ -569,7 +569,7 @@ function localPlace(type, b) {
     }
     default: {
       const ACT = { market: 'shop', mall: 'shop', supermarket: 'shop', office: 'work', factory: 'work', hospital: 'help', clinic: 'help', community_hall: 'volunteer', data_center: 'work' }[type];
-      for (const e of (s.daily?.recent || []).slice().reverse()) if ((!ACT || e.act === ACT) && (!b.city || e.city === b.city)) add(e.agent, 'Recent visitor', e.line || e.act, { detail: e.note ? String(e.note).slice(0, 120) : null, since: e.ts });
+      for (const e of (s.daily?.recent || []).slice().reverse()) if ((!ACT || e.act === ACT) && (!b.city || e.city === b.city)) add(e.agent, 'Recent visitor', e.line || actLabel(e.act), { detail: e.note ? String(e.note).slice(0, 120) : null, since: e.ts });
       board.note = occ.length ? `Who came by recently in ${cityName}` : `Nobody here right now in ${cityName}`;
     }
   }
@@ -761,7 +761,7 @@ function showAgent(a, keepBonds) {
     h('span', { class: 'cat', color: a.color }, h('i'), role), h('h2', { text: a.name || (a.scene ? 'A sample figure' : 'A citizen') }),
     h('p', { class: 'mood' }, h('b', { text: `${emoji(label)} ${label}` }), rec?.mood?.why ? ` · ${rec.mood.why}` : a.mood ? '' : ' · (a guess from what they are doing)'))));
   const rows = a.scene ? [['City', data.cities[a.city]?.name || a.city], ['Where', a.b?.name || ''], ['Doing', a.what || a.act]]
-    : [['City', data.cities[a.city]?.name || a.city], ['Doing', a.state === 'walk' ? `walking to ${a.dest ? a.dest.name : 'home'}` : a.act], ['Home', a.address ? `${a.address} (${a.home?.name || ''})` : (a.home?.name || '')]];
+    : [['City', data.cities[a.city]?.name || a.city], ['Doing', a.state === 'walk' ? `walking to ${a.dest ? a.dest.name : 'home'}` : actLabel(a.act)], ['Home', a.address ? `${a.address} (${a.home?.name || ''})` : (a.home?.name || '')]];
   // where the whereabouts put them, for someone who is not out walking: "At home in …", "Inside …"
   const pp = people?.byId.get(a.id);
   if (pp && !a.scene && a.state !== 'walk' && !a.street) { const s = statusOf(pp); if (s) rows.splice(1, 1, ['Now', s]); }
@@ -776,7 +776,7 @@ function showAgent(a, keepBonds) {
     const pt = typeof now.place === 'string' && Object.hasOwn(TYPES, now.place) ? now.place : null;
     const where = pt ? TYPES[pt].name : now.place || null;
     const cityName = now.city && data.cities[now.city] ? data.cities[now.city].name : null;
-    const nr = [['Doing', now.act], ['Where', [where, cityName].filter(Boolean).join(', ') || null], ['Since', now.since ? (now.since > 1e11 ? fmtTime(now.since) : `day ${now.since}`) : null],
+    const nr = [['Doing', now.act ? actLabel(now.act) : null], ['Where', [where, cityName].filter(Boolean).join(', ') || null], ['Since', now.since ? (now.since > 1e11 ? fmtTime(now.since) : `day ${now.since}`) : null],
       ['Field', now.field ? `${now.field}${now.gifted ? ' ★ gifted' : ''}` : null], ['Detail', now.detail], ['Mood', now.mood]].filter(([, v]) => v);
     if (nr.length) {
       body.append(h('h4', { text: 'Right now' }), h('div', { class: 'kv' }, nr.flatMap(([k, v]) => [h('span', { text: k }), h('b', { text: String(v) })])));
@@ -1019,7 +1019,7 @@ function pickTest() {
 function renderFeed() {
   const ol = $('#feed'); ol.replaceChildren();
   for (const e of st.feed.slice(0, 8)) ol.append(h('li', { onclick: () => { const a = agents.byId.get(e.agent); if (a) { flyTo(a.x, a.z, 320, 900); showAgent(a); } } },
-    h('span', { class: 'em', color: ACT_COLOR[e.act] || '#94a3b8', text: emoji(e.mood || (agents.byId.get(e.agent) ? moodLabel(agents.byId.get(e.agent)) : 'calm')) }), h('div', {}, h('b', { text: e.name || pretty(e.agent) }), ` ${e.line || e.act}`, h('small', { text: `${data.cities[e.city]?.name || e.city} · ${e.note || ''}` }))));
+    h('span', { class: 'em', color: ACT_COLOR[e.act] || '#94a3b8', text: emoji(e.mood || (agents.byId.get(e.agent) ? moodLabel(agents.byId.get(e.agent)) : 'calm')) }), h('div', {}, h('b', { text: e.name || pretty(e.agent) }), ` ${e.line || actLabel(e.act)}`, h('small', { text: `${data.cities[e.city]?.name || e.city} · ${e.note || ''}` }))));
 }
 function renderClock() {
   const s = st.state; $('#clock').title = clockDetail();
@@ -1030,7 +1030,7 @@ function showLive(e) {
   const a = agents.live(e, nameOf); if (!a) return;
   st.feed.unshift(e); st.feed.length = Math.min(st.feed.length, 20); renderFeed();
   if (!liveLabels.has(a.id)) { const el = h('div', { class: 'lbl live' }); $('#labels').append(el); const l = { kind: 'live', el, pos: new THREE.Vector3(), a }; labels.push(l); liveLabels.set(a.id, l); }
-  liveLabels.get(a.id).el.textContent = `${emoji(moodLabel(a))} ${a.name}: ${e.line || e.act}`;
+  liveLabels.get(a.id).el.textContent = `${emoji(moodLabel(a))} ${a.name}: ${e.line || actLabel(e.act)}`;
   if (e.act === 'poke' && e.note) bubble(a, `${emoji(moodLabel(a))} ${e.note}`, 9000);
 }
 function ingest(s) {
@@ -1231,7 +1231,7 @@ function leadersUi() {
 
 // ------------------------------------------------------------ boot
 function legend() {
-  $('#acts').replaceChildren(...Object.entries(ACT_COLOR).filter(([k]) => k !== 'rest').map(([k, c]) => h('span', {}, h('i', { color: c }), k)), h('span', {}, h('i', { color: '#2563eb' }), 'police'), h('span', {}, h('i', { color: '#4d7c0f' }), 'military'),
+  $('#acts').replaceChildren(...Object.entries(ACT_COLOR).filter(([k]) => k !== 'rest').map(([k, c]) => h('span', {}, h('i', { color: c }), actLabel(k))), h('span', {}, h('i', { color: '#2563eb' }), 'police'), h('span', {}, h('i', { color: '#4d7c0f' }), 'military'),
     h('span', {}, h('i', { color: SCENE_COLOR.exam }), 'exam'), h('span', {}, h('i', { color: SCENE_COLOR.suspect }), 'arrest / trial'), h('span', {}, h('i', { color: SCENE_COLOR.inmate }), 'inmate'), h('span', {}, h('i', { color: SCENE_COLOR.voter }), 'voter'));
   const sel = $('#lyCover');
   sel.replaceChildren(h('option', { value: '', text: 'Coverage: off' }), ...Object.entries(COVERAGE).map(([k, c]) => h('option', { value: k, text: `Coverage: ${c.label}` })));

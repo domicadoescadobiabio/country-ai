@@ -3,6 +3,10 @@
 // job of the catalog (Barista, Mechanic, Reporter...). Plain text only: callers set it with textContent.
 const clip = (s, n = 40) => String(s ?? '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, n);
 
+// a daily act as people read it (daily byAct / recent / diary): 'job_hunt' is "looking for work" (ticket #759)
+const ACT_TEXT = { job_hunt: 'looking for work' };
+export const actLabel = act => ACT_TEXT[act] || clip(act, 40);
+
 // the job object as the server sent it, checked; null when there is none (an older server)
 export function cleanJob(j) {
   if (!j || typeof j !== 'object' || typeof j.id !== 'string' || !/^[a-z0-9_]{1,40}$/.test(j.id)) return null;

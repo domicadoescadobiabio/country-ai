@@ -1,7 +1,7 @@
 // COUNTRY AI client. All agent/visitor text goes through textContent (never innerHTML with data).
 // Every time shown is the republic's clock (US Eastern, "ET"), never the visitor's own zone: see clock.js.
 import { setClock, fmtTime, fmtDate, fmtDateTime, clockDetail } from './clock.js';
-import { jobLine } from './jobs.js?v=1'; // a citizen's job line (citizen.job)
+import { jobLine, actLabel } from './jobs.js?v=2'; // a citizen's job line (citizen.job), act labels
 import { newsTicker, TEST_NEWS } from './news.js?v=1'; // Republic News, running under the header
 const $ = s => document.querySelector(s);
 const st = { config: { channels: [], roles: [], constitution: [] }, citizens: [], feed: {}, stats: {}, seats: {}, academy: {}, ch: 'academy', tab: 'academy', citizen: null };
@@ -390,7 +390,7 @@ const PANELS = {
     }
     const lessons = Object.entries(a.lessons || {}).flatMap(([r, ls]) => ls.map(l => `${role(r)?.title || r}: ${l}`));
     if (lessons.length) out.push(h('div', { class: 'card' }, h('h4', { text: 'Written lessons' }), lessons.map(l => h('div', { class: 'lesson', text: l }))));
-    if (a.diary?.length) out.push(h('div', { class: 'card' }, h('h4', { text: 'Diary (daily life, thought with the local brain)' }), a.diary.slice().reverse().map(x => h('div', { class: 'list-row' }, h('small', { text: `day ${x.day} · ${x.act}` }), h('div', { text: x.note || '' })))));
+    if (a.diary?.length) out.push(h('div', { class: 'card' }, h('h4', { text: 'Diary (daily life, thought with the local brain)' }), a.diary.slice().reverse().map(x => h('div', { class: 'list-row' }, h('small', { text: `day ${x.day} · ${actLabel(x.act)}` }), h('div', { text: x.note || '' })))));
     if (a.record?.length) out.push(h('div', { class: 'card' }, h('h4', { text: 'Police record' }), a.record.map(r => h('div', { class: 'list-row', text: r }))));
     return out;
   },
