@@ -757,11 +757,22 @@ function send(res, code, body, type = 'application/json; charset=utf-8') {
     res.writeHead(code, { ...headers, 'content-encoding': 'gzip' }); res.end(z);
   });
 }
+// A body over BODY_MAX is refused with 413, but read to its end first (up to BODY_DRAIN_MAX, then the connection is
+// cut): a socket destroyed while the client is still sending makes the client see a reset instead of the 413.
+const BODY_MAX = 8192, BODY_DRAIN_MAX = 1 << 20;
+const tooLarge = () => Object.assign(new Error('body too large'), { code: 413 });
 function readBody(req) {
   return new Promise((resolve, reject) => {
-    let size = 0; const chunks = [];
-    req.on('data', c => { size += c.length; if (size > 8192) { reject(Object.assign(new Error('body too large'), { code: 413 })); req.destroy(); } else chunks.push(c); });
-    req.on('end', () => { try { resolve(chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {}); } catch { reject(Object.assign(new Error('bad json'), { code: 400 })); } });
+    let size = 0, over = false; const chunks = [];
+    req.on('data', c => {
+      size += c.length;
+      if (size > BODY_DRAIN_MAX) { reject(tooLarge()); req.destroy(); return; }
+      if (size > BODY_MAX) { over = true; chunks.length = 0; } else chunks.push(c);
+    });
+    req.on('end', () => {
+      if (over) return reject(tooLarge());
+      try { resolve(chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {}); } catch { reject(Object.assign(new Error('bad json'), { code: 400 })); }
+    });
     req.on('error', reject);
   });
 }
@@ -801,11 +812,12 @@ async function handleSay(req, res) {
 // (same client IP as the other limits), per citizen 1 per 3 s, the whole nation 600/min.
 const POKE = { ipMin: 10, ipHour: 60, citizenMs: 3000, nationMin: 600 };
 const pokeByIp = new Map(), pokeByCitizen = new Map(), pokeNation = { t: 0, n: 0 };
-function drainBody(req, max = 8192) {
+// the body is read and thrown away; false when it was over max (read to its end like readBody, so the 413 arrives)
+function drainBody(req, max = BODY_MAX) {
   return new Promise(resolve => {
     let size = 0;
-    req.on('data', c => { size += c.length; if (size > max) { resolve(false); req.destroy(); } });
-    req.on('end', () => resolve(true)); req.on('error', () => resolve(false));
+    req.on('data', c => { size += c.length; if (size > BODY_DRAIN_MAX) { resolve(false); req.destroy(); } });
+    req.on('end', () => resolve(size <= max)); req.on('error', () => resolve(false));
   });
 }
 // a browser on another site sends its own Origin: only this site (its Host, or PUBLIC_URL) may poke
