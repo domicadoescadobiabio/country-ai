@@ -751,6 +751,62 @@ function showAgent(a, keepBonds) {
 }
 $('#infoClose').addEventListener('click', () => { $('#info').hidden = true; st.selected = null; select(null); });
 
+// The info panel never sits under the other boxes. On a wide screen it is a column on the right: whatever floats in
+// that column (the citizens HUD, the legend, the zoom bar, a tip) is measured, and the panel starts below what is at
+// the top and stops above what is at the bottom, scrolling inside itself. Re-measured whenever one of them changes
+// size (the HUD wraps to 2-3 lines on narrow screens) and on resize. On a phone the panel is a bottom sheet (CSS).
+const FLOATS = ['#peopleHud', '#legend', '#zoom', '#zoomTip', '#leaders', '#feedBox'];
+function layoutInfo() {
+  const info = $('#info'); const W = innerWidth, H = innerHeight; const root = document.documentElement.style;
+  if (W <= 760) { root.removeProperty('--info-top'); root.removeProperty('--info-bottom'); return; }
+  const x0 = W - 14 - Math.min(340, W - 28), x1 = W - 14; // the panel's column (CSS: right 14px, width 340px)
+  let top = 64, bottom = 14;
+  for (const sel of FLOATS) {
+    const el = $(sel); if (!el || el.hidden) continue;
+    const r = el.getBoundingClientRect(); if (!r.width || !r.height || r.right <= x0 || r.left >= x1) continue;
+    if (r.top + r.height / 2 < H / 2) top = Math.max(top, r.bottom + 8); else bottom = Math.max(bottom, H - r.top + 8);
+  }
+  // too little room left: give up the bottom first (the panel is drawn above the legend), then the top
+  if (H - top - bottom < 220) bottom = 14;
+  if (H - top - bottom < 220) top = 64;
+  root.setProperty('--info-top', `${Math.round(top)}px`); root.setProperty('--info-bottom', `${Math.round(bottom)}px`);
+  if (!info.hidden) info.scrollTop = Math.min(info.scrollTop, info.scrollHeight);
+}
+// /map.html?at=police_hq&selftest=layout: once the citizens are in, is anything drawn over the open info panel?
+function layoutTest() {
+  const out = h('div', { class: 'selftest', text: 'layout test…' }); document.body.append(out);
+  const t0 = performance.now();
+  const run = () => {
+    if (!people?.counts && performance.now() - t0 < 15000) return setTimeout(run, 300);
+    // nothing open yet (no ?at=): a citizen's card, the longest kind (bonds, goal, right now)
+    if ($('#info').hidden) { const a = agents.list.find(x => x.name && !x.scene); if (a) showAgent(a); else { const p = people?.byId.values().next().value; if (p) goPerson(p); } }
+    setTimeout(() => {
+      out.style.visibility = 'hidden'; // the test's own box must not count
+      const i = $('#info').getBoundingClientRect(); const hits = [];
+      for (const sel of FLOATS) {
+        const el = $(sel); if (!el || el.hidden) continue; const r = el.getBoundingClientRect(); if (!r.width || !r.height) continue;
+        const ox = Math.min(r.right, i.right) - Math.max(r.left, i.left), oy = Math.min(r.bottom, i.bottom) - Math.max(r.top, i.top);
+        if (ox > 0 && oy > 0) { // which one is drawn on top where they meet
+          const cx = (Math.max(r.left, i.left) + Math.min(r.right, i.right)) / 2, cy = (Math.max(r.top, i.top) + Math.min(r.bottom, i.bottom)) / 2;
+          const over = !$('#info').contains(document.elementFromPoint(cx, cy));
+          hits.push(`${sel} ${Math.round(ox)}x${Math.round(oy)} ${over ? 'OVER the panel' : 'under the panel'}`);
+        }
+      }
+      out.style.visibility = '';
+      out.textContent = `layout test ${innerWidth}x${innerHeight} · info ${Math.round(i.top)}-${Math.round(i.bottom)} (${$('#info').scrollHeight > $('#info').clientHeight ? 'scrolls inside' : 'fits'}) · overlaps: ${hits.length ? hits.join(', ') : 'none'}`;
+    }, 600);
+  };
+  run();
+}
+{
+  const ro = new ResizeObserver(() => layoutInfo());
+  for (const sel of FLOATS) { const el = $(sel); if (el) ro.observe(el); }
+  // shown/hidden (the HUD appears once everyone is loaded, the tip toggles) changes the layout too
+  const mo = new MutationObserver(() => layoutInfo());
+  for (const sel of [...FLOATS, '#info']) { const el = $(sel); if (el) mo.observe(el, { attributes: true, attributeFilter: ['hidden'] }); }
+  addEventListener('resize', layoutInfo); layoutInfo();
+}
+
 // click (not drag): a robot gets poked (and its card opens), otherwise the building opens
 const ray = new THREE.Raycaster(); const ndc = new THREE.Vector2(); let down = null;
 canvas.addEventListener('pointerdown', e => { down = [e.clientX, e.clientY]; });
@@ -1075,6 +1131,7 @@ async function boot() {
   if (qs.get('selftest') === 'interior') setTimeout(selfTest, 100);
   if (qs.get('selftest') === 'pick') setTimeout(pickTest, 1200); // after the robots have walked out for a while
   if (qs.get('selftest') === 'people') peopleTest();
+  if (qs.get('selftest') === 'layout') layoutTest();
   $('#lyShadows').checked = false; setShadows(false);
   $('#lyShadows').addEventListener('change', e => setShadows(e.target.checked));
   $('#lyAgents').addEventListener('change', e => { agents.visible = e.target.checked; });

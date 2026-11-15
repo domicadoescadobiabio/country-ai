@@ -23,7 +23,8 @@ button, input { font: inherit; }
 .clock { font: 500 12px var(--mono); color: var(--muted); text-align: right; white-space: nowrap; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 6px 10px; }
 .clock b { color: var(--text); }
 
-.info { position: fixed; top: 64px; right: 14px; width: 340px; max-height: calc(100% - 180px); overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 16px; backdrop-filter: blur(10px); }
+/* top/bottom are measured from the boxes floating in its column (layoutInfo in main.js); it scrolls inside */
+.info { position: fixed; top: var(--info-top, 64px); right: 14px; width: min(340px, calc(100vw - 28px)); max-height: calc(100% - var(--info-top, 64px) - var(--info-bottom, 116px)); overflow: auto; overscroll-behavior: contain; z-index: 3; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 16px; backdrop-filter: blur(10px); }
 .info .close { position: absolute; top: 8px; right: 8px; width: 30px; height: 30px; border-radius: 8px; border: 0; background: transparent; color: var(--muted); font-size: 20px; cursor: pointer; }
 .info h2 { margin: 0 28px 2px 0; font-size: 18px; }
 .info .cat { display: inline-flex; align-items: center; gap: 6px; font: 600 11px var(--mono); text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
@@ -82,7 +83,7 @@ button, input { font: inherit; }
   .bar { flex-wrap: wrap; gap: 8px; padding: 8px 10px; }
   .clock { order: 2; margin-left: auto; font-size: 11px; padding: 4px 8px; }
   .cities { order: 3; flex-basis: 100%; }
-  .info { top: auto; bottom: 0; left: 0; right: 0; width: auto; max-height: 55vh; border-radius: 16px 16px 0 0; padding-bottom: max(16px, env(safe-area-inset-bottom)); z-index: 3; }
+  .info { top: auto; bottom: 0; left: 0; right: 0; width: auto; max-height: 55vh; max-height: 55dvh; border-radius: 16px 16px 0 0; padding-bottom: max(16px, env(safe-area-inset-bottom)); z-index: 3; }
   .feed { left: 10px; right: 10px; width: auto; bottom: 64px; max-height: 26vh; padding: 10px; }
   .feed li:nth-child(n+4) { display: none; }
   .legend { left: 10px; right: 10px; bottom: 10px; max-width: none; padding: 8px 10px; }
