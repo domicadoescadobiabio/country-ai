@@ -130,6 +130,18 @@ check('never a paid API: no call to the paid models at all', paid.length === 0, 
   check('breaking: every item in newsFeed carries a boolean breaking; an item from before has false', feed.every(n => typeof n.breaking === 'boolean') && feed.find(n => n.ref === 'old')?.breaking === false);
 }
 
+// ---- the people's aspirations (owner, 16 Nov): reaching review and the decision are news; a national one adopted is breaking
+{
+  S = republic(); S.news = undefined; news._resetNews(); _resetLocal(); skew += 60000;
+  post('cityhall', 'state', '40 citizens of Datahaven back the same aspiration on housing: "More homes near the data centre". It goes to the Mayor for review within a day.', 'aspiration');
+  skew += 50; const cityAdopt = post('cityhall', S.officer.id, 'Adopted: the aspiration "More homes near the data centre" (41 supporters). The budget covers it. Policy pol-3.', 'aspiration'); cityAdopt.decision = 'adopted';
+  skew += 50; const nat = post('parliament', 'state', 'Adopted: the aspiration "Lower tax for job seekers" (120 supporters). The Council agrees. Policy pol-4.', 'aspiration'); nat.decision = 'adopted';
+  await news.newsTick(ctx());
+  const items = S.news.items.filter(n => n.kind === 'aspiration');
+  check('aspirations are news (kind aspiration, #cityhall and #parliament): reaching review and the decision', items.length === 3 && items.some(n => /back the same aspiration on housing/.test(n.headline) && n.city === 'datahaven'), JSON.stringify(items.map(n => [n.headline.slice(0, 50), n.breaking])));
+  check('a national aspiration the Council adopted is breaking; a city one is not', items.find(n => /Lower tax/.test(n.headline))?.breaking === true && items.filter(n => /Datahaven|data centre/.test(n.headline)).every(n => n.breaking === false));
+}
+
 // ---- the hourly limit, and no reporter yet
 skew += 60000; // the local brain goes quiet (no pull for a minute): offline
 S = republic(); S.news = undefined; news._resetNews(); _resetLocal(); ledger.length = 0;

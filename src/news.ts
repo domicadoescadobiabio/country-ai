@@ -19,8 +19,8 @@ export const NEWS_PER_HOUR = Math.round(env('NEWS_PER_HOUR', 12, 1, 120));
 const KEEP = 50, QUEUE_MAX = 30, IN_FLIGHT = 2, SEEN_MAX = 500, BACKLOG_MS = 6 * 3600000;
 // the announcements that are news: channel and kind (chat, debate, exam answers, diaries and the underworld never are)
 const NEWS_KINDS: Record<string, string[]> = {
-  parliament: ['law', 'vote', 'veto', 'oath'], palace: ['veto', 'order'], court: ['law', 'oath'], police: ['arrest', 'release', 'cold', 'report'],
-  election: ['vote', 'law', 'term', 'pass', 'fail'], academy: ['pass', 'review'], cityhall: ['oath', 'veto', 'order'], border: ['raid', 'admitted'],
+  parliament: ['law', 'vote', 'veto', 'oath', 'aspiration'], palace: ['veto', 'order'], court: ['law', 'oath'], police: ['arrest', 'release', 'cold', 'report'],
+  election: ['vote', 'law', 'term', 'pass', 'fail'], academy: ['pass', 'review'], cityhall: ['oath', 'veto', 'order', 'aspiration'], border: ['raid', 'admitted'],
   streets: ['law', 'payday', 'departure'], life: ['job', 'night'],
 };
 // ---------------------------------------------------------------- breaking news (owner, 16 Nov: the TV window)
@@ -38,7 +38,8 @@ const NEWS_KINDS: Record<string, string[]> = {
 export const NEWS_BREAKING_GAP_MIN = Math.round(env('NEWS_BREAKING_GAP_MIN', 90, 0, 1440));
 export const NEWS_BREAKING_PER_DAY = Math.round(env('NEWS_BREAKING_PER_DAY', 4, 0, 50));
 const MAJOR: Record<string, true> = { 'election:law': true, 'parliament:law': true, 'parliament:oath': true, 'border:raid': true };
-const isMajor = (ch: string, kind: string, m?: any) => MAJOR[`${ch}:${kind}`] === true || m?.breaking === true;
+// (and a NATIONAL aspiration the Council adopted: parliament:aspiration with decision 'adopted', src/aspirations.ts)
+const isMajor = (ch: string, kind: string, m?: any) => MAJOR[`${ch}:${kind}`] === true || m?.breaking === true || (ch === 'parliament' && kind === 'aspiration' && m?.decision === 'adopted');
 // a policy's news: the facts from the policy itself (its title was checked by src/policies.ts when it was drafted)
 const POLICY_NEWS: Record<string, true> = { proposed: true, active: true, rejected: true, expired: true, done: true };
 function policyEvent(S: State, p: any, st: string) {

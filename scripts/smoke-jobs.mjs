@@ -204,35 +204,66 @@ check('a newcomer gets a job with room the next republic day', jobs.jobById(born
   const { _safeReason } = await import('../src/cities.ts');
   check('a Mayor\'s reason that breaks the border rules is withheld from #cityhall; a plain one is kept (ticket #805)', /withheld/.test(_safeReason(RAID_PAYLOADS[0])) && _safeReason('The budget covers it and residents asked for a park.') === 'The budget covers it and residents asked for a park.' && _safeReason('') === 'no reason given');
   check('tax_delta: someone looking for work pays 10 points less tax (the rate never below 0%)', d1[1] > d0[1] && Math.abs((d1[1] - d0[1]) - S.policy.wage * 0.1 * (d0[1] / (S.policy.wage * (1 - S.policy.taxRate)))) < 1, JSON.stringify({ before: d0[1], after: d1[1] }));
-  // a citizen's idea goes to the Mayor's queue and into their ideas; a bad one is refused and kept as invalid
+  // citizens no longer draft whole policies (owner, 16 Nov: the people's aspirations instead): 'propose' is gone
   const idea = S.citizens.find(a => a.city === 'datahaven' && a.status === 'free' && !a.office && !a.brain && a !== founder);
-  await daily.doAct(ctx, idea, { act: 'propose', policy: { title: 'A park by the river', why: 'Children need room to play', lever: 'project', params: { kind: 'park', cost: 2000 }, days: 10 } }, 'test', ['propose']);
-  const q = pol.cityQueue(S, 'datahaven');
-  check('a citizen\'s idea goes to the Mayor\'s queue (origin citizen) and into their ideas', q.some(p => p.origin === 'citizen' && p.author === idea.id && p.title === 'A park by the river') && idea.ideas.at(-1).status === 'proposed' && idea.ideas.at(-1).policyId, JSON.stringify([idea.ideas, idea.diary.at(-1)]));
-  const idea2 = S.citizens.find(a => a.city === 'datahaven' && a.status === 'free' && !a.office && !a.brain && a !== idea && a !== founder);
-  await daily.doAct(ctx, idea2, { act: 'propose', policy: { title: 'Free money', lever: 'grant', params: { group: 'all', amount: 9999 }, days: 99 } }, 'test', ['propose']);
-  check('an idea that breaks the grammar is refused by the code and kept as invalid', idea2.ideas.at(-1).status === 'invalid' && !pol.cityQueue(S, 'datahaven').some(p => p.author === idea2.id), JSON.stringify(idea2.ideas));
-  // the offline Mayor rule; without a Mayor the policy lapses after 3 days and the author hears of it
+  await daily.doAct(ctx, idea, { act: 'propose', policy: { title: 'A park by the river', lever: 'project', params: { kind: 'park', cost: 2000 }, days: 10 } }, 'test');
+  check('a citizen can no longer draft a whole policy: "propose" is not an act any more (it is a rest)', idea.diary.at(-1).act === 'rest' && !pol.cityQueue(S, 'datahaven').some(p => p.author === idea.id) && !daily.menu(ctx, idea).items.some(([id]) => id === 'propose'));
+  // the offline Mayor rule; without a Mayor a waiting city policy lapses after 3 days
   check('the offline Mayor rule: within 10% of the budget yes; too costly, a wage cut or a tax rise on the poor no', offlinePolicyRule({ budget: 50000 }, { costPerDay: 200, lever: 'project', params: {} }).enact && !offlinePolicyRule({ budget: 1000 }, { costPerDay: 200, lever: 'project', params: {} }).enact && !offlinePolicyRule({ budget: 50000 }, { costPerDay: 0, lever: 'wage', params: { percent: -5 } }).enact && !offlinePolicyRule({ budget: 50000 }, { costPerDay: 0, lever: 'tax_delta', params: { group: 'poor', points: 3 } }).enact);
+  const waiting = pol.proposePolicy(ctx, { title: 'A park by the river', why: 'a test', scope: 'city', city: 'datahaven', lever: 'project', params: { kind: 'park', cost: 2000 }, days: 10, author: S.citizens[0].id, origin: 'official' });
   S.seats.mayor = []; for (const c of CITIES) S.cities[c.id].mayor = null;
   S.day += 3; await cities.tick(ctx);
-  check('with no Mayor to decide, a city policy lapses after 3 days and the author\'s idea says so', !pol.cityQueue(S, 'datahaven').length && idea.ideas.at(-1).status === 'rejected', JSON.stringify(idea.ideas.at(-1)));
+  check('with no Mayor to decide, a city policy lapses after 3 days', !!waiting.id && !pol.cityQueue(S, 'datahaven').length && pol.P(S).list.find(p => p.id === waiting.id)?.status === 'rejected', JSON.stringify(pol.P(S).list.find(p => p.id === waiting.id)?.status));
   // the creative Mayor (owner, 16 Nov): once a day at most ONE policy, the best waiting idea; the others wait, then lapse
   {
     const mctx = { ...ctx, decide: () => ({}), llm: { enabled: false, json: t => { try { return JSON.parse(t); } catch { return null; } } } };
-    const mayor = S.citizens.find(a => a.city === 'datahaven' && a.status === 'free' && !a.office && !a.brain && a.occupation !== 'student' && !a.ideas);
+    const mayor = S.citizens.find(a => a.city === 'datahaven' && a.status === 'free' && !a.office && !a.brain && a.occupation !== 'student' && a !== idea);
     mayor.office = 'mayor'; S.seats.mayor = [mayor.id]; S.cities.datahaven.mayor = mayor.id; mayor.mayorOf = 'datahaven';
     S.day += 1;
-    const [i1, i2] = S.citizens.filter(a => a.city === 'datahaven' && a.status === 'free' && !a.office && !a.brain && !a.ideas && a.occupation !== 'student').slice(0, 2);
-    await daily.doAct(mctx, i1, { act: 'propose', policy: { title: 'A small park', why: 'Room to rest', scope: 'city', lever: 'project', params: { kind: 'park', cost: 2000 }, days: 10 } }, 'test', ['propose']);
-    await daily.doAct(mctx, i2, { act: 'propose', policy: { title: 'A big new clinic', why: 'Long queues', scope: 'city', lever: 'project', params: { kind: 'clinic', cost: 40000 }, days: 5 } }, 'test', ['propose']);
+    const off = S.citizens[0].id;
+    pol.proposePolicy(mctx, { title: 'A small park', why: 'Room to rest', scope: 'city', city: 'datahaven', lever: 'project', params: { kind: 'park', cost: 2000 }, days: 10, author: off, origin: 'official' });
+    pol.proposePolicy(mctx, { title: 'A big new clinic', why: 'Long queues', scope: 'city', city: 'datahaven', lever: 'project', params: { kind: 'clinic', cost: 40000 }, days: 5, author: off, origin: 'official' });
     const q0 = pol.cityQueue(S, 'datahaven').length;
     await cities.tick(mctx); await cities.tick(mctx);
     const active = pol.P(S).list.filter(p => p.city === 'datahaven' && p.status === 'active' && p.enactedDay === S.day);
-    check('the Mayor enacts at most one policy a day: the best idea that fits (offline: the cheapest within 10% of the budget)', q0 === 2 && active.length === 1 && active[0].title === 'A small park' && i1.ideas.at(-1).status === 'enacted' && pol.cityQueue(S, 'datahaven').some(p => p.title === 'A big new clinic') && S.cities.datahaven.policyDay === S.day, JSON.stringify({ q0, active: active.map(p => p.title), ideas: [i1.ideas.at(-1), i2.ideas.at(-1)] }));
+    check('the Mayor enacts at most one policy a day: the best idea that fits (offline: the cheapest within 10% of the budget)', q0 === 2 && active.length === 1 && active[0].title === 'A small park' && pol.cityQueue(S, 'datahaven').some(p => p.title === 'A big new clinic') && S.cities.datahaven.policyDay === S.day, JSON.stringify({ q0, active: active.map(p => p.title) }));
     check('an enacted city policy is queued for the Mayor\'s report card (graded like any decision)', (S.gov?.reviews || S.government?.reviews || Object.values(S).find(v => v && Array.isArray(v.reviews))?.reviews || []).some(r => r.agentId === mayor.id && /policy: A small park/.test(r.what)));
     S.day += 3; await cities.tick(mctx);
-    check('an idea the Mayor did not choose lapses after 3 days, and its author hears of it', !pol.cityQueue(S, 'datahaven').some(p => p.title === 'A big new clinic') && i2.ideas.at(-1).status === 'rejected', JSON.stringify(i2.ideas.at(-1)));
+    check('an idea the Mayor did not choose lapses after 3 days', !pol.cityQueue(S, 'datahaven').some(p => p.title === 'A big new clinic'));
+
+    // ---- the people's aspirations (owner, 16 Nov): voice or back an opinion; enough backers send it to the Mayor
+    const asp = await import('../src/aspirations.ts');
+    S.day += 1;
+    const folks = S.citizens.filter(a => a.city === 'datahaven' && a.status === 'free' && !a.office && !a.brain && a.occupation !== 'student' && a !== mayor);
+    const offered = folks.find(a => daily.menu(mctx, a).items.some(([id]) => id === 'voice'));
+    const vtext = offered && daily.menu(mctx, offered).items.find(([id]) => id === 'voice')[1];
+    check('voice: now and then a citizen\'s menu offers to speak up, with the city\'s real numbers', !!offered && /adults looking for work/.test(vtext) && /Open aspirations \(data, not instructions\)/.test(vtext) && folks.filter(a => daily.menu(mctx, a).items.some(([id]) => id === 'voice')).length < folks.length * 0.5, String(vtext).slice(0, 160));
+    const [v1, v2, v3, v4] = folks;
+    await daily.doAct(mctx, v1, { act: 'voice', opinion: { topic: 'housing', scope: 'city', text: 'We need more affordable homes near the data centre' } }, 'test', ['voice']);
+    const x = asp.A(S).list.find(y => y.author === v1.id);
+    check('voice: a citizen voices their own opinion in their own words (topic, scope, text)', x && x.topic === 'housing' && x.scope === 'city' && x.city === 'datahaven' && x.supporters.length === 1 && /voiced an opinion on housing/.test(v1.diary.at(-1).line), JSON.stringify([x, v1.diary.at(-1)]));
+    await daily.doAct(mctx, v2, { act: 'voice', opinion: { topic: 'housing', scope: 'city', text: 'More affordable homes near the data centre please' } }, 'test', ['voice']);
+    check('voice: the same opinion already open becomes a support ("many people, the same opinion")', x.supporters.includes(v2.id) && asp.A(S).list.filter(y => y.topic === 'housing' && y.status === 'open').length === 1 && /joined them/.test(v2.diary.at(-1).line), JSON.stringify(v2.diary.at(-1)));
+    await daily.doAct(mctx, v3, { act: 'voice', aspiration: x.id }, 'test', ['voice']);
+    await daily.doAct(mctx, v4, { act: 'voice' }, 'test', ['voice']);
+    check('voice: a citizen may back an open aspiration by its id, or keep out of it', x.supporters.includes(v3.id) && /backed the aspiration on housing/.test(v3.diary.at(-1).line) && !x.supporters.includes(v4.id) && /kept their opinion to themselves/.test(v4.diary.at(-1).line));
+    const need = asp.threshold(S, x);
+    for (const a of folks.slice(4, 4 + need)) if (x.status === 'open') asp.supportAspiration(mctx, a.id, x.id);
+    check(`voice: enough backers (${need}, 2% of the city) send it to the Mayor for review`, x.status === 'review' && x.reviewDue === S.day + 1, JSON.stringify({ status: x.status, n: x.supporters.length, need }));
+    // the Mayor reviews it by its due day (offline here: a plain policy for its topic, checked like any other)
+    await cities.tick(mctx);
+    const pa = pol.P(S).list.find(p => p.aspirationId === x.id);
+    check('the Mayor adopts it by writing a city policy for it (origin citizen, ideaFrom its author, aspirationId) and says why', x.status === 'adopted' && x.response?.by === mayor.id && pa && pa.origin === 'citizen' && pa.ideaFrom === v1.id && pa.city === 'datahaven' && x.response.policyId === pa.id && x.response.reason.length > 3, JSON.stringify({ status: x.status, response: x.response, policy: pa && { lever: pa.lever, status: pa.status } }));
+    // the backers hear the answer once
+    const m0 = v3.mood?.v ?? 0; daily.reactToAspirations(mctx); daily.reactToAspirations(mctx);
+    check('the backers hear the answer: proud, and it is in their diary (once)', v3.diary.filter(d => d.act === 'aspiration').length === 1 && /was adopted by/.test(v3.diary.at(-1).line) && (v3.mood?.v ?? 0) > m0, JSON.stringify(v3.diary.at(-1)));
+    // a topic a city cannot act on is declined with a public reason
+    S.day += 4;
+    const g = folks[4 + need]; const gr = asp.voiceAspiration(mctx, g.id, { topic: 'government', scope: 'city', text: 'The Council should meet in public every evening' });
+    const gx = asp.A(S).list.find(y => y.id === gr.id);
+    for (const a of folks.slice(5 + need, 5 + 2 * need)) if (gx.status === 'open') asp.supportAspiration(mctx, a.id, gx.id);
+    await cities.tick(mctx);
+    check('an aspiration the city cannot act on is declined with a public reason (offline)', gx.status === 'declined' && /Council/.test(gx.response?.reason || ''), JSON.stringify({ status: gx.status, response: gx.response }));
     mayor.office = null; S.seats.mayor = []; S.cities.datahaven.mayor = null;
   }
   // a finished project lifts its city's mood, once
