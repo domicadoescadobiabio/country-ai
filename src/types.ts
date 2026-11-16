@@ -62,6 +62,10 @@ export interface Citizen {
   /** the job a citizen holds (src/jobs.ts catalog id, or 'unemployed'), and the republic day it began */
   job?: string;
   jobSince?: number;
+  /** an official's lessons from their report cards (the Government box writes them): the last 5 */
+  reflections?: { day: number; grade: string; what: string; mistake: string; next: string }[];
+  /** a citizen's ideas for a policy (the People box writes them): the last 5 */
+  ideas?: { day: number; title: string; status: string; policyId: string | null }[];
   [k: string]: any;
 }
 
@@ -155,6 +159,10 @@ export interface State {
   treasury: number;
   policy: { taxRate: number; ubi: number; wage: number; wageCap: number; finePct?: number; borderLevel?: number };
   decisions: Decision[];
+  /** free policies (src/policies.ts): the last 200, the daily draft count, finished projects, totals */
+  policies?: { list: any[]; seq: number; drafts: { day: number; nation: number; byCity: Record<string, number> }; projectsDone: { id: string; city: string; kind: string; day: number }[]; stats: Record<string, number>; appliedDay?: number };
+  /** the daily fixed exam (src/bench.ts): the last 120 runs and the run in progress */
+  bench?: { history: { day: number; date: string; score: number; right: number; total: number; byDomain: Record<string, [number, number]>; adapters: string[]; model: string | null }[]; run: any; lastDay: number; status?: string };
   [k: string]: any;
 }
 

@@ -19,6 +19,8 @@ import { borderCheck } from './src/military.ts';
 import { placeView as governmentPlace } from './src/president.ts'; // government buildings (Government box)
 import { placeView as peoplePlace, nowDoing, staffOnDuty } from './src/daily.ts'; // the people's buildings, the robot card and who is on duty (People box)
 import { jobOf, jobCounts, ALL_JOB_IDS, newsFeed } from './src/daily.ts'; // jobs and Republic News (People box, src/jobs.ts and src/news.ts)
+import { applyPolicies, policyList, policySummary } from './src/policies.ts'; // free policies (Nation box)
+import { benchTick, benchView, benchSummary } from './src/bench.ts';           // the daily fixed exam of the local brain (Nation box)
 import { freshAcademy, academyTick, totalSeats } from './src/academy.ts';
 import { lifeTick, payday } from './src/life.ts';
 import { INSTITUTIONS } from './src/institutions.ts';
@@ -142,7 +144,7 @@ const LIVE_KEYS = ['stats', 'seats', 'academy', 'command', 'treasury', 'policy',
 // the ones the running republic has.
 const STATE_PARTS = new Set(['stats', 'seats', 'academy', 'treasury', 'policy', 'econ', 'day', 'tick', 'paused', 'llmUsage', 'localBrain', 'budget',
   'applications', 'cabinet', 'audit', 'bills', 'laws', 'command', 'cities', 'homeLayout', 'court', 'daily', 'military', 'police', 'elections',
-  'orders', 'autonomy', 'training', 'underworld', 'school', 'gov', 'presidency', 'reportCards']);
+  'orders', 'autonomy', 'training', 'underworld', 'school', 'gov', 'presidency', 'reportCards', 'policies', 'bench']);
 const STATE_PARTS_MAX = 16;
 function liveState() {
   const c = compactState(); const out = {};
@@ -263,6 +265,21 @@ function jobsView() {
   jobsCache = { at: Date.now(), v };
   return v;
 }
+// a policy as the public sees it (src/policies.ts policyView): its texts once more through the border check
+const cleanPolicy = v => ({ ...v, title: placeText(v.title, 80) || '(title withheld)', why: placeText(v.why, 300), lesson: v.lesson ? placeText(v.lesson, 200) || null : null,
+  author: v.author ? { id: v.author.id, name: placeText(v.author.name, 40) || v.author.id, role: placeText(v.author.role, 40) } : null,
+  ideaFrom: v.ideaFrom ? { id: v.ideaFrom.id, name: placeText(v.ideaFrom.name, 40) || v.ideaFrom.id } : null });
+// what an official learned from a report card (a.reflections, the Government box) and a citizen's ideas (a.ideas, the
+// People box): the last 5 of each, numbers checked, texts cleaned
+const GRADES = new Set(['A', 'B', 'C', 'D', 'E', 'F']);
+function reflectionsView(a) {
+  return (Array.isArray(a.reflections) ? a.reflections : []).slice(-5).map(r => ({ day: Number.isInteger(r?.day) ? r.day : null, grade: GRADES.has(r?.grade) ? r.grade : null,
+    what: placeText(r?.what, 120), mistake: placeText(r?.mistake, 200), next: placeText(r?.next, 200) })).filter(r => r.mistake || r.next);
+}
+function ideasView(a) {
+  return (Array.isArray(a.ideas) ? a.ideas : []).slice(-5).map(x => ({ day: Number.isInteger(x?.day) ? x.day : null, title: placeText(x?.title, 80),
+    status: /^[a-z_]{1,20}$/.test(String(x?.status)) ? x.status : 'unknown', policyId: /^pol-\d{1,9}$/.test(String(x?.policyId)) ? x.policyId : null })).filter(x => x.title);
+}
 // Republic News (src/news.ts newsFeed): the newest n headlines (1..50), newest first, every text cleaned again
 const newsTotal = () => Number(S.news?.total) || 0;
 const person = x => (x && typeof x === 'object' && /^[a-z0-9-]{1,40}$/.test(String(x.id)) ? { id: String(x.id), name: placeText(x.name, 40) || String(x.id) } : null);
@@ -302,10 +319,14 @@ async function step() {
       for (const inst of INSTITUTIONS) if (inst.day) await inst.day(ctx);
     }
     if (S.day < today) { logActivity('state', `Clock caught up from day ${S.day} to day ${today} after downtime`); S.day = today; }
+    // free policies: grants and projects paid, finished ones expire, graded the day after they start (once a day)
+    if (rolled) { try { applyPolicies(ctx); } catch (e) { logActivity('state', `policies: ${String(e?.message || e).slice(0, 80)}`); } }
     alignRepublicClock(); // the day keeps its number; the next one starts at local midnight of CFG.tz
     for (const inst of INSTITUTIONS) if (inst.tick) await inst.tick(ctx);
     await lifeTick(ctx);
     ladderTick(ctx);
+    // the daily fixed exam of the local brain, in the quiet hours, local and free only (waits while it is offline)
+    try { await benchTick(ctx); } catch (e) { logActivity('state', `bench: ${String(e?.message || e).slice(0, 80)}`); }
     census();
     emitState(); // at most every SSE_STATE_MS, small, only when something changed
     emitNews(); // new Republic News headlines, as they are published
@@ -481,6 +502,9 @@ function compactState() {
         school: schoolPacing(), // the school's pacing in full (share now/base, behind, orShortUsd, concurrency, teacher-only counts, kept per field)
         examples: trainCounts().total, byDomain: trainCounts().byDomain, dataset: T.dataset || { kept: 0, unverified: 0, wrong: 0, duplicate: 0 } } } };
   for (const inst of INSTITUTIONS) Object.assign(out, inst.publicState?.(S) || {});
+  // free policies and the daily fixed exam, as small numbers (they ride the live stream; the lists are on
+  // /api/policies and /api/bench)
+  out.policies = policySummary(S); out.bench = benchSummary(S);
   return out;
 }
 // The map's view (/api/map): only what the map draws, built from the same public views as /api/state (so it
@@ -1017,10 +1041,24 @@ const server = http.createServer(async (req, res) => {
       if (!a) return send(res, 404, { error: 'no such citizen' });
       // one citizen: the full mood, the people they care about, and how often they were poked today
       // + school: interests, strongest fields, today's field, talent badges (gifted), skills and the last lessons
-      return send(res, 200, { citizen: { ...publicCitizen(a), mood: moodView(a), bonds: bondsView(S, a), pokes: a.pokes?.day === S.day ? a.pokes.n : 0, school: schoolView(a), now: nowCard(a.id) } });
+      return send(res, 200, { citizen: { ...publicCitizen(a), mood: moodView(a), bonds: bondsView(S, a), pokes: a.pokes?.day === S.day ? a.pokes.n : 0, school: schoolView(a), now: nowCard(a.id), reflections: reflectionsView(a), ideas: ideasView(a) } });
     }
     if (req.method === 'GET' && p === '/api/whereabouts') return handleWhereabouts(req, res);
     if (req.method === 'GET' && p === '/api/jobs') return send(res, 200, jobsView());
+    // free policies: ?status=active|proposed|done (none: all), ?n= 1..100 (default 50), newest first
+    if (req.method === 'GET' && p === '/api/policies') {
+      if (archiveLimited(req, res)) return;
+      const u = new URL(req.url, 'http://x'); const st = u.searchParams.get('status'), nq = u.searchParams.get('n');
+      if (st != null && st !== '' && !['active', 'proposed', 'done'].includes(st)) return send(res, 400, { error: 'status: active, proposed or done' });
+      const n = nq == null || nq === '' ? 50 : /^\d{1,3}$/.test(nq) ? Number(nq) : NaN;
+      if (!(n >= 1 && n <= 100)) return send(res, 400, { error: 'n: 1 to 100' });
+      return send(res, 200, policyList(S, st || null, n).map(cleanPolicy));
+    }
+    // the daily fixed exam: { latest, history (up to 120 days), status, questions, running }
+    if (req.method === 'GET' && p === '/api/bench') {
+      if (archiveLimited(req, res)) return;
+      return send(res, 200, benchView(S));
+    }
     if (req.method === 'GET' && p === '/api/news') {
       const nq = new URL(req.url, 'http://x').searchParams.get('n');
       const n = nq == null || nq === '' ? 20 : /^\d{1,2}$/.test(nq) ? Number(nq) : NaN;

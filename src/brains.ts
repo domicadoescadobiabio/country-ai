@@ -261,6 +261,8 @@ export function workerPull(max = 4, model = null, runner = undefined) {
 }
 // tests only: start the local queue empty (no jobs, no training credit); the counters are kept
 export function _resetLocal() { LOCAL.jobs.clear(); LOCAL.trainCredit = 0; }
+// tests only: the runner stops pulling (the local brain reads offline until the next pull)
+export function _setLocalOffline() { LOCAL.lastPull = 0; }
 export function workerAnswer(id, text, model = null) {
   const j = LOCAL.jobs.get(String(id)); if (!j || j.answer != null) return false;
   j.answer = cleanText(text, 900); j.model = model ? String(model).slice(0, 60) : LOCAL.model; LOCAL.answered++;
@@ -489,7 +491,8 @@ export const REMOTE_WAIT_MS = 150000; // a self-run agent has 2.5 minutes to ans
 export async function think(ctx, a, qid, { system, user, kind = 'question', format = 'text', options = null, claudeModel = null, wait = true, paid = true, domain = null }) {
   // school (kind 'train') and night school (kind 'night'): the student answers with the free local brain only;
   // the paid teachers are teach()
-  if (kind === 'train' || kind === 'night') paid = false;
+  // the daily fixed exam (kind 'bench', src/bench.ts) too: local only, last in the queue like the school
+  if (kind === 'train' || kind === 'night' || kind === 'bench') paid = false;
   const b = a.brain;
   // an agent with its own brain is never asked a free-only thought: a hosted brain would bill its owner's API key,
   // and a remote one would get its inbox (ballots, exams) filled with idle questions such as a visitor's poke
@@ -526,7 +529,7 @@ export async function think(ctx, a, qid, { system, user, kind = 'question', form
   // seat moves up to their own model on OpenRouter; the leadership thinks with Claude Opus.
   // 1. the local brain, free: every citizen and aspirant while it is online and its queue has room
   // school and night-school study (kind 'train' / 'night') is always last, an aspirant's included: exams and votes go first
-  const local = () => askLocal(qid, a, { system, user, kind, format, options, domain }, kind === 'train' || kind === 'night' ? TRAIN_PRIORITY : aspirant ? 0 : kind === 'vote' ? 1 : kind === 'life' ? 3 : 2);
+  const local = () => askLocal(qid, a, { system, user, kind, format, options, domain }, kind === 'train' || kind === 'night' || kind === 'bench' ? TRAIN_PRIORITY : aspirant ? 0 : kind === 'vote' ? 1 : kind === 'life' ? 3 : 2);
   if (!paid) {
     if (!wait || !localOnline()) return { text: null, engine: 'offline' };
     const r = local();

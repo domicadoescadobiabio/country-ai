@@ -362,6 +362,16 @@ try {
     JSON.stringify({ jobs: jb.jobs?.length, isNew: jb.jobs?.filter(j => j.isNew).length, sum: jSum, cities: jCities, citizens: jAll.total, unemployed: jb.unemployed, share: jb.unemployedShare }));
   check('jobs: /api/jobs says whether the jobs are given out (ready) and on which republic day (assignedDay)', jb.ready === true && Number.isInteger(jb.assignedDay) && jb.assignedDay >= 1 && jb.assignedDay <= occSt.day,
     JSON.stringify({ ready: jb.ready, assignedDay: jb.assignedDay, day: occSt.day }));
+  // --- free policies and the daily fixed exam (owner, 16 Nov: learn fast + creative)
+  const plAll = await get('/api/policies'), plAct = await get('/api/policies?status=active&n=5');
+  const plBad = await Promise.all(['status=__proto__', 'status=ACTIVE', 'n=0', 'n=101', 'n=x'].map(q => fetch(`${BASE}/api/policies?${q}`).then(r => r.status)));
+  check('policies: GET /api/policies lists policies (newest first, ?status=active|proposed|done, ?n= 1..100); anything else is 400', Array.isArray(plAll) && Array.isArray(plAct) && plAct.length <= 5 && plAct.every(p => p.status === 'active') && plBad.every(s => s === 400), JSON.stringify({ all: plAll.length, bad: plBad }));
+  const bv = await get('/api/bench');
+  check('bench: GET /api/bench gives { latest, history, status, questions, running }; without the local brain nothing runs', bv && 'latest' in bv && Array.isArray(bv.history) && typeof bv.status === 'string' && Number.isInteger(bv.questions) && 'running' in bv && bv.history.length === 0, JSON.stringify(bv));
+  const stPB = await get('/api/state?parts=policies,bench');
+  check('policies and bench ride /api/state (and the live stream) as small summaries', stPB.policies && Number.isInteger(stPB.policies.active) && Number.isInteger(stPB.policies.proposed) && stPB.policies.stats && stPB.bench && 'latest' in stPB.bench && JSON.stringify(stPB).length < 2000, JSON.stringify(stPB));
+  const cardPB = (await get(`/api/citizens/${jAll.citizens[0].id}`)).citizen;
+  check('a citizen\'s card carries reflections (an official\'s lessons) and ideas (a citizen\'s proposals), the last 5 of each', Array.isArray(cardPB.reflections) && Array.isArray(cardPB.ideas) && cardPB.reflections.length <= 5 && cardPB.ideas.length <= 5, JSON.stringify({ r: cardPB.reflections, i: cardPB.ideas }));
   // --- Republic News: headlines from what happened, newest first; new ones stream on SSE as a small 'news' event
   const newsShape = x => /^news-\d+$/.test(x.id) && typeof x.ts === 'number' && typeof x.headline === 'string' && x.headline.length > 0 && x.headline.length <= 100
     && (x.city === null || typeof x.city === 'string') && typeof x.kind === 'string' && x.reporter && x.reporter.id && x.reporter.name && (x.anchor === null || (x.anchor.id && x.anchor.name)) && typeof x.ref === 'string';
