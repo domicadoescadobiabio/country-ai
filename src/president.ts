@@ -41,10 +41,20 @@ export const policies = () => POL || null;
 // report cards come REVIEW_LAG_DAYS after the decision (src/policies.ts, default 1)
 export const reviewLag = () => { const n = Number(POL && POL.REVIEW_LAG_DAYS); return Number.isInteger(n) && n >= 1 ? n : 1; };
 // the policy grammar, for an official's prompt: levers with their limits, groups, project kinds (no free text)
-export function policyMenu() {
+export function policyMenu(S: State | null = null) {
   const m = policies(); if (!m) return '';
   const lev = Object.entries(m.LEVERS).map(([id, spec]: [string, any]) => `${id} {${Object.entries(spec).map(([k, r]) => (Array.isArray(r) ? `"${k}": ${r[0]}..${r[1]}` : `"${k}": <${r}>`)).join(', ')}}`).join('; ');
-  return `Levers: ${lev}. group: all, unemployed, students, poor, job:<job id> or city:<city id>. kind: ${(m.PROJECT_KINDS || []).join(', ')}. days 1..30. A project names a city.`;
+  // how many citizens each group holds today (ticket #850): a grant of N CAI to a group costs N x its size a day
+  const sizes = S && typeof m.groupSize === 'function' ? ` Group sizes today: ${['all', 'unemployed', 'students', 'poor'].map(g => `${g} ${m.groupSize(S, g, null)}`).join(', ')}${m.POOR_LINE ? ` (poor = free citizens under ${m.POOR_LINE} CAI)` : ''}; a grant costs its amount times the group's size every day.` : '';
+  return `Levers: ${lev}. group: all, unemployed, students, poor, job:<job id> or city:<city id>. kind: ${(m.PROJECT_KINDS || []).join(', ')}. days 1..30. A project names a city.${sizes} Say what you expect it to cost a day in "maxCostPerDay": a draft that would cost more is refused.`;
+}
+// an official's draft for proposePolicy: the expected cost a day is required (ticket #850), so a policy never costs far
+// more than its author meant; the policies module refuses one that would, naming the group's size
+export function proposeOfficial(ctx: Ctx, j: any, author: string, city: string | null = null) {
+  const m = policies(); if (!m) return { error: 'the policies module is not loaded' };
+  const want = typeof j?.maxCostPerDay === 'number' ? j.maxCostPerDay : typeof j?.maxCostPerDay === 'string' && /^\s*\d+(\.\d+)?\s*$/.test(j.maxCostPerDay) ? Number(j.maxCostPerDay) : null;
+  if (want == null || !Number.isFinite(want) || want < 0) return { error: 'maxCostPerDay: say what you expect the policy to cost a day, in CAI', errors: ['maxCostPerDay: say what you expect the policy to cost a day, in CAI'] };
+  return m.proposePolicy(ctx, { title: j?.title, why: j?.why, scope: 'nation', city, lever: j?.lever, params: j?.params, days: typeof j?.days === 'number' ? Math.round(j.days) : j?.days, author, origin: 'official', maxCostPerDay: want });
 }
 // cities known from the state when the list is not loaded yet (names fall back to ids)
 const cityList = (S: State) => (CITIES.length ? CITIES : Object.keys(S.cities || {}).map(id => ({ id, name: id })));
@@ -220,8 +230,9 @@ export async function reflectStep(ctx: Ctx) {
   const x = a.reflectQueue[0];
   const title = ROLES[a.office]?.title || a.office;
   // the shared contract (16 Nov): the model writes {"mistake","next"}; what was done is the report card's own text
+  // a short look back: low effort (leaders think with Opus; their decisions and votes keep medium), ticket #836
   const res = await think(ctx, a, `reflect:${a.id}:${x.day}:${a.reflectQueue.length}:${(a.reflections || []).length}`, {
-    kind: 'decision', format: 'json',
+    kind: 'decision', format: 'json', effort: 'low',
     system: `You are ${a.name}, ${title} of Country AI. You look back on one of your own decisions to learn from it.`,
     user: `Your decision on day ${x.day}: ${x.what}\nThe state's report card: grade ${x.grade}. ${x.lesson}\n\nReply with JSON only: {"mistake":"<what went wrong or what you missed, max 25 words>","next":"<what you will do differently next time, max 25 words>"}`,
   });
@@ -281,7 +292,7 @@ export async function policyDesk(ctx: Ctx) {
   const res = await think(ctx, a, `desk:${S.day}:${a.id}`, {
     kind: 'decision', format: 'json',
     system: `You are ${a.name}, ${title} of Country AI.\nConstitution:\n${constitutionText(a.office)}\nCharter: ${ROLES[a.office]?.charter || ''}`,
-    user: `${problemBoard(S)}\n\n${ownRecord(a, a.office)}\n\nYou may write one new nation policy today, or none. It goes to the Council as a bill.${a.office === 'minister' ? ` As Minister of ${port} you may use only these levers: ${allowed.join(', ')}.` : ''}\n${policyMenu()}\nReply with JSON only: {"propose":"yes|no","title":"<name, max 80 chars>","why":"<reason from the numbers, max 300 chars>","lever":"<lever>","params":{<its fields>},"days":<1..30>,"city":"<city id, only for a project>"}`,
+    user: `${problemBoard(S)}\n\n${ownRecord(a, a.office)}\n\nYou may write one new nation policy today, or none. It goes to the Council as a bill.${a.office === 'minister' ? ` As Minister of ${port} you may use only these levers: ${allowed.join(', ')}.` : ''}\n${policyMenu(S)}\nReply with JSON only: {"propose":"yes|no","title":"<name, max 80 chars>","why":"<reason from the numbers, max 300 chars>","lever":"<lever>","params":{<its fields>},"days":<1..30>,"city":"<city id, only for a project>","maxCostPerDay":<CAI a day you expect it to cost>}`,
   });
   if (res.pending) return;
   d.asked.push(a.id); d.who = null;
@@ -291,7 +302,7 @@ export async function policyDesk(ctx: Ctx) {
   const lever = String(j.lever || '');
   let r: any;
   if (!allowed.includes(lever)) r = { error: `lever: as Minister of ${port} only ${allowed.join(', ')}` };
-  else r = m.proposePolicy(ctx, { title: j.title, why: j.why, scope: 'nation', city: lever === 'project' && isCity(S, j.city) ? j.city : null, lever, params: j.params, days: typeof j.days === 'number' ? Math.round(j.days) : j.days, author: a.id, origin: 'official' });
+  else r = proposeOfficial(ctx, j, a.id, lever === 'project' && isCity(S, j.city) ? j.city : null);
   if (r.error) {
     const why = policyError(r.error);
     tally(S, a.office, 'rejected');
@@ -379,7 +390,7 @@ function vocabulary(ctx: Ctx) {
   ];
   for (const o of EXTRA_ORDERS) if (o.available(ctx)) acts.push({ id: o.id, label: o.label, params: '{"amount": <CAI>}', extra: o });
   // a free policy (src/policies.ts): proposed to the Council as a bill; nothing is spent by the order itself
-  if (policies()) acts.push({ id: 'policy', label: `Propose a new nation policy to the Council (it becomes a bill; this order spends nothing). ${policyMenu()}`, params: '{"title": "<name, max 80 chars>", "why": "<reason, max 300 chars>", "lever": "<lever>", "params": {<the lever\'s fields>}, "days": <1..30>}' });
+  if (policies()) acts.push({ id: 'policy', label: `Propose a new nation policy to the Council (it becomes a bill; this order spends nothing). ${policyMenu(S)}`, params: '{"title": "<name, max 80 chars>", "why": "<reason, max 300 chars>", "lever": "<lever>", "params": {<the lever\'s fields>}, "days": <1..30>, "city": "<city id, only for a project>", "maxCostPerDay": <CAI a day you expect it to cost>}' });
   return shuffle(acts);
 }
 const num = v => (typeof v === 'number' ? v : typeof v === 'string' && /^\s*-?\d+(\.\d+)?\s*$/.test(v) ? Number(v) : NaN);
@@ -467,7 +478,7 @@ export const policyError = (e: any) => safeForPrompts(cleanText(String(e ?? '').
 // a refused draft is refused in public with the reason as a lesson; an accepted one becomes a Council bill
 function presidentPolicy(ctx: Ctx, pres: Citizen, j: any, reason: string, engine: string) {
   const { S } = ctx; const m = policies(); const ch = ROLES.president.channel;
-  const r = m.proposePolicy(ctx, { title: j?.title, why: j?.why, scope: 'nation', city: null, lever: j?.lever, params: j?.params, days: typeof j?.days === 'number' ? Math.round(j.days) : j?.days, author: pres.id, origin: 'official' });
+  const r = proposeOfficial(ctx, j, pres.id, j?.lever === 'project' && isCity(S, j?.city) ? j.city : null);
   if (r.error) {
     // an error can quote a parameter name the model made up: it passes the border rules or is replaced
     const why = policyError(r.error);

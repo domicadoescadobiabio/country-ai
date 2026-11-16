@@ -40,9 +40,10 @@ addRole({
 });
 
 const TERM = 30;
-const DEADLINES = { appointment: 1, election: 2, disqualify: 2, impeachment: 3, criminal: 2 };
-const OPTIONS = { appointment: ['uphold', 'annul'], election: ['uphold', 'annul'], disqualify: ['grant', 'deny'], impeachment: ['confirm', 'reject'], criminal: ['guilty', 'not_guilty'] };
-const DEFAULT = { appointment: 'uphold', election: 'uphold', disqualify: 'deny', impeachment: 'reject', criminal: 'not_guilty' }; // if there is no quorum (innocent until proven guilty)
+const DEADLINES = { appointment: 1, election: 2, disqualify: 2, impeachment: 3, criminal: 2, policy: 1 };
+const OPTIONS = { appointment: ['uphold', 'annul'], election: ['uphold', 'annul'], disqualify: ['grant', 'deny'], impeachment: ['confirm', 'reject'], criminal: ['guilty', 'not_guilty'], policy: ['uphold', 'annul'] };
+// if there is no quorum (innocent until proven guilty); a policy without a majority follows the code's own review
+const DEFAULT = { appointment: 'uphold', election: 'uphold', disqualify: 'deny', impeachment: 'reject', criminal: 'not_guilty', policy: 'uphold' };
 
 export const K = S => {
   S.court ||= {};
@@ -65,6 +66,19 @@ export function file(ctx, { kind, subject, claim, evidence, objective, ref = {},
   return cs;
 }
 export const openCase = (S, kind, subject) => K(S).cases.find(x => x.status === 'open' && x.kind === kind && x.subject === subject);
+// The Court's review of a nation policy (ticket #838): after the Council's timelock (or the referendum) and before it
+// takes effect. The evidence is reviewPolicy()'s facts from src/policies.ts (server lines, the policy's own words only
+// inside << >>, read by the judges as data); the objective finding is the code's own check today. Upheld, the Council
+// puts it in force (enactPolicy); annulled, it is rejected (rejectPolicy, by 'court'). No quorum: the code's check.
+export function filePolicyCase(ctx: Ctx, bill: any, review: { ok: boolean; reasons: string[]; facts: string[] }) {
+  const open = openCase(ctx.S, 'policy', bill.policyId); if (open) return open;
+  return file(ctx, {
+    kind: 'policy', subject: bill.policyId,
+    claim: `Review of policy ${bill.policyId} (bill #${bill.id}, passed: ${cleanText(bill.how || 'by the Council', 80)}) before it takes effect: does it keep the constitution and the policy limits?`,
+    evidence: (review.facts || []).slice(0, 6), objective: review.ok ? 'uphold' : 'annul',
+    ref: { policy: bill.policyId, bill: bill.id, agent: bill.by || null }, filedBy: 'council',
+  });
+}
 export const lastRuling = (S, kind, subject) => [...K(S).cases].reverse().find(x => x.status === 'decided' && x.kind === kind && x.subject === subject);
 
 async function judgeVote(ctx: Ctx, j: Citizen, cs: CourtCase) {
@@ -80,7 +94,12 @@ async function judgeVote(ctx: Ctx, j: Citizen, cs: CourtCase) {
   });
   if (res.pending) return null;
   const jj = ctx.llm.json(res.text);
-  if (jj && opts.includes(String(jj.ruling))) return { ruling: String(jj.ruling), reason: cleanText(jj.reason, 300), engine: res.engine };
+  if (jj && opts.includes(String(jj.ruling))) {
+    // a judge's reason is shown in public and in the decision log: it passes the border rules or is withheld (Security #846)
+    const { borderCheck } = await import('./military.ts');
+    const why = cleanText(jj.reason, 300);
+    return { ruling: String(jj.ruling), reason: why && borderCheck({ text: why }, 2) ? '(reason withheld: it broke the border rules)' : why, engine: res.engine };
+  }
   if (bought && chance(1 - j.traits.integrity * 0.5)) return { ruling: 'not_guilty', reason: 'The evidence is not conclusive.', engine: 'offline' };
   // offline judge: reads the objective finding, errs rarely (less with more wisdom). A disqualification request
   // rests on a rule the code itself matched (the Election Supervisor's borderCheck finding), so an offline judge
@@ -125,7 +144,7 @@ export async function decideCases(ctx: Ctx) {
     // a tie (e.g. 1-1 on a two-judge bench, or 2-2 after a recusal) is no majority: the default rule applies
     const ranked = Object.keys(tally).sort((x, y) => tally[y] - tally[x]);
     const majority = quorum && (ranked.length === 1 || tally[ranked[0]] > tally[ranked[1]]);
-    const ruling = majority ? ranked[0] : DEFAULT[cs.kind];
+    const ruling = majority ? ranked[0] : cs.kind === 'policy' ? cs.objective : DEFAULT[cs.kind];
     cs.status = 'decided'; cs.ruling = ruling; cs.decidedDay = S.day; cs.quorum = quorum;
     const reasons = Object.entries(cs.votes).map(([id, v]) => `${ctx.agent(id)?.name}: ${v.ruling} - ${v.reason}`);
     ctx.say('court', 'state', `Ruling in case #${cs.id} (${cs.kind}): ${ruling.toUpperCase()}${quorum ? ` (${Object.entries(tally).map(([k, n]) => `${n} ${k}`).join(', ')}${majority ? '' : ': tied, default rule'})` : ' (no quorum: default rule)'}.`, { kind: 'law' });
@@ -166,6 +185,10 @@ async function applyRuling(ctx: Ctx, cs: CourtCase) {
     const e = (S.elections?.list || []).find(x => x.id === cs.ref.election);
     if (e && cs.ruling === 'annul') { e.stage = 'failed'; e.annulled = cs.id; ctx.say('election', 'state', `Election #${e.id} is annulled by the Court (case #${cs.id}); a new election follows.`, { kind: 'blocked' }); }
     else if (e) e.courtCleared = cs.id;
+  }
+  if (cs.kind === 'policy') {
+    const { policyCourtRuling } = await import('./council.ts');
+    policyCourtRuling(ctx, cs);
   }
   if (cs.kind === 'impeachment') {
     const imp = K(S).impeachment;

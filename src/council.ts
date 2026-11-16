@@ -5,7 +5,7 @@ import { ROLES } from './roles.mjs';
 import { constitutionText } from './constitution.mjs';
 import { pick, chance, round, clamp, cleanText, cai, shuffle } from './util.ts';
 import { think } from './brains.ts';
-import { nationFacts, ownRecord, ownLessons, tally, teach, isOffline, queueReview, dailyBudget, safeForPrompts, runwayText, policyMenu, policyError, onPolicyGraded } from './president.ts';
+import { nationFacts, ownRecord, ownLessons, tally, teach, isOffline, queueReview, dailyBudget, safeForPrompts, runwayText, policyMenu, policyError, proposeOfficial, onPolicyGraded } from './president.ts';
 import type { Ctx, State, Citizen } from './types.ts';
 
 // ---------------------------------------------------------------- free policies (src/policies.ts, Negara box)
@@ -198,7 +198,7 @@ function table(ctx: Ctx, by: Citizen, type: any, value: number, reason: string |
 // tables it as a bill; refused, the reason is said in public and becomes the councillor's lesson
 function councilPolicy(ctx: Ctx, by: Citizen, j: any, engine: string) {
   const { S } = ctx;
-  const r = POL.proposePolicy(ctx, { title: j?.title, why: j?.why, scope: 'nation', city: null, lever: j?.lever, params: j?.params, days: typeof j?.days === 'number' ? Math.round(j.days) : j?.days, author: by.id, origin: 'official' });
+  const r = proposeOfficial(ctx, j, by.id, j?.lever === 'project' && typeof j?.city === 'string' && Object.hasOwn(S.cities || {}, j.city) ? j.city : null);
   if (r.error) {
     // an error can quote a parameter name the model made up: it passes the border rules or is replaced
     const why = policyError(r.error);
@@ -221,8 +221,8 @@ async function propose(ctx: Ctx, members: Citizen[]) {
   if (!by) { by = pick(members); S.billDraft = { by: by.id, qid: `bill:${S.day}:${by.id}:${S.bills.length}` }; }
   const types = shuffle(BILL_TYPES.slice());
   // a free policy (src/policies.ts) is another option: its grammar is listed, and the policies module checks it
-  const menu = POL ? policyMenu() : '';
-  const policyLine = menu ? `\n- policy: a new nation policy that is not one of the above (it becomes its own bill). ${menu} Reply for it with {"type":"policy","title":"<name, max 80 chars>","why":"<reason, max 300 chars>","lever":"<lever>","params":{<its fields>},"days":<1..30>}` : '';
+  const menu = POL ? policyMenu(S) : '';
+  const policyLine = menu ? `\n- policy: a new nation policy that is not one of the above (it becomes its own bill). ${menu} Reply for it with {"type":"policy","title":"<name, max 80 chars>","why":"<reason, max 300 chars>","lever":"<lever>","params":{<its fields>},"days":<1..30>,"city":"<city id, only for a project>","maxCostPerDay":<CAI a day you expect it to cost>}` : '';
   const res = await think(ctx, by, S.billDraft.qid, {
     kind: 'decision', format: 'json', options: [...types.map(t => t.id), ...(menu ? ['policy'] : []), 'none'],
     system: `You are ${by.name}, a member of the Council of Country AI.\nConstitution:\n${constitutionText('council')}\nCharter: ${ROLES.council.charter}`,
@@ -270,10 +270,30 @@ function enact(ctx: Ctx, bill: any, how: string, by = 'council') {
     ctx.record('law_signed', 'council', { bill: bill.id, title: bill.title, effectiveDay: bill.effectiveDay, how });
     return;
   }
-  // a policy bill: the policies module puts it in force (and checks its cost again against today's purse)
+  // a policy bill, past the timelock (or the referendum): the Court reviews it first (ticket #838); the case is filed
+  // on the Council's next tick (policyCourtStep) and the ruling comes back through policyCourtRuling()
   if (bill.type === 'policy') {
+    bill.stage = 'court'; bill.how = how;
+    ctx.say('parliament', 'state', `Bill #${bill.id} has passed (${how}). The Court reviews policy ${bill.policyId} before it takes effect.`, { kind: 'law' });
+    return;
+  }
+  // the change is measured from the policy in force NOW, not from when the bill was tabled
+  const now = type.current(S);
+  if (now !== bill.from) { bill.fromTabled ??= bill.from; bill.from = now; }
+  if (now === bill.value) {
+    bill.stage = 'moot'; bill.how = how;
+    ctx.say('parliament', 'state', `Bill #${bill.id} needs no enactment: ${type.what} is already ${type.fmt(now)}.`, { kind: 'law' });
+    ctx.record('law_moot', 'council', { bill: bill.id, title: bill.title, value: bill.value });
+    return;
+  }
+  enactValue(ctx, bill, type, how);
+}
+// the policies module puts a policy in force (and checks its cost again against today's purse)
+function putInForce(ctx: Ctx, bill: any, how: string) {
+  const { S } = ctx;
+  {
     const votes = voteCount(Object.keys(bill.override || {}).length ? bill.override : bill.votes);
-    const r = POL ? POL.enactPolicy(ctx, bill.policyId, bill.decidedBy || by, votes) : { error: 'the policies module is not loaded' };
+    const r = POL ? POL.enactPolicy(ctx, bill.policyId, bill.decidedBy || 'council', votes) : { error: 'the policies module is not loaded' };
     bill.how = how;
     if (!r?.ok) {
       bill.stage = 'refused';
@@ -287,17 +307,36 @@ function enact(ctx: Ctx, bill: any, how: string, by = 'council') {
     ctx.say('parliament', 'state', `Law ${S.laws.length} enacted (${how}): policy ${bill.policyId} is in force until day ${p?.endsDay ?? '?'}.`, { kind: 'law' });
     ctx.log('law', `${bill.title} enacted (${how})`);
     ctx.record?.('law', 'council', { bill: bill.id, title: bill.title, type: 'policy', policy: bill.policyId, how, votes: bill.votes });
-    return;
   }
-  // the change is measured from the policy in force NOW, not from when the bill was tabled
-  const now = type.current(S);
-  if (now !== bill.from) { bill.fromTabled ??= bill.from; bill.from = now; }
-  if (now === bill.value) {
-    bill.stage = 'moot'; bill.how = how;
-    ctx.say('parliament', 'state', `Bill #${bill.id} needs no enactment: ${type.what} is already ${type.fmt(now)}.`, { kind: 'law' });
-    ctx.record('law_moot', 'council', { bill: bill.id, title: bill.title, value: bill.value });
-    return;
+}
+// the Court's review of a policy bill: filed on the Council's tick (the court module is loaded at call time: police.ts
+// and military.ts import this module, so a static import of court.ts here would close a cycle)
+async function policyCourtStep(ctx: Ctx) {
+  const { S } = ctx;
+  const due = (S.bills || []).filter(b => b.type === 'policy' && b.stage === 'court' && !b.caseId);
+  if (!due.length || !POL) return;
+  const court = await import('./court.ts');
+  for (const bill of due) {
+    const review = POL.reviewPolicy(S, bill.policyId);
+    if (!review?.ok && review?.reasons?.[0] === 'not a proposed policy') { bill.stage = 'refused'; continue; } // gone meanwhile
+    const cs = court.filePolicyCase(ctx, bill, review);
+    if (cs) bill.caseId = cs.id;
   }
+}
+// the Court's ruling on a policy (court.ts applyRuling): upheld, it takes effect; annulled, it is rejected by the Court
+export function policyCourtRuling(ctx: Ctx, cs: any) {
+  const { S } = ctx;
+  const bill = (S.bills || []).find(b => b.type === 'policy' && b.policyId === cs.subject && b.stage === 'court');
+  if (!bill) return;
+  if (cs.ruling === 'uphold') return putInForce(ctx, bill, `${bill.how}, upheld by the Court (case #${cs.id})`);
+  bill.stage = 'annulled';
+  const p = policyOf(S, bill);
+  const why = `annulled by the Court in case #${cs.id}${cs.objective === 'annul' ? `: ${policyError((POL?.reviewPolicy(S, bill.policyId)?.reasons || []).join('; ') || 'the code found a rule broken')}` : ''}`;
+  if (POL && p) POL.rejectPolicy(ctx, bill.policyId, 'court', why);
+  ctx.say('parliament', 'state', `Bill #${bill.id} does not take effect: policy ${bill.policyId} was ${why}.`, { kind: 'law' });
+}
+function enactValue(ctx: Ctx, bill: any, type: any, how: string) {
+  const { S } = ctx;
   type.apply(S, bill.value);
   bill.stage = 'enacted'; bill.how = how;
   const proposer = ctx.agent(bill.by);
@@ -340,6 +379,7 @@ export function resolveReferendum(ctx: Ctx, billId: number, approved: boolean) {
 export async function councilTick(ctx: Ctx) {
   const { S } = ctx;
   timelockTick(ctx);
+  await policyCourtStep(ctx);
   const members = councillors(ctx);
   const bill = S.bills.find(b => ['debate', 'vote', 'president', 'override'].includes(b.stage));
   // a new bill every ~2 hours when idle (a councillor still answering keeps the draft until they do)
