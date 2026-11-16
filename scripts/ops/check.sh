@@ -25,8 +25,8 @@ suite() { # suite "<title>" <script>
   say "$title"
   out="$(node "$script" 2>&1)" || rc=$?
   printf '%s\n' "$out" | grep -E '^[[:space:]]*FAIL' || true
-  printf '%s\n' "$out" | tail -n 1
-  if (( rc != 0 )); then failed+=("$script"); fi
+  # on failure show the last lines too, so a crash (a stack trace, not a FAIL line) is readable
+  if (( rc != 0 )); then printf '%s\n' "$out" | tail -n 8; failed+=("$script"); else printf '%s\n' "$out" | tail -n 1; fi
 }
 
 suite "voting rules (Node unit checks)" scripts/smoke-voting-rules.mjs
@@ -39,6 +39,7 @@ suite "smoke: the school (Node)" scripts/smoke-school.mjs
 suite "smoke: jobs and the labour market (Node)" scripts/smoke-jobs.mjs
 suite "smoke: the news (Node)" scripts/smoke-news.mjs
 suite "smoke: policies and their grades (Node)" scripts/smoke-policies.mjs
+suite "smoke: the local brain benchmark (Node)" scripts/smoke-bench.mjs
 
 if (( ${#failed[@]} )); then die "failed: ${failed[*]}"; fi
 ok "all checks passed"
