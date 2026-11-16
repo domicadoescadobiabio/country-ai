@@ -4,8 +4,9 @@
 const clip = (s, n = 40) => String(s ?? '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, n);
 
 // a daily act as people read it (daily byAct / recent / diary): 'job_hunt' is "looking for work" (ticket #759),
-// 'propose' an idea for the city taken to its Mayor (ticket #793)
-const ACT_TEXT = { job_hunt: 'looking for work', propose: 'proposing an idea for the city' };
+// 'voice' (ticket #891, it replaced 'propose'): speaking up, backing an aspiration or keeping out of it; 'aspiration' in a
+// diary: a backer hearing the answer
+const ACT_TEXT = { job_hunt: 'looking for work', voice: 'speaking up', aspiration: 'heard the answer to an aspiration', propose: 'proposing an idea for the city' };
 export const actLabel = act => ACT_TEXT[act] || clip(act, 40);
 
 // the job object as the server sent it, checked; null when there is none (an older server)

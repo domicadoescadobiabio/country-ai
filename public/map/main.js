@@ -12,7 +12,7 @@ import { People, HOUSING, kindOf } from './people.js';
 import { Scenes, SCENE_COLOR } from './scenes.js';
 import { TYPES, CATS, ACT_COLOR, REP, MOODS, BOND_COLOR } from './catalog.js';
 import { setClock, fmtTime, hourOf, clockDetail } from '../clock.js'; // every time on the map is the republic's (ET)
-import { jobLine, workingLine, actLabel } from '../jobs.js?v=3'; // everyone's job (citizen.job), act labels
+import { jobLine, workingLine, actLabel } from '../jobs.js?v=4'; // everyone's job (citizen.job), act labels
 import { newsTicker, TEST_NEWS, testBreaking } from '../news.js?v=4'; // Republic News, running in the people HUD; breaking news on TV
 
 const $ = s => document.querySelector(s);

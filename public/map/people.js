@@ -4,7 +4,7 @@
 // counted on the card of the building they are in. Names come from the server and are only ever set as text.
 import { hash } from './gen.js';
 import { MOODS } from './catalog.js';
-import { cleanJob } from '../jobs.js?v=3';
+import { cleanJob } from '../jobs.js?v=4';
 
 export const HOUSING = new Set(['houses', 'rowhouses', 'apartments', 'public_housing', 'kampung', 'villas']);
 const ID = /^[a-z0-9-]{1,40}$/;

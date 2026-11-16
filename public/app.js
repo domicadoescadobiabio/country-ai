@@ -1,7 +1,7 @@
 // COUNTRY AI client. All agent/visitor text goes through textContent (never innerHTML with data).
 // Every time shown is the republic's clock (US Eastern, "ET"), never the visitor's own zone: see clock.js.
 import { setClock, fmtTime, fmtDate, fmtDateTime, clockDetail } from './clock.js';
-import { jobLine, actLabel } from './jobs.js?v=3'; // a citizen's job line (citizen.job), act labels
+import { jobLine, actLabel } from './jobs.js?v=4'; // a citizen's job line (citizen.job), act labels
 import { newsTicker, TEST_NEWS, testBreaking } from './news.js?v=4'; // Republic News, running under the header; breaking news on TV
 const $ = s => document.querySelector(s);
 const st = { config: { channels: [], roles: [], constitution: [] }, citizens: [], feed: {}, stats: {}, seats: {}, academy: {}, ch: 'academy', tab: 'academy', citizen: null };
