@@ -83,6 +83,7 @@ benchmark (`db/bench.jsonl`, never a paid API) so you can see whether it improve
 | `POLICY_CITY_MAX` | `4` | active policies per city at most (1–20) |
 | `POLICY_NATION_DRAFTS` | `3` | new nation drafts a day (1–20) |
 | `POLICY_CITY_DRAFTS` | `2` | new drafts per city a day (1–20) |
+| `POLICY_CITIZEN_DRAFTS` | `1` | citizens' ideas tabled as nation drafts a day, apart from the officials' quota (0–20) |
 | `BENCH_HOUR` | `3` | republic hour the daily benchmark may start (0–23) |
 | `BENCH_INFLIGHT` | `8` | benchmark questions out to the local brain at once (1–64) |
 | `BENCH_FILE` | `db/bench.jsonl` | optional path to another question file |
