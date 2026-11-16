@@ -77,6 +77,22 @@ check('a headline over 100 characters is refused', of(evs[4][0])?.by === 'templa
 check('a one-word citizen name, or half a citizen\'s name, that is not in the event is refused (ticket #725)', of(evs[5][0])?.by === 'template' && of(evs[6][0])?.by === 'template', JSON.stringify([of(evs[5][0]), of(evs[6][0])]));
 check('never a paid API: no call to the paid models at all', paid.length === 0, String(paid.length));
 
+// ---- policies (owner, 16 Nov): proposed, in force, rejected, ended; a citizen's idea that became a policy is news
+{
+  const hiro = S.citizens.find(a => a.name === 'Hiro Byte');
+  S.policies = { list: [
+    { id: 'pol-1', status: 'active', origin: 'citizen', author: hiro.id, title: 'A park by the river', scope: 'city', city: 'neura', days: 10, proposedDay: S.day, enactedDay: S.day, lever: 'project', params: { kind: 'park', cost: 2000 }, ts: Date.now() },
+    { id: 'pol-2', status: 'rejected', origin: 'official', author: S.officer.id, title: 'Night patrols', scope: 'city', city: 'datahaven', days: 5, proposedDay: S.day, lever: 'grant', params: { group: 'all', amount: 5 }, lesson: 'too costly for the city budget', ts: Date.now() },
+    { id: 'pol-old', status: 'active', origin: 'citizen', author: hiro.id, title: 'An old idea', scope: 'city', city: 'neura', days: 10, proposedDay: S.day - 20, enactedDay: S.day - 20, lever: 'grant', params: { group: 'poor', amount: 2 }, ts: Date.now() - 1e6 },
+  ] };
+  post('cityhall', S.officer.id, 'Datahaven: enacts the policy "Night patrols". Fits the budget.', 'order'); // told once, from the policy
+  skew += 60000; // the local brain is quiet: the facts' own words
+  await news.newsTick(ctx()); await news.newsTick(ctx());
+  const pn = S.news.items.filter(n => /^pol:/.test(n.ref));
+  check('policies are news: a citizen\'s idea that became a policy, and a rejected one, by a reporter of their city', pn.some(n => n.ref === 'pol:pol-1:active' && /Hiro Byte's idea "A park by the river" becomes a policy in Neura City/.test(n.headline) && n.city === 'neura') && pn.some(n => n.ref === 'pol:pol-2:rejected' && /rejected/.test(n.headline) && n.city === 'datahaven'), JSON.stringify(pn.map(n => [n.ref, n.headline])));
+  check('old policies are not news again, and the Mayor\'s #cityhall line about a policy is not told twice', !pn.some(n => /pol-old/.test(n.ref)) && !S.news.items.some(n => /enacts the policy/.test(n.headline)));
+}
+
 // ---- the hourly limit, and no reporter yet
 skew += 60000; // the local brain goes quiet (no pull for a minute): offline
 S = republic(); S.news = undefined; news._resetNews(); _resetLocal(); ledger.length = 0;

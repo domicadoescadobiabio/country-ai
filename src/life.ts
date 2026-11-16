@@ -30,7 +30,8 @@ export function payday(ctx: Ctx) {
   const { wageBy, taxBy } = policyAdjustments(S);
   for (const a of S.citizens) {
     if (a.status !== 'free') continue;
-    const wage = round(p.wage * cityWageFactor(S, a) * (wageBy.get(a.id) ?? 1), 2);
+    // several wage policies on one job (nation and city) never stack past ±20% together (ticket #805)
+    const wage = round(p.wage * cityWageFactor(S, a) * Math.max(0.8, Math.min(1.2, wageBy.get(a.id) ?? 1)), 2);
     const t = round(wage * Math.max(0, Math.min(0.5, p.taxRate + (taxBy.get(a.id) || 0))), 2);
     a.wallet = round(a.wallet + wage - t, 2);
     if (a.debt > 0) { const pay = Math.min(a.debt, round((wage - t) * 0.5, 2)); a.debt = round(a.debt - pay, 2); a.wallet = round(a.wallet - pay, 2); S.treasury = round(S.treasury + pay, 2); }

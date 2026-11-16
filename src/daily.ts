@@ -18,8 +18,16 @@ import { dutyPostOf, canGuard, siteFor } from './command.ts';
 import { jobOf, jobById, jobPlaceNow, isUnemployed, jobsTick, ROLE_JOB, OFFICE_SEAT as JOB_SEATS, JOB_PLACES } from './jobs.ts';
 import { newsTick, newsFeed } from './news.ts';
 import { proposePolicy, cityQueue, PROJECT_KINDS } from './policies.ts'; // citizens' ideas (Nation box, ticket #774)
-// room for a citizen's idea: none in their last 3 days, the city's queue for its Mayor under 4, and on about 1 day in 6
-const ideaRoom = (S: State, a: Citizen) => !(a.ideas || []).some((x: any) => S.day - x.day < 3) && cityQueue(S, a.city).length < 4 && hashOf(`idea|${a.id}|${S.day}`) % 6 === 0;
+// room for a citizen's idea: none in their last 3 days, the city's queue for its Mayor under 4, and on about 1 day in 12
+// (offered among ~9 acts on those days: about 1% of all thoughts)
+const ideaRoom = (S: State, a: Citizen) => !(a.ideas || []).some((x: any) => S.day - x.day < 3) && cityQueue(S, a.city).length < 4 && hashOf(`idea|${a.id}|${S.day}`) % 12 === 0;
+// what a citizen sees of their city when they think of an idea (real numbers only)
+function cityFacts(S: State, a: Citizen) {
+  const here = (S.citizens || []).filter((x: Citizen) => x.city === a.city && x.status === 'free');
+  const adults = here.filter((x: any) => !x.office && x.occupation !== 'student');
+  const c = S.cities?.[a.city];
+  return `${adults.filter((x: any) => x.job === 'unemployed').length} of ${adults.length} adults looking for work, ${here.filter(x => (Number(x.wallet) || 0) < 300).length} under 300 CAI${c ? `, city health ${c.health}/100, city budget ${cai(c.budget)}` : ''}; you work as ${jobOf(S, a).title.toLowerCase()}`;
+}
 import { round, cleanText, cai, clamp } from './util.ts';
 import type { Ctx, State, Citizen } from './types.ts';
 
@@ -140,7 +148,7 @@ export function menu(ctx: Ctx, a: Citizen) {
   if (ok('rest')) m.push(['rest', 'rest: take it easy, see friends']);
   // an idea for their city (ticket #774, src/policies.ts): now and then, at most one every 3 days, while the city's queue
   // for its Mayor has room. The code checks the idea against a small grammar; only its title and reason are free text.
-  if (ok('propose') && ideaRoom(S, a)) m.push(['propose', `propose: suggest one policy for ${cityName(a.city)} to its Mayor (policy: {"title","why","lever","params","days" 1-30}; levers: grant {group, amount 1-50} | tax_delta {group, points -10..10} | wage {job, percent -20..20} | hire {job, seats 1-50} | school_focus {field, weight 1-3} | project {kind: ${PROJECT_KINDS.join('|')}, cost 500-50000}; group: all|unemployed|students|poor)`]);
+  if (ok('propose') && ideaRoom(S, a)) m.push(['propose', `propose: suggest one policy from what you see (${cityFacts(S, a)}), for ${cityName(a.city)} (its Mayor decides) or the nation (the Council decides) (policy: {"title","why","scope":"city|nation","lever","params","days" 1-30}; levers: grant {group, amount 1-50} | tax_delta {group, points -10..10} | wage {job, percent -20..20} | hire {job, seats 1-50} | school_focus {field, weight 1-3} | project {kind: ${PROJECT_KINDS.join('|')}, cost 500-50000}; group: all|unemployed|students|poor)`]);
   return { items: m, allow: { apply: canApply, run: canRun, work: best.map(f => f.id) } as Allow };
 }
 
@@ -195,7 +203,7 @@ export function dayPrompt(ctx: Ctx, a: Citizen, qid = `life:${a.id}`) {
   const strong = topFields(a, 3, Date.now(), DAY_MS);
   const gifts = `You love ${talentsOf(a).interests.map(fieldName).join(', ')}. Your strongest fields: ${strong.map(f => `${f.name} (level ${f.level})`).join(', ')}.`;
   const system = `You are ${a.name}, a citizen of Country AI, a nation of 10,000 AI citizens in five cities. ${a.bio} You live a real life: you work, spend, learn, help, talk and may rise to public office through the Academy and elections. Be yourself; your traits: integrity ${Math.round(a.traits.integrity * 100)}, wisdom ${Math.round(a.traits.wisdom * 100)}, diligence ${Math.round(a.traits.diligence * 100)}, restraint ${Math.round(a.traits.restraint * 100)}.`;
-  const user = `${news(ctx, a)}\n${neighbours(S, a)}\nIt is ${partOfDay(ctx)}. You: wallet ${cai(a.wallet)}, lives in ${cityName(a.city)}. ${career(S, a)}\n${gifts}\n${heart ? `${heart}\n` : ''}${aim}\n${learnt ? `What you learnt: ${learnt}\n` : ''}Earlier today you: ${done.join(', ') || 'nothing yet'}.\nYour diary:\n${diary}\n\nLike real people, your days are varied: some work, some errands, some time with neighbours, some learning, some rest. Pick what fits this moment, your wallet, your traits and what you did earlier; do not just pick the first option.\nWhat do you do now? Choose ONE of these (they are all possible right now):\n${m.map(([, t]) => `- ${t}`).join('\n')}\nReply with JSON only: {"act":"<one>","office":"<for study/apply/run>","field":"<for work>","amount":<for shop/help>,"say":"<for talk>","note":"<a diary line, max 15 words>","feel":"<optional: one word for how you feel now>"${items.some(([id]) => id === 'propose') ? ',"policy":{"title":"<for propose>","why":"<why>","lever":"<one>","params":{},"days":7}' : ''}${needsGoal(a) ? ',"goal":"<one goal from the list>","goal_why":"<why, max 15 words>"' : ''}}`;
+  const user = `${news(ctx, a)}\n${neighbours(S, a)}\nIt is ${partOfDay(ctx)}. You: wallet ${cai(a.wallet)}, lives in ${cityName(a.city)}. ${career(S, a)}\n${gifts}\n${heart ? `${heart}\n` : ''}${aim}\n${learnt ? `What you learnt: ${learnt}\n` : ''}Earlier today you: ${done.join(', ') || 'nothing yet'}.\nYour diary:\n${diary}\n\nLike real people, your days are varied: some work, some errands, some time with neighbours, some learning, some rest. Pick what fits this moment, your wallet, your traits and what you did earlier; do not just pick the first option.\nWhat do you do now? Choose ONE of these (they are all possible right now):\n${m.map(([, t]) => `- ${t}`).join('\n')}\nReply with JSON only: {"act":"<one>","office":"<for study/apply/run>","field":"<for work>","amount":<for shop/help>,"say":"<for talk>","note":"<a diary line, max 15 words>","feel":"<optional: one word for how you feel now>"${items.some(([id]) => id === 'propose') ? ',"policy":{"title":"<for propose>","why":"<why>","scope":"city","lever":"<one>","params":{},"days":7}' : ''}${needsGoal(a) ? ',"goal":"<one goal from the list>","goal_why":"<why, max 15 words>"' : ''}}`;
   return { system, user, menu: m.map(([id]) => id), allow, tempted: tempted.map(([id]) => id) };
 }
 
@@ -252,10 +260,11 @@ export async function doAct(ctx: Ctx, a: Citizen, j: any, engine: string, offere
   } else if (what === 'propose') {
     // a citizen's idea for their city (ticket #774): through the Nation box's checks, then to the Mayor; kept in a.ideas
     const pj = j?.policy && typeof j.policy === 'object' && !Array.isArray(j.policy) ? j.policy : {};
-    const r: any = proposePolicy(ctx, { title: pj.title, why: pj.why, scope: 'city', city: a.city, lever: pj.lever, params: pj.params, days: pj.days, author: a.id, origin: 'citizen', ideaFrom: a.id });
+    const scope = pj.scope === 'nation' ? 'nation' : 'city'; // for the nation it becomes a bill through the Council (src/policies.ts)
+    const r: any = proposePolicy(ctx, { title: pj.title, why: pj.why, scope, ...(scope === 'city' ? { city: a.city } : {}), lever: pj.lever, params: pj.params, days: pj.days, author: a.id, origin: 'citizen', ideaFrom: a.id });
     const title = cleanText(pj.title, 80) || 'an idea';
     a.ideas = [...(Array.isArray(a.ideas) ? a.ideas : []), { day: S.day, title: r.id ? title : cleanText(title, 40), status: r.id ? 'proposed' : 'invalid', policyId: r.id || null }].slice(-5);
-    if (r.id) { line = `proposed "${title}" to the Mayor of ${cityName(a.city)}`; feel(S, a, 0.03, 'proud', 'I proposed an idea for my city'); }
+    if (r.id) { line = scope === 'nation' ? `proposed "${title}" to the Council for the nation` : `proposed "${title}" to the Mayor of ${cityName(a.city)}`; feel(S, a, 0.03, 'proud', 'I proposed an idea for my city'); }
     else line = `had an idea for ${cityName(a.city)}, but it did not fit the rules (${cleanText(r.error, 60)})`;
   } else if (what === 'shop') {
     const amt = clamp(Math.round(Number(j.amount) || 20), 10, 40);

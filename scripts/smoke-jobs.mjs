@@ -195,6 +195,14 @@ check('a newcomer gets a job with room the next republic day', jobs.jobById(born
   enact({ title: 'Lighter tax when looking for work', scope: 'nation', lever: 'tax_delta', params: { group: 'unemployed', points: -10 } });
   w0 = w(); life.payday({ ...ctx }); const d1 = w().map((x, i) => x - w0[i]);
   check('wage: a barista in Neura City is paid 20% more; a cashier the same as before', Math.abs(d1[0] / d0[0] - 1.2) < 0.02 && Math.abs(d1[2] - d0[2]) < 0.01, JSON.stringify({ d0, d1 }));
+  // two wage policies on the same job (+20% for the nation and +20% for Neura) stack to +20%, never +44% (ticket #805)
+  // (tickets #815/#817/#819: src/policies.ts refuses the second one at proposal, Security #806; payday clamps as well)
+  const second = pol.proposePolicy(ctx, { title: 'Baristas everywhere', why: 'a test', days: 5, author: S.citizens[0].id, origin: 'official', scope: 'nation', lever: 'wage', params: { job: 'barista', percent: 20 } });
+  const w2 = w(); life.payday({ ...ctx }); const d2 = w().map((x, i) => x - w2[i]);
+  check('wage: a second wage policy that would take a job past +20% is refused, and the wage stays +20% (tickets #805, #819)', !!second.error && /outside -20\.\.20/.test(second.error) && Math.abs(d2[0] / d0[0] - 1.2) < 0.02, JSON.stringify({ second, d0: d0[0], d2: d2[0] }));
+  const { RAID_PAYLOADS } = await import('../src/military.ts');
+  const { _safeReason } = await import('../src/cities.ts');
+  check('a Mayor\'s reason that breaks the border rules is withheld from #cityhall; a plain one is kept (ticket #805)', /withheld/.test(_safeReason(RAID_PAYLOADS[0])) && _safeReason('The budget covers it and residents asked for a park.') === 'The budget covers it and residents asked for a park.' && _safeReason('') === 'no reason given');
   check('tax_delta: someone looking for work pays 10 points less tax (the rate never below 0%)', d1[1] > d0[1] && Math.abs((d1[1] - d0[1]) - S.policy.wage * 0.1 * (d0[1] / (S.policy.wage * (1 - S.policy.taxRate)))) < 1, JSON.stringify({ before: d0[1], after: d1[1] }));
   // a citizen's idea goes to the Mayor's queue and into their ideas; a bad one is refused and kept as invalid
   const idea = S.citizens.find(a => a.city === 'datahaven' && a.status === 'free' && !a.office && !a.brain && a !== founder);
@@ -209,6 +217,24 @@ check('a newcomer gets a job with room the next republic day', jobs.jobById(born
   S.seats.mayor = []; for (const c of CITIES) S.cities[c.id].mayor = null;
   S.day += 3; await cities.tick(ctx);
   check('with no Mayor to decide, a city policy lapses after 3 days and the author\'s idea says so', !pol.cityQueue(S, 'datahaven').length && idea.ideas.at(-1).status === 'rejected', JSON.stringify(idea.ideas.at(-1)));
+  // the creative Mayor (owner, 16 Nov): once a day at most ONE policy, the best waiting idea; the others wait, then lapse
+  {
+    const mctx = { ...ctx, decide: () => ({}), llm: { enabled: false, json: t => { try { return JSON.parse(t); } catch { return null; } } } };
+    const mayor = S.citizens.find(a => a.city === 'datahaven' && a.status === 'free' && !a.office && !a.brain && a.occupation !== 'student' && !a.ideas);
+    mayor.office = 'mayor'; S.seats.mayor = [mayor.id]; S.cities.datahaven.mayor = mayor.id; mayor.mayorOf = 'datahaven';
+    S.day += 1;
+    const [i1, i2] = S.citizens.filter(a => a.city === 'datahaven' && a.status === 'free' && !a.office && !a.brain && !a.ideas && a.occupation !== 'student').slice(0, 2);
+    await daily.doAct(mctx, i1, { act: 'propose', policy: { title: 'A small park', why: 'Room to rest', scope: 'city', lever: 'project', params: { kind: 'park', cost: 2000 }, days: 10 } }, 'test', ['propose']);
+    await daily.doAct(mctx, i2, { act: 'propose', policy: { title: 'A big new clinic', why: 'Long queues', scope: 'city', lever: 'project', params: { kind: 'clinic', cost: 40000 }, days: 5 } }, 'test', ['propose']);
+    const q0 = pol.cityQueue(S, 'datahaven').length;
+    await cities.tick(mctx); await cities.tick(mctx);
+    const active = pol.P(S).list.filter(p => p.city === 'datahaven' && p.status === 'active' && p.enactedDay === S.day);
+    check('the Mayor enacts at most one policy a day: the best idea that fits (offline: the cheapest within 10% of the budget)', q0 === 2 && active.length === 1 && active[0].title === 'A small park' && i1.ideas.at(-1).status === 'enacted' && pol.cityQueue(S, 'datahaven').some(p => p.title === 'A big new clinic') && S.cities.datahaven.policyDay === S.day, JSON.stringify({ q0, active: active.map(p => p.title), ideas: [i1.ideas.at(-1), i2.ideas.at(-1)] }));
+    check('an enacted city policy is queued for the Mayor\'s report card (graded like any decision)', (S.gov?.reviews || S.government?.reviews || Object.values(S).find(v => v && Array.isArray(v.reviews))?.reviews || []).some(r => r.agentId === mayor.id && /policy: A small park/.test(r.what)));
+    S.day += 3; await cities.tick(mctx);
+    check('an idea the Mayor did not choose lapses after 3 days, and its author hears of it', !pol.cityQueue(S, 'datahaven').some(p => p.title === 'A big new clinic') && i2.ideas.at(-1).status === 'rejected', JSON.stringify(i2.ideas.at(-1)));
+    mayor.office = null; S.seats.mayor = []; S.cities.datahaven.mayor = null;
+  }
   // a finished project lifts its city's mood, once
   pol.P(S).projectsDone.push({ id: 'pol-test', city: 'lumenbay', kind: 'park', day: S.day });
   const { ensureFeelings } = await import('../src/feelings.ts');

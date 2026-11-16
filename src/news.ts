@@ -23,6 +23,20 @@ const NEWS_KINDS: Record<string, string[]> = {
   election: ['vote', 'law', 'term', 'pass', 'fail'], academy: ['pass', 'review'], cityhall: ['oath', 'veto', 'order'], border: ['raid', 'admitted'],
   streets: ['law', 'payday', 'departure'], life: ['job', 'night'],
 };
+// a policy's news: the facts from the policy itself (its title was checked by src/policies.ts when it was drafted)
+const POLICY_NEWS: Record<string, true> = { proposed: true, active: true, rejected: true, expired: true, done: true };
+function policyEvent(S: State, p: any, st: string) {
+  const author = (S.citizens || []).find((a: Citizen) => a.id === p.author);
+  const title = cleanText(p.title, 80); if (!title) return null;
+  const place = p.scope === 'city' ? CITIES.find(c => c.id === p.city)?.name || p.city : 'the nation';
+  const who = author ? author.name : 'An official';
+  const citizen = p.origin === 'citizen' && author;
+  const text = st === 'proposed' ? `${citizen ? `Citizen ${who}` : who} proposes "${title}" for ${place}.`
+    : st === 'active' ? (citizen ? `${who}'s idea "${title}" becomes a policy in ${place} for ${p.days} days.` : `"${title}" is in force in ${place} for ${p.days} days.`)
+    : st === 'rejected' ? `"${title}" for ${place} is rejected${p.lesson ? `: ${cleanText(p.lesson, 60)}` : ''}.`
+    : p.lever === 'project' && st === 'done' ? `The ${cleanText(p.params?.kind, 20)} project "${title}" in ${place} is finished.` : `"${title}" in ${place} has ended.`;
+  return { text: cleanText(text, 600), city: p.scope === 'city' && CITIES.some(c => c.id === p.city) ? p.city : null, speaker: author ? author.name : null };
+}
 const fnv = (s: string) => { let h = 2166136261; for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619); return h >>> 0; };
 const N = (S: State) => {
   const s = ((S as any).news ||= {});
@@ -76,10 +90,22 @@ export async function newsTick(ctx: Ctx) {
   let cursor = s.cursor;
   for (const [ch, kinds] of Object.entries(NEWS_KINDS)) for (const m of S.feed?.[ch] || []) {
     if (!m || !(Number(m.ts) > s.cursor) || !kinds.includes(m.kind) || seen.has(String(m.id)) || queued.has(String(m.id)) || inflight.has(String(m.id))) continue;
+    if (ch === 'cityhall' && /\bthe policy "/.test(String(m.text))) continue; // told once, from the policy itself (below)
     if (m.agentId !== 'state' && ch !== 'academy' && ch !== 'cityhall' && ch !== 'border' && ch !== 'court') { const a = (S.citizens || []).find((x: Citizen) => x.id === m.agentId); if (!a?.office) continue; }
     s.queue.push(eventOf(S, ch, m)); queued.add(String(m.id)); if (Number(m.ts) > cursor) cursor = Number(m.ts);
   }
   s.cursor = cursor;
+  // policies (src/policies.ts, owner 16 Nov): proposed, in force, rejected, ended, and a citizen's idea that became one;
+  // only what changed in the last 2 republic days (no flood of old news after a restart)
+  for (const p of (S as any).policies?.list || []) {
+    const st = String(p?.status || ''); if (!POLICY_NEWS[st]) continue;
+    const ref = `pol:${p.id}:${st}`;
+    if (seen.has(ref) || queued.has(ref) || inflight.has(ref)) continue;
+    const when = st === 'active' ? p.enactedDay : st === 'expired' || st === 'done' ? (p.endsDay ?? 0) + 1 : p.proposedDay;
+    if (!Number.isFinite(when) || when < S.day - 2) continue;
+    const ev = policyEvent(S, p, st); if (!ev) continue;
+    s.queue.push({ ref, ch: 'policy', kind: `policy_${st}`, ts: Number(p.ts) || now, ...ev }); queued.add(ref);
+  }
   s.queue.sort((x: any, y: any) => x.ts - y.ts); if (s.queue.length > QUEUE_MAX) s.queue.splice(0, s.queue.length - QUEUE_MAX);
   // 2. reporters' headlines that came back from the local brain
   for (const [ref, ev] of [...inflight]) {
