@@ -135,9 +135,11 @@ async function presidentAppoints(ctx: Ctx, f: any, proc: any) {
   const options = proc.rejected ? list : [...list, 'reject'];
   let choice = null, reason = null, engine = 'offline', how = 'chosen';
   if (pres && free(pres)) {
+    // the President's own lessons (reflections on report cards), as data; loaded at call time (president.ts imports this module)
+    const { ownLessons } = await import('./president.ts');
     const res = await think(ctx, pres, `appoint:${proc.id}:${proc.rejected ? 2 : 1}`, {
       kind: 'decision', format: 'json', options,
-      system: `You are ${pres.name}, President of Country AI.\nConstitution:\n${constitutionText('president')}\nCharter: ${ROLES.president.charter}`,
+      system: `You are ${pres.name}, President of Country AI.\nConstitution:\n${constitutionText('president')}\nCharter: ${ROLES.president.charter}\n${ownLessons(pres)}`,
       user: `Appoint the ${role.title} from the Council's shortlist (in the Council's order):\n${list.map((id, i) => `${i + 1}. ${fileOf(S, ctx.agent(id), f.chief)}`).join('\n')}\n${proc.rejected ? 'You already rejected one list: you must choose.' : 'You may reject the whole list once.'}\nReply with JSON only: {"choice":"<id>${proc.rejected ? '' : ' or reject'}","reason":"<max 30 words>"}`,
     });
     if (res.pending && S.day <= proc.deadline) return;
@@ -162,7 +164,7 @@ async function presidentAppoints(ctx: Ctx, f: any, proc: any) {
     checks: [['Chosen from the Council\'s list', choice === 'reject' || list.includes(choice)], ['List rejected at most once', !(choice === 'reject' && proc.rejected)]],
     outcome: choice === 'reject' ? 'Council must send a new list' : `${ctx.agent(choice).name} appointed`,
   });
-  // the President's choice is graded two days later like any decision; the card records the appointee's fields
+  // the President's choice is graded REVIEW_LAG_DAYS later like any decision; the card records the appointee's fields
   if (choice !== 'reject' && pres && how !== 'silence') {
     const { queueReview } = await import('./president.ts');
     const who = ctx.agent(choice); const fields = fieldsText(who, OFFICE_FIELDS[f.chief]); const g = giftedText(S, who);

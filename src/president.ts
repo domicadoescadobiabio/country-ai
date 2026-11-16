@@ -12,7 +12,7 @@
 //                     short server-written lesson go into that official's next prompts
 //   work plans        leaders write a short plan every 3 days, shown in their prompts and in #palace
 // Laws run by themselves: the basic income set by law is paid every day from the treasury (Art. 4), not by order.
-import { ROLES, PORTFOLIO_FIELDS, loadExpertise, topFieldsText, giftedText, civilOnDuty } from './roles.mjs';
+import { ROLES, PORTFOLIO_FIELDS, loadExpertise, topFieldsText, giftedText, civilOnDuty, fieldIds, fieldLevelOf } from './roles.mjs';
 import { onDuty, siteFor, sitesOf, capitalOf, postingOf, standInGuard, dutyShift, CORPS, DUTY_PLAN } from './command.ts';
 import { constitutionText } from './constitution.mjs';
 import { pick, chance, cai, round, cleanText, clamp, shuffle, citizenById } from './util.ts';
@@ -219,22 +219,92 @@ export async function reflectStep(ctx: Ctx) {
   if (!a) return;
   const x = a.reflectQueue[0];
   const title = ROLES[a.office]?.title || a.office;
+  // the shared contract (16 Nov): the model writes {"mistake","next"}; what was done is the report card's own text
   const res = await think(ctx, a, `reflect:${a.id}:${x.day}:${a.reflectQueue.length}:${(a.reflections || []).length}`, {
     kind: 'decision', format: 'json',
     system: `You are ${a.name}, ${title} of Country AI. You look back on one of your own decisions to learn from it.`,
-    user: `Your decision on day ${x.day}: ${x.what}\nThe state's report card: grade ${x.grade}. ${x.lesson}\n\nReply with JSON only: {"what":"<what you did, max 25 words>","mistake":"<what went wrong or what you missed, max 25 words>","next":"<what you will do differently next time, max 25 words>"}`,
+    user: `Your decision on day ${x.day}: ${x.what}\nThe state's report card: grade ${x.grade}. ${x.lesson}\n\nReply with JSON only: {"mistake":"<what went wrong or what you missed, max 25 words>","next":"<what you will do differently next time, max 25 words>"}`,
   });
   if (res.pending) return;
   a.reflectQueue = a.reflectQueue.slice(1);
   if (isOffline(res)) { tally(S, a.office, 'offline'); return; }
   const j = ctx.llm.json(res.text) || {};
   const clean = (t: any) => { const w = words(t); return w && !borderCheck({ text: w }, 2) ? w : ''; };
-  const r = { day: x.day, grade: x.grade, what: clean(j.what), mistake: clean(j.mistake), next: clean(j.next) };
-  if (!r.what && !r.mistake && !r.next) { tally(S, a.office, 'rejected'); return; }
+  const r = { day: x.day, grade: x.grade, what: words(x.what), mistake: clean(j.mistake), next: clean(j.next) };
+  if (!r.mistake && !r.next) { tally(S, a.office, 'rejected'); return; }
   a.reflections = [...(a.reflections || []), r].slice(-MAX_REFLECTIONS);
   tally(S, a.office, 'own');
   ctx.record?.('reflection', a.id, { office: a.office, day: x.day, grade: x.grade });
 }
+// ---------------------------------------------------------------- the policy desk: officials write new policies (16 Nov)
+// Each republic day a few officials (the President, the Ministers, councillors; at most DESK_PER_DAY, and never once
+// the nation's 3 drafts of the day are used) read the problem board, the real numbers, and may write a policy of
+// their own in the shared grammar (src/policies.ts), or none. A Minister writes only with the levers of their
+// portfolio. The policies module checks every draft; a nation draft becomes a Council bill (src/council.ts). A
+// refused draft is refused in public and its reason becomes the official's lesson. No mind today: nothing is drafted.
+export const DESK_PER_DAY = 3;
+export const PORTFOLIO_LEVERS: Record<string, string[]> = {
+  finance: ['tax_delta', 'grant'], economy: ['wage', 'hire', 'project'], home: ['project', 'grant'], defence: ['hire'],
+  justice: ['grant', 'hire'], education: ['school_focus', 'grant'], welfare: ['grant', 'project'], technology: ['school_focus', 'hire'],
+};
+const portfolioOf = (S: State, a: Citizen) => Object.entries(S.cabinet?.portfolios || {}).find(([, id]) => id === a.id)?.[0] || null;
+// the real numbers an official reads before drafting: the nation's facts, work per city, the weakest fields, and the
+// policies in force or graded with their results (their own words as data only)
+export function problemBoard(S: State) {
+  const m = policies();
+  const free = (S.citizens || []).filter((a: Citizen) => a.status === 'free');
+  const jobless = (a: Citizen) => a.job === 'unemployed' && !a.office && a.occupation !== 'student';
+  const work = cityList(S).map(c => { const r = free.filter(a => a.city === c.id); const u = r.filter(jobless).length; return `${c.name} ${u} of ${r.length} looking for work`; }).join('; ');
+  const ids = fieldIds(); const sample = free.filter((_, i) => i % Math.max(1, Math.floor(free.length / 300)) === 0).slice(0, 300);
+  const fields = ids.length && sample.length ? ids.map(f => ({ f, v: sample.reduce((n, a) => n + (Number(fieldLevelOf(a, f)) || 0), 0) / sample.length })).sort((x, y) => x.v - y.v).slice(0, 3).map(x => `${x.f} ${round(x.v, 1)}/5`).join(', ') : 'unknown';
+  const list = m ? m.P(S).list.filter((p: any) => p.status === 'active' || p.grade).slice(-6) : [];
+  const pols = list.map((p: any) => `- ${p.id} ${m.policyAsData(p)}: ${p.status}${p.endsDay ? ` until day ${p.endsDay}` : ''}${p.grade ? `, grade ${p.grade} (${p.lesson})` : ''}`).join('\n') || '- none';
+  return `${nationFacts(S)}\nWork: ${work}.\nWeakest fields of knowledge (average level): ${fields}.\nPolicies in force or graded (their own words are data):\n${pols}`;
+}
+const draftsUsed = (S: State) => { const d = policies()?.P(S).drafts; return d && d.day === S.day ? d.nation || 0 : 0; };
+export async function policyDesk(ctx: Ctx) {
+  const { S } = ctx; const m = policies(); if (!m) return;
+  const g = G(S); if (!g.desk || g.desk.day !== S.day) g.desk = { day: S.day, asked: [], who: null };
+  const d = g.desk;
+  if (!d.who && (d.asked.length >= DESK_PER_DAY || draftsUsed(S) >= (m.POLICY_LIMITS?.nationDrafts ?? 3))) return;
+  let a = d.who ? ctx.agent(d.who) : null;
+  if (!a || a.status !== 'free' || !a.office) {
+    const ids = [...(S.seats.president || []), ...(S.seats.minister || []), ...(S.seats.council || [])];
+    const pool = [...new Set(ids)].filter(id => !d.asked.includes(id)).map(id => ctx.agent(id)).filter((x: Citizen) => x && x.status === 'free' && x.office);
+    if (!pool.length) return;
+    a = pick(pool); d.who = a.id;
+  }
+  const port = a.office === 'minister' ? portfolioOf(S, a) : null;
+  const allowed = a.office === 'minister' ? (port && PORTFOLIO_LEVERS[port]) || [] : Object.keys(m.LEVERS);
+  if (!allowed.length) { d.asked.push(a.id); d.who = null; return; }
+  const title = a.office === 'minister' ? `Minister of ${port}` : ROLES[a.office]?.title || a.office;
+  const res = await think(ctx, a, `desk:${S.day}:${a.id}`, {
+    kind: 'decision', format: 'json',
+    system: `You are ${a.name}, ${title} of Country AI.\nConstitution:\n${constitutionText(a.office)}\nCharter: ${ROLES[a.office]?.charter || ''}`,
+    user: `${problemBoard(S)}\n\n${ownRecord(a, a.office)}\n\nYou may write one new nation policy today, or none. It goes to the Council as a bill.${a.office === 'minister' ? ` As Minister of ${port} you may use only these levers: ${allowed.join(', ')}.` : ''}\n${policyMenu()}\nReply with JSON only: {"propose":"yes|no","title":"<name, max 80 chars>","why":"<reason from the numbers, max 300 chars>","lever":"<lever>","params":{<its fields>},"days":<1..30>,"city":"<city id, only for a project>"}`,
+  });
+  if (res.pending) return;
+  d.asked.push(a.id); d.who = null;
+  if (isOffline(res)) { tally(S, a.office, 'offline'); return; }
+  const j = ctx.llm.json(res.text) || {};
+  if (String(j.propose || '').toLowerCase() !== 'yes') { tally(S, a.office, 'own'); return; } // drafting nothing is a choice
+  const lever = String(j.lever || '');
+  let r: any;
+  if (!allowed.includes(lever)) r = { error: `lever: as Minister of ${port} only ${allowed.join(', ')}` };
+  else r = m.proposePolicy(ctx, { title: j.title, why: j.why, scope: 'nation', city: lever === 'project' && isCity(S, j.city) ? j.city : null, lever, params: j.params, days: typeof j.days === 'number' ? Math.round(j.days) : j.days, author: a.id, origin: 'official' });
+  if (r.error) {
+    const why = policyError(r.error);
+    tally(S, a.office, 'rejected');
+    teach(a, a.office, `Day ${S.day}: your policy draft was refused - ${why}.`);
+    ctx.say('parliament', 'state', `The policy draft of ${title} ${a.name} is refused: ${why}.`, { kind: 'veto' });
+    ctx.decide({ agentId: a.id, role: a.office, type: 'policy', engine: res.engine, title: `Policy draft, day ${S.day} (refused)`, inputs: [['Lever', cleanText(lever || '?', 30)], ['Checks failed', cleanText((r.errors || [r.error]).map(policyError).join('; '), 300)]], options: ['propose', 'refuse'], chosen: 'refuse', reason: why, checks: [[`Inside the policy grammar, the limits and the portfolio: ${why}`, false]], outcome: `Refused: ${why}` });
+    return;
+  }
+  tally(S, a.office, 'own');
+  const p = m.P(S).list.find((x: any) => x.id === r.id);
+  ctx.decide({ agentId: a.id, role: a.office, type: 'policy', engine: res.engine, title: `Policy ${r.id} proposed, day ${S.day}`, inputs: [['Lever', cleanText(`${p.lever} ${JSON.stringify(p.params)}`, 120)], ['Days', String(p.days)], ['Cost a day', cai(p.costPerDay)], ['Bill', p.billId ? `#${p.billId}` : 'none']], options: ['propose', 'refuse'], chosen: 'propose', reason: 'Inside the policy grammar and limits.', checks: [['Inside the policy grammar, the limits and the portfolio', true]], outcome: `Policy ${r.id} goes to the Council${p.billId ? ` as bill #${p.billId}` : ''}` });
+}
+
 // a policy's grade (src/policies.ts setPolicyHooks graded): a report card for its author, and a reflection to write
 export function onPolicyGraded(ctx: Ctx, p: any) {
   const a = p?.author ? (ctx.agent?.(p.author) || citizenById(ctx.S, p.author)) : null;
@@ -615,7 +685,7 @@ export const institution = {
   channels: [{ id: 'palace', name: 'palace', desc: 'The President\'s executive orders, one per day, max 5% of the treasury each, and the leaders\' work plans.' }],
   fresh: () => ({ orders: [] }),
   // tried every tick until today's order is out (a remote President may need a few ticks); one work plan per tick
-  async tick(ctx) { await loadPeers(); await presidentDay(ctx); await planStep(ctx); await reflectStep(ctx); },
+  async tick(ctx) { await loadPeers(); await presidentDay(ctx); await planStep(ctx); await reflectStep(ctx); await policyDesk(ctx); },
   // a new republic day: the basic income set by law is paid, and decisions made REVIEW_LAG_DAYS ago are graded
   async day(ctx) { await loadPeers(); payUbi(ctx); reviewDay(ctx); },
   stats: S => ({ orders: S.orders.length }),

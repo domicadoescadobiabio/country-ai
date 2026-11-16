@@ -12,7 +12,7 @@ import { constitutionText } from './constitution.mjs';
 import { qualifiedPool, vacate } from './academy.ts';
 import { fitness } from './command.ts';
 import { round, clamp, cai, cleanText, shuffle, citizenById } from './util.ts';
-import { nationFacts, ownRecord, tally, teach, isOffline, queueReview, isCity } from './president.ts';
+import { nationFacts, ownRecord, ownLessons, tally, teach, isOffline, queueReview, isCity } from './president.ts';
 import type { Ctx, State, Citizen } from './types.ts';
 
 export const PORTFOLIOS = ['finance', 'economy', 'home', 'defence', 'justice', 'education', 'welfare', 'technology'];
@@ -138,7 +138,7 @@ export async function cabinetStep(ctx: Ctx) {
     if (!pool.length) return; // the Academy is still qualifying candidates
     const res = await think(ctx, pres, `nominate:${post}:${S.day}:${pool.map(a => a.id).join(',')}`, {
       kind: 'decision', format: 'json', options: pool.map(a => a.id),
-      system: `You are ${pres.name}, President of Country AI.\nConstitution:\n${constitutionText('president')}\nCharter: ${ROLES.president.charter}`,
+      system: `You are ${pres.name}, President of Country AI.\nConstitution:\n${constitutionText('president')}\nCharter: ${ROLES.president.charter}\n${ownLessons(pres)}`,
       user: `Nominate the ${title}. Qualified candidates on the record:\n${pool.map(a => `- ${a.id}: ${a.name}, fitness ${fitness(S, a, office)}, exam ${a.quals?.[office]?.score ?? '-'}/${a.quals?.[office]?.total ?? 5}, record ${(a.record || []).length} entries${postFields(S, a, post)}. ${a.bio}`).join('\n')}\nThe Council must confirm by majority. Reply with JSON only: {"choice":"<id>","reason":"<max 30 words>"}`,
     });
     if (res.pending) return;
@@ -147,7 +147,7 @@ export async function cabinetStep(ctx: Ctx) {
     c.pending = { post, office, title, agent: pick.id, by: pres.id, votes: {}, day: S.day, reason: j?.reason ? cleanText(j.reason, 240) : `Highest fitness on the record (${fitness(S, pick, office)}).` };
     ctx.decide({ agentId: pres.id, role: 'president', type: 'appoint', engine: j?.choice ? res.engine : 'offline', title: `Nomination: ${title}`, inputs: [['Candidates (top 3 on the record)', pool.map(a => a.name).join(', ')]], options: pool.map(a => `${a.id}: ${a.name}`), chosen: `${pick.id}: ${pick.name}`, reason: c.pending.reason, checks: [['Qualified at the Academy', true], ['Holds no other seat', !pick.office]], outcome: 'Sent to the Council for confirmation' });
     ctx.say('palace', pres.id, `I nominate ${pick.name} as ${title}. ${c.pending.reason}`, { kind: 'order' });
-    // graded two days later like any decision; the card records the nominee's fields for this post
+    // graded REVIEW_LAG_DAYS later like any decision; the card records the nominee's fields for this post
     const pf = fieldsText(pick, postFieldIds(post)); const pg = giftedText(S, pick);
     queueReview(ctx, pres, 'president', `nominated ${pick.name} as ${title}${pf ? ` (fields of the post: ${pf}${pg ? `; gifted in ${pg}` : ''})` : pg ? ` (gifted in ${pg})` : ''}`, null, 0);
     return;
@@ -328,7 +328,7 @@ export async function ministersDay(ctx: Ctx) {
     ctx.decide({ agentId: m.id, role: 'minister', type: 'order', engine: own ? res.engine : 'offline', title: `${PORTFOLIO_TITLES[p]}: daily act`, inputs: [['Act', `${v.act.id}${v.p.city ? `, ${v.p.city}` : ''}${v.p.amount ? `, ${cai(v.p.amount)}` : v.p.pct ? `, ${v.p.pct}%` : v.p.each ? `, ${cai(v.p.each)} each` : ''}`], ['Treasury', cai(before)], ['Limits', acts.map(x => `${x.id} ${x.limit ? `<= ${cai(x.limit(S))}` : ''}`).join('; ')]], options: [...acts.map(x => x.id), 'hold'], chosen: v.act.id, reason, checks: [['Inside the portfolio', true], ['Within the spending limit', true]], outcome });
     ctx.say('palace', m.id, `${PORTFOLIO_TITLES[p]}: ${v.act.id === 'hold' ? 'hold' : v.act.label.split(':')[0].split('(')[0].trim()} - ${outcome}. ${reason}`, { kind: 'order' });
     ctx.record('minister_act', m.id, { portfolio: p, act: v.act.id, outcome, own, city: v.p.city || null });
-    // every act is graded two days later; the Minister of Finance's hold is graded too (the treasury is their portfolio)
+    // every act is graded REVIEW_LAG_DAYS later; the Minister of Finance's hold is graded too (the treasury is their portfolio)
     if (v.act.id !== 'hold' || p === 'finance') queueReview(ctx, m, 'minister', `${PORTFOLIO_TITLES[p]} ${v.act.id}${v.p.city ? ` in ${v.p.city}` : ''}`, v.p.city || null, spend);
   }
 }

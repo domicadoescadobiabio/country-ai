@@ -42,9 +42,11 @@ function tablePolicy(ctx: Ctx, p: any) {
   if (!p || p.scope !== 'nation') return null;
   S.bills ||= [];
   const n = S.bills.filter(b => b.type === 'policy').length + 1;
-  const bill = { id: S.bills.length + 1, type: 'policy', policyId: p.id, title: `Policy Act No. ${n}: ${p.lever} (${paramsText(p.params)}) for ${p.days} days`, from: 0, value: 1, by: p.author, reason: null, stage: 'debate', spoke: [], votes: {}, override: {}, day: S.day, ts: Date.now() };
+  // a citizen's idea (origin citizen, forwarded by a Mayor) is tabled the same way; ideaFrom stays on the record
+  const bill = { id: S.bills.length + 1, type: 'policy', policyId: p.id, origin: p.origin || 'official', ideaFrom: p.ideaFrom || null, title: `Policy Act No. ${n}: ${p.lever} (${paramsText(p.params)}) for ${p.days} days`, from: 0, value: 1, by: p.author, reason: null, stage: 'debate', spoke: [], votes: {}, override: {}, day: S.day, ts: Date.now() };
   S.bills.push(bill); if (S.bills.length > 200) S.bills.shift();
-  ctx.say?.('parliament', 'state', `Policy ${p.id} is tabled as bill #${bill.id}: ${p.lever} (${paramsText(p.params)}) for ${p.days} days, about ${cai(p.costPerDay || 0)} a day.`, { kind: 'bill', billId: bill.id });
+  const idea = p.ideaFrom ? ctx.agent?.(p.ideaFrom)?.name : null;
+  ctx.say?.('parliament', 'state', `Policy ${p.id} is tabled as bill #${bill.id}: ${p.lever} (${paramsText(p.params)}) for ${p.days} days, about ${cai(p.costPerDay || 0)} a day.${p.origin === 'citizen' ? ` A citizen's idea${idea ? ` (${cleanText(idea, 40)})` : ''}.` : ''}`, { kind: 'bill', billId: bill.id });
   return bill.id;
 }
 const voteCount = (votes: any) => { const yes = Object.values(votes || {}).filter(Boolean).length; return { yes, no: Object.keys(votes || {}).length - yes }; };
@@ -123,7 +125,8 @@ async function decide(ctx: Ctx, a: Citizen, bill: any, type: any, asRole: string
     const lessons = (a.lessons[asRole] || []).map(l => `- ${l}`).join('\n') || '- none';
     // a policy bill: the policy's own words only as data (policyAsData), with its cost and the active policies' cap
     const p = type.id === 'policy' ? type.policy : null;
-    const what = p && POL ? `Bill #${bill.id} puts a new policy in force: ${POL.policyAsData(p)}. It costs about ${cai(p.costPerDay || 0)} a day${p.scope === 'city' ? ` in ${p.city}` : ''}; every active nation policy together may cost at most 5% of the treasury a day.`
+    const reach = p && POL && typeof p.params?.group === 'string' ? (() => { try { return POL.groupMembers(S, p.params.group, p.scope === 'city' ? p.city : null).length; } catch { return null; } })() : null;
+    const what = p && POL ? `Bill #${bill.id} puts a new policy in force: ${POL.policyAsData(p)}. Effect: ${p.lever} with ${paramsText(p.params)} for ${p.days} days${reach != null ? `, reaching ${reach} citizens today` : ''}. It costs about ${cai(p.costPerDay || 0)} a day${p.scope === 'city' ? ` in ${p.city}` : ''}; every active nation policy together may cost at most 5% of the treasury a day.${p.origin === 'citizen' ? ' It is a citizen\'s idea.' : ''}`
       : `Bill: "${bill.title}". It changes ${type.what} from ${type.fmt(bill.from)} to ${type.fmt(bill.value)}.${bill.reason ? ` Its sponsor says: "${bill.reason}"` : ''}`;
     const res = await think(ctx, a, `${asRole}:${bill.id}:${a.id}`, {
       kind: 'decision', format: 'json', options: asRole === 'president' ? ['sign', 'veto'] : ['yes', 'no'],

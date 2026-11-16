@@ -78,6 +78,8 @@ export function fieldLevelOf(a, id) {
   if (!EXPERTISE || typeof EXPERTISE.fieldLevel !== 'function' || !a) return 0;
   try { return Number(EXPERTISE.fieldLevel(a, id)) || 0; } catch { return 0; }
 }
+// the ids of the people's fields of knowledge ([] until the module loads)
+export const fieldIds = () => (EXPERTISE && Array.isArray(EXPERTISE.FIELDS) ? EXPERTISE.FIELDS.map(f => f.id) : []);
 // a citizen's skill (0-1) in one field, or null when unknown (the Academy's offline answers lean on it)
 export function fieldSkillOf(a, id) {
   if (!EXPERTISE || typeof EXPERTISE.fieldSkill !== 'function' || !a) return null;
