@@ -12,7 +12,7 @@ import { People, HOUSING, kindOf } from './people.js';
 import { Scenes, SCENE_COLOR } from './scenes.js';
 import { TYPES, CATS, ACT_COLOR, REP, MOODS, BOND_COLOR } from './catalog.js';
 import { setClock, fmtTime, hourOf, clockDetail } from '../clock.js'; // every time on the map is the republic's (ET)
-import { jobLine, workingLine, actLabel } from '../jobs.js?v=2'; // everyone's job (citizen.job), act labels
+import { jobLine, workingLine, actLabel } from '../jobs.js?v=3'; // everyone's job (citizen.job), act labels
 import { newsTicker, TEST_NEWS } from '../news.js?v=1'; // Republic News, running in the people HUD
 
 const $ = s => document.querySelector(s);
@@ -791,6 +791,13 @@ function showAgent(a, keepBonds) {
     body.append(h('h4', { text: 'Goal this week' }), h('div', { class: 'goal' }, h('div', { class: 'goal-head' }, h('b', { text: goal.label }), h('span', { text: state })),
       h('div', { class: 'goal-bar' }, h('i', { style: `width:${goal.status === 'done' ? 100 : p}%` }))));
   }
+  // an official's latest lesson from a report card, a citizen's latest policy idea (/api/citizens/:id; rilis
+  // "Belajar cepat + kreatif")
+  const refl = (Array.isArray(rec?.reflections) ? rec.reflections : []).filter(r => r && (r.mistake || r.next)).at(-1);
+  if (refl) body.append(h('h4', { text: `Learned${refl.day != null ? ` on day ${refl.day}` : ''}${refl.grade ? ` · grade ${refl.grade}` : ''}` }),
+    h('div', { class: 'kv' }, ...[['Mistake', refl.mistake], ['Next time', refl.next]].filter(([, v]) => v).flatMap(([k, v]) => [h('span', { text: k }), h('b', { text: String(v) })])));
+  const idea = (Array.isArray(rec?.ideas) ? rec.ideas : []).filter(x => x?.title).at(-1);
+  if (idea) body.append(h('h4', { text: `Latest idea${idea.day != null ? ` · day ${idea.day}` : ''}` }), h('p', { class: 'quote', text: `${idea.title}${idea.status && idea.status !== 'unknown' ? ` (${String(idea.status).replace(/_/g, ' ')})` : ''}` }));
   body.append(h('div', { class: 'poke' }, h('button', { type: 'button', class: 'poke-btn', onclick: () => pokeAgent(a) }, '👉 Poke'),
     h('small', { text: 'You can only poke. They feel it and grumble, and that is all a human can do here.' })));
   if (isReal(a)) {

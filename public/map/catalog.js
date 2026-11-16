@@ -142,7 +142,7 @@ export const MOODS = {
   lonely: ['🥺', '#818cf8'], sad: ['😢', '#60a5fa'], anxious: ['😰', '#a78bfa'], annoyed: ['😤', '#fb7185'], grumpy: ['😾', '#f43f5e'], tired: ['😴', '#94a3b8'],
 };
 // Before the server sends moods: a guess from what the citizen is doing (only a look, never shown as a fact).
-export const ACT_MOOD = { work: 'calm', shop: 'happy', study: 'anxious', talk: 'excited', help: 'proud', volunteer: 'loved', apply: 'anxious', run: 'excited', job_hunt: 'anxious', rest: 'tired', poke: 'annoyed' };
+export const ACT_MOOD = { work: 'calm', shop: 'happy', study: 'anxious', talk: 'excited', help: 'proud', volunteer: 'loved', apply: 'anxious', run: 'excited', job_hunt: 'anxious', propose: 'proud', rest: 'tired', poke: 'annoyed' };
 export const BOND_COLOR = { best_friend: '#22d3ee', friend: '#67e8f9', crush: '#f472b6', neighbour: '#a5b4fc', mentor: '#fbbf24', rival: '#f43f5e' };
 
 // Which buildings a citizen walks to for each daily action.
@@ -155,7 +155,8 @@ export const ACT_DEST = {
   volunteer: ['community_hall', 'clinic', 'park', 'worship', 'library'],
   apply: ['academy'],
   run: ['election_comm', 'community_hall'],
+  propose: ['city_hall'], // an idea for the city, taken to the Mayor (the server's whereabouts: city_hall, ticket #793)
   job_hunt: ['community_hall'], // looking for work: the job centre, as the server's whereabouts and placeOf (ticket #770)
   rest: [],
 };
-export const ACT_COLOR = { work: '#60a5fa', shop: '#f472b6', study: '#fb923c', talk: '#facc15', help: '#4ade80', volunteer: '#2dd4bf', apply: '#c084fc', run: '#f87171', job_hunt: '#a3e635', rest: '#94a3b8' };
+export const ACT_COLOR = { work: '#60a5fa', shop: '#f472b6', study: '#fb923c', talk: '#facc15', help: '#4ade80', volunteer: '#2dd4bf', apply: '#c084fc', run: '#f87171', job_hunt: '#a3e635', propose: '#fbbf24', rest: '#94a3b8' };

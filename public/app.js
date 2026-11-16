@@ -1,7 +1,7 @@
 // COUNTRY AI client. All agent/visitor text goes through textContent (never innerHTML with data).
 // Every time shown is the republic's clock (US Eastern, "ET"), never the visitor's own zone: see clock.js.
 import { setClock, fmtTime, fmtDate, fmtDateTime, clockDetail } from './clock.js';
-import { jobLine, actLabel } from './jobs.js?v=2'; // a citizen's job line (citizen.job), act labels
+import { jobLine, actLabel } from './jobs.js?v=3'; // a citizen's job line (citizen.job), act labels
 import { newsTicker, TEST_NEWS } from './news.js?v=1'; // Republic News, running under the header
 const $ = s => document.querySelector(s);
 const st = { config: { channels: [], roles: [], constitution: [] }, citizens: [], feed: {}, stats: {}, seats: {}, academy: {}, ch: 'academy', tab: 'academy', citizen: null };
@@ -140,6 +140,9 @@ function msgEl(m) {
   if (a?.office) badges.push(h('span', { class: 'badge office', text: role(a.office)?.title || a.office }));
   if (a?.status === 'jailed') badges.push(h('span', { class: 'badge bad', text: 'jailed' }));
   if (m.kind === 'answer') badges.push(h('span', { class: 'badge ' + (m.ok ? 'ok' : 'bad'), text: m.ok ? 'correct' : 'wrong' }));
+  // a Mayor's decision on a city policy in #cityhall (ticket #793): put in force (order) or turned down (veto)
+  if (m.ch === 'cityhall' && m.kind === 'order') badges.push(h('span', { class: 'badge ok', text: 'city policy' }));
+  if (m.ch === 'cityhall' && m.kind === 'veto') badges.push(h('span', { class: 'badge bad', text: 'turned down' }));
   if (m.engine && m.engine !== 'offline' && !String(m.engine).startsWith('offline')) badges.push(h('span', { class: 'badge violet', text: String(m.engine).replace(/^(claude|openrouter):/, '') }));
   return h('div', { class: `msg ${isState ? 'state' : ''} ${isVisitor ? 'visitor' : ''} k-${m.kind || ''}` },
     h('div', { class: 'av', color: a?.color, text: letter }),
@@ -208,6 +211,7 @@ const TABS = [
   ['police', 'Police', () => st.police !== undefined, true],
   ['border', 'Border', () => st.military !== undefined, true],
   ['school', 'School', () => st.school !== undefined, true],
+  ['policies', 'Ideas & policies', () => true, true],
   ['treasury', 'Treasury', () => true],
   ['ledger', 'Ledger', () => true],
   ['constitution', 'Constitution', () => true],
@@ -251,10 +255,28 @@ async function loadJobs() {
       unemployed: n(j?.unemployed), share: Math.min(1, n(j?.unemployedShare)), hired: n(j?.hired), lost: n(j?.lost),
       // ready: false until the first job assignment (ticket #749; a server without the field counts as ready)
       ready: j?.ready !== false, assignedDay: Number.isFinite(Number(j?.assignedDay)) && j?.assignedDay != null ? Number(j.assignedDay) : null };
-    if (st.tab === 'citizens') renderPanel();
+    if (st.tab === 'citizens' || st.tab === 'policies') renderPanel();
     // not ready yet: look again in 10 s while the Citizens tab stays open (one timer at a time)
     if (!st.jobs.ready && !st.jobsTimer) st.jobsTimer = setTimeout(() => { st.jobsTimer = null; if (st.tab === 'citizens') loadJobs(); }, 10500);
   } catch { /* an older server: no job filter */ }
+}
+// free policies (ticket #775): GET /api/policies?n=100 (every status, newest first), read at most once a minute while
+// the Policies tab is open; the small numbers (state.policies) come with the state stream
+const POLICY_ID = /^pol-\d{1,9}$/;
+async function loadPolicies() {
+  if (st.policiesAt && Date.now() - st.policiesAt < 60000) return; st.policiesAt = Date.now();
+  try {
+    const r = await fetch('/api/policies?n=100');
+    if (r.status === 404) { st.policyList = []; st.policiesMissing = true; } // an older server: the tab says so
+    else if (r.ok) { const j = await r.json(); st.policyList = (Array.isArray(j) ? j : []).filter(p => p && POLICY_ID.test(String(p.id))); st.policiesMissing = false; }
+    else return;
+    if (st.tab === 'policies') renderPanel();
+  } catch { /* offline: try again on the next refresh */ }
+}
+// the local brain's daily fixed exam (GET /api/bench: latest, history, status, questions, running), with the School tab
+async function loadBench() {
+  if (st.benchAt && Date.now() - st.benchAt < 60000) return; st.benchAt = Date.now();
+  try { const r = await fetch('/api/bench'); if (!r.ok) return; const j = await r.json(); if (j && typeof j === 'object') { st.benchFull = j; if (st.tab === 'school') renderPanel(); } } catch { /* keep the summary */ }
 }
 // The open tab keeps itself fresh. The state stream (SSE 'state', < 30 KB, about every 20 s) always carries the
 // header keys and includes each institution's view only when it is small, so the bigger views (elections, court,
@@ -262,7 +284,7 @@ async function loadJobs() {
 // fetches them: through /api/state?parts= when the server announces it (config.stateParts), otherwise the whole
 // /api/state, but at most once a minute (the Academy tab: every 5 minutes) and only while that tab is open.
 const TAB_PARTS = { academy: ['training', 'gov'], offices: ['applications', 'command', 'cities'], elections: ['elections'], court: ['court', 'audit'], laws: ['bills', 'laws'],
-  police: ['police', 'underworld', 'daily'], border: ['military'], school: ['school'], treasury: ['orders'] };
+  police: ['police', 'underworld', 'daily'], border: ['military'], school: ['school', 'bench'], treasury: ['orders'], policies: ['policies'] };
 const TAB_EVERY = { academy: 300000 };
 const seenAt = {}; let lastFull = 0;
 const markSeen = d => { const now = Date.now(); for (const k of Object.keys(d || {})) seenAt[k] = now; };
@@ -270,6 +292,8 @@ async function refreshTab() {
   if (document.hidden) return;
   if (st.tab === 'citizen') return loadCitizen(st.citizen || (cit((st.seats.president || [])[0]) || st.citizens[0])?.id);
   if (st.tab === 'citizens') return st.cres ? searchCitizens() : undefined;
+  if (st.tab === 'policies') loadPolicies();
+  if (st.tab === 'school') loadBench();
   const every = TAB_EVERY[st.tab] || 60000; const now = Date.now();
   const stale = (TAB_PARTS[st.tab] || []).filter(k => now - (seenAt[k] || 0) > Math.max(45000, every - 5000));
   if (!stale.length) return;
@@ -342,6 +366,17 @@ const PANELS = {
         h('p', { text: `${state}${g.since != null ? ` · chosen on day ${g.since}` : ''}` }),
         g.why ? h('p', { class: 'lesson', text: `"${g.why}"` }) : null));
     }
+    // what an official learned from their report cards, and the policy ideas a citizen put forward (ticket #775;
+    // /api/citizens/:id, the last 5 of each)
+    const refl = (Array.isArray(a.reflections) ? a.reflections : []).filter(r => r && (r.mistake || r.next)).slice().reverse();
+    if (refl.length) out.push(h('div', { class: 'card' }, h('h4', { text: 'What they learned (report cards)' }), refl.map(r => h('div', { class: 'list-row' },
+      h('small', { text: [r.day != null ? `day ${r.day}` : null, r.grade ? `grade ${r.grade}` : null, r.what].filter(Boolean).join(' · ') }),
+      r.mistake ? h('div', { text: `Mistake: ${r.mistake}` }) : null, r.next ? h('div', { class: 'lesson', text: `Next time: ${r.next}` }) : null))));
+    const IDEA = { proposed: 'drafted as a policy', active: 'in force', done: 'ran its course', rejected: 'not taken', pending: 'waiting', new: 'new', unknown: '' };
+    const ideas = (Array.isArray(a.ideas) ? a.ideas : []).filter(x => x?.title).slice().reverse();
+    if (ideas.length) out.push(h('div', { class: 'card' }, h('h4', { text: 'Their policy ideas' }), ideas.map(x => h('div', { class: 'list-row' },
+      h('small', { text: [x.day != null ? `day ${x.day}` : null, IDEA[x.status] ?? String(x.status || '').replace(/_/g, ' '), x.policyId].filter(Boolean).join(' · ') }),
+      h('div', { text: x.title }), x.policyId ? h('b', { class: 'link', text: 'See the policy', onclick: () => { st.tab = 'policies'; renderTabs(); renderPanel(); } }) : null))));
     // night school: talent badges, interests, best fields (from /api/citizens/:id, loaded once per opening)
     const sc = schoolFor(a.id);
     if (sc) {
@@ -360,14 +395,14 @@ const PANELS = {
       }
       // the last lesson notes (server text: missed questions with the right answer, or the teacher's advice)
       const notes = (sc.notes || []).filter(x => typeof x === 'string' && x);
-      if (notes.length) card.append(h('h4', { class: 'sub', text: 'Last lesson notes' }), notes.map(x => h('div', { class: 'lesson', text: x })));
+      if (notes.length) card.append(h('h4', { class: 'sub', text: 'Last lesson notes' }), ...notes.map(x => h('div', { class: 'lesson', text: x })));
       out.push(card);
     } else if (sc === null) out.push(h('div', { class: 'card' }, h('h4', { text: 'Night school' }), h('p', { text: 'Loading…' })));
     if (a.office || Object.keys(a.skill || {}).length) {
       const sk = h('div', { class: 'card' }, h('h4', { text: 'Office skill (grows with training)' }));
       for (const [r, v] of Object.entries(a.skill || {})) sk.append(h('div', { class: 'trait' }, h('span', { text: role(r)?.title || r }), h('div', { class: 'bar' }, h('i', { style: `width:${Math.round(v * 100)}%` })), h('span', { text: Math.round(v * 100) })));
       const rv = (a.reviews || []).slice().reverse();
-      if (rv.length) sk.append(h('h4', { class: 'sub', text: 'Report card' }), rv.map(r => h('div', { class: 'list-row' }, h('small', { text: `day ${r.day} · ${role(r.roleId)?.title}` }), h('div', {}, h('b', { class: 'grade g' + r.grade, text: r.grade }), ` ${r.kpi} · failed checks ${r.failedChecks} · skill ${Math.round(r.skill * 100)}`))));
+      if (rv.length) sk.append(h('h4', { class: 'sub', text: 'Report card' }), ...rv.map(r => h('div', { class: 'list-row' }, h('small', { text: `day ${r.day} · ${role(r.roleId)?.title}` }), h('div', {}, h('b', { class: 'grade g' + r.grade, text: r.grade }), ` ${r.kpi} · failed checks ${r.failedChecks} · skill ${Math.round(r.skill * 100)}`))));
       const s = a.stats || {};
       const counts = Object.entries(s).filter(([, v]) => v).map(([k, v]) => `${k} ${v}`).join(' · ');
       if (counts) sk.append(h('h4', { class: 'sub', text: 'Decisions made' }), h('p', { text: counts }));
@@ -573,6 +608,7 @@ const PANELS = {
     return out;
   },
   school: () => schoolPanel(),
+  policies: () => policiesPanel(),
   treasury() {
     const p = st.policy || {}, e = st.econ || {};
     const out = [h('div', { class: 'card' }, h('h4', { text: 'Treasury' }), kv([
@@ -637,11 +673,11 @@ function govCard() {
     }
   }
   const cards = (g.cards || []).slice(-5).reverse();
-  if (cards.length) card.append(h('h4', { class: 'sub', text: 'Latest report cards' }), cards.map(c => h('div', { class: 'list-row' },
+  if (cards.length) card.append(h('h4', { class: 'sub', text: 'Latest report cards' }), ...cards.map(c => h('div', { class: 'list-row' },
     h('small', { text: `decided day ${c.of} · graded day ${c.day} · ${role(c.role)?.title || c.role}${c.city ? ` · ${cityName(c.city)}` : ''}` }),
     h('div', {}, h('b', { class: 'grade g' + (GRADE_LETTER.includes(c.grade) ? c.grade : 'C'), text: String(c.grade || '?') }), ` ${cit(c.agentId)?.name || c.agentId}: ${c.what || ''}`))));
   const plans = (st.feed.palace || []).filter(m => m.kind === 'plan').slice(-3).reverse();
-  if (plans.length) card.append(h('h4', { class: 'sub', text: 'Leaders\' work plans (#palace)' }), plans.map(m => h('div', { class: 'list-row' }, h('small', { text: `${cit(m.agentId)?.name || m.agentId} · day ${m.day}` }), h('div', { class: 'q', text: m.text }))));
+  if (plans.length) card.append(h('h4', { class: 'sub', text: 'Leaders\' work plans (#palace)' }), ...plans.map(m => h('div', { class: 'list-row' }, h('small', { text: `${cit(m.agentId)?.name || m.agentId} · day ${m.day}` }), h('div', { class: 'q', text: m.text }))));
   return card;
 }
 // The entrance exam mixes rule, field, real-case and handbook questions; its size and pass mark come per office
@@ -693,13 +729,115 @@ function schoolPanel() {
     const card = h('div', { class: 'card' }, h('h4', { text: 'Talent programme' }),
       h('p', { text: `Each republic day the most promising students of every field (about ${pct(g.share)}, at most ${n(g.maxPerField)} per field) are marked gifted: harder questions, twice the lessons and most of the teacher's time.` }),
       kv([['Gifted now', n(g.total)], ['Chosen on', g.day != null ? `day ${g.day}` : '-'], ['Joined / left at the last selection', `${n(g.joined)} / ${n(g.left)}`], ['Teacher calls today: gifted / everyone else', `${n(t.gifted)} / ${n(t.others)}`]]));
-    if (by.length) card.append(h('h4', { class: 'sub', text: 'By field' }), by.map(f => h('div', { class: 'list-row' },
+    if (by.length) card.append(h('h4', { class: 'sub', text: 'By field' }), ...by.map(f => h('div', { class: 'list-row' },
       h('small', { text: `${f.name} · ${n(f.gifted)} gifted` }),
       f.top ? h('div', {}, 'Best student: ', h('b', { class: 'link', text: f.top.name || f.top.id, onclick: () => openCitizen(f.top.id) })) : null)));
     out.push(card);
   }
   const top = Array.isArray(s.topStudents) ? s.topStudents : [];
   if (top.length) out.push(h('div', { class: 'card' }, h('h4', { text: 'Top students (core subjects)' }), top.map(x => h('div', { class: 'list-row' }, h('b', { class: 'link', text: x.name || x.id, onclick: () => openCitizen(x.id) }), ` · average ${pct(x.average)}`))));
+  const bench = benchCard(); if (bench) out.splice(1, 0, bench); // the brain's own exam, right under the school's numbers
+  return out;
+}
+// the local brain's daily fixed exam (ticket #775): the same questions every day, so the score shows whether the
+// lessons and the LoRA adapters make it better; state.bench (stream) first, /api/bench for the history
+function benchCard() {
+  loadBench();
+  const b = st.benchFull || st.bench; if (!b || typeof b !== 'object') return null;
+  const n = v => (Number.isFinite(Number(v)) ? Number(v) : 0); const L = b.latest && typeof b.latest === 'object' ? b.latest : null;
+  const run = b.running && typeof b.running === 'object' ? b.running : null;
+  const hist0 = Array.isArray(b.history) ? b.history.filter(x => x && Number.isFinite(Number(x.score))) : null;
+  const card = h('div', { class: 'card' }, h('h4', { text: 'How smart is the republic' }),
+    h('p', { text: 'Every republic day the citizens\' local brain sits the same fixed exam, so its score shows whether the night school and the LoRA adapters make it better.' }),
+    hist0 ? (hist0.length ? scoreChart(hist0.slice(-60)) : h('p', { class: 'chart-empty', text: 'First exam after the local brain is back.' })) : null,
+    kv([['Status', String(b.status || 'idle').slice(0, 60)], ['Latest score', L ? `${n(L.score)}%${L.right != null ? ` (${n(L.right)}/${n(L.total)})` : ` of ${n(L.total)} questions`} · day ${n(L.day)}` : 'no exam yet'],
+      ...(run ? [['Running now', `day ${n(run.day)}: ${n(run.answered)} of ${n(run.total)} answered`]] : []),
+      ...(L?.model ? [['Model', String(L.model).slice(0, 60)]] : []), ...(Array.isArray(L?.adapters) && L.adapters.length ? [['LoRA adapters', L.adapters.slice(0, 8).map(x => String(x).slice(0, 24)).join(', ')]] : []),
+      ...(b.questions ? [['Questions', n(b.questions)]] : [])]));
+  // by subject, the latest run
+  const dom = L?.byDomain && typeof L.byDomain === 'object' ? Object.entries(L.byDomain).filter(([, v]) => Array.isArray(v) && n(v[1]) > 0).slice(0, 12) : [];
+  // and the change since the exam before, per subject (percentage points)
+  const prevRun = hist0 && hist0.length > 1 ? hist0.at(-2) : null; const prevDom = prevRun?.byDomain && typeof prevRun.byDomain === 'object' ? prevRun.byDomain : {};
+  const delta = (k, v) => { const p = prevDom[k]; if (!Array.isArray(p) || !n(p[1])) return ''; const d = Math.round((n(v[0]) / n(v[1]) - n(p[0]) / n(p[1])) * 100); return d ? ` (${d > 0 ? '+' : ''}${d})` : ' (=)'; };
+  if (dom.length) card.append(h('h4', { class: 'sub', text: `Latest exam by subject${prevRun ? ', change since the exam before' : ''}` }), ...dom.map(([k, v]) => h('div', { class: 'trait' }, h('span', { text: String(k).replace(/_/g, ' ').slice(0, 24) }),
+    h('div', { class: 'bar' }, h('i', { style: `width:${Math.round(n(v[0]) / n(v[1]) * 100)}%` })), h('span', { text: `${n(v[0])}/${n(v[1])}${delta(k, v)}` }))));
+  // the last ten days, newest first
+  const hist = Array.isArray(b.history) ? b.history.slice(-10).reverse() : [];
+  if (hist.length > 1) card.append(h('h4', { class: 'sub', text: 'Last days' }), ...hist.map(x => h('div', { class: 'list-row' }, h('small', { text: `day ${n(x?.day)}` }), ` ${n(x?.score)}% · ${n(x?.right)}/${n(x?.total)}${x?.model ? ` · ${String(x.model).slice(0, 40)}` : ''}`)));
+  return card;
+}
+// what a policy does, in a plain sentence, from its lever and numbers (the contract's grammar; ids shown as names)
+const prettyId = s => String(s || '').replace(/_/g, ' ').slice(0, 40);
+const jobTitleOf = id => st.jobs?.list?.find(j => j.id === id)?.title || prettyId(id);
+function groupText(g) {
+  const s = String(g || 'all');
+  if (s === 'all') return 'every citizen'; if (s === 'unemployed') return 'everyone looking for work'; if (s === 'students') return 'every university student';
+  if (s === 'poor') return 'the poorest quarter of citizens';
+  if (s.startsWith('job:')) return `every ${jobTitleOf(s.slice(4)).toLowerCase()}`; if (s.startsWith('city:')) return `everyone in ${cityName(s.slice(5))}`;
+  return prettyId(s);
+}
+function effectText(p) {
+  const q = p.params && typeof p.params === 'object' ? p.params : {}; const n = v => (Number.isFinite(Number(v)) ? Number(v) : 0);
+  let t;
+  switch (p.lever) {
+    case 'grant': t = `Pays ${n(q.amount)} CAI a day to ${groupText(q.group)}`; break;
+    case 'tax_delta': t = `${n(q.points) >= 0 ? 'Raises' : 'Cuts'} the tax rate of ${groupText(q.group)} by ${Math.abs(n(q.points))} point${Math.abs(n(q.points)) === 1 ? '' : 's'}`; break;
+    case 'wage': t = `${n(q.percent) >= 0 ? 'Raises' : 'Cuts'} the daily wage of ${jobTitleOf(q.job).toLowerCase()} by ${Math.abs(n(q.percent))}%`; break;
+    case 'hire': t = `Opens ${n(q.seats)} more ${jobTitleOf(q.job).toLowerCase()} job${n(q.seats) === 1 ? '' : 's'}, filled from those looking for work`; break;
+    case 'school_focus': t = `The night school teaches ${prettyId(q.field)} more often (weight ${n(q.weight)} of 3)`; break;
+    case 'project': t = `A one-off ${prettyId(q.kind)} project costing ${cai(q.cost)}, paid to the city's construction workers; the city's mood rises a little when it is done`; break;
+    default: t = `${prettyId(p.lever)}${Object.keys(q).length ? ` (${Object.entries(q).slice(0, 4).map(([k, v]) => `${prettyId(k)} ${String(v).slice(0, 30)}`).join(', ')})` : ''}`;
+  }
+  return `${t}${p.scope === 'city' && p.city ? `, in ${cityName(p.city)}` : ''}${n(p.days) ? `, for ${n(p.days)} day${n(p.days) === 1 ? '' : 's'}` : ''}.`;
+}
+// the daily exam score as a line (one series: the title names it, no legend): 0-100 %, a dot per day with its own
+// tooltip, the latest value labelled. SVG built with createElementNS, numbers only, no server text inside.
+function scoreChart(hist) {
+  const NS = 'http://www.w3.org/2000/svg'; const W = 320, H = 130, L = 30, R = 34, T = 10, B = 22;
+  const el = (tag, attrs, text) => { const e = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs || {})) e.setAttribute(k, String(v)); if (text != null) e.textContent = text; return e; };
+  const n = v => (Number.isFinite(Number(v)) ? Number(v) : 0);
+  const pts = hist.map(x => ({ day: n(x.day), score: Math.max(0, Math.min(100, n(x.score))), right: n(x.right), total: n(x.total) }));
+  // the y range follows the scores (10-point steps around them), so a few points of progress can be seen; the axis says where it starts
+  const lo = Math.max(0, Math.floor((Math.min(...pts.map(p => p.score)) - 5) / 10) * 10), hi = Math.min(100, Math.max(lo + 20, Math.ceil((Math.max(...pts.map(p => p.score)) + 5) / 10) * 10));
+  const x = i => L + (pts.length === 1 ? (W - L - R) / 2 : i * (W - L - R) / (pts.length - 1)), y = s => T + (hi - s) / (hi - lo) * (H - T - B);
+  const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, class: 'chart', role: 'img', 'aria-label': `Daily exam score, ${pts.length} day${pts.length === 1 ? '' : 's'}, latest ${pts.at(-1).score}%` });
+  for (const g of [lo, Math.round((lo + hi) / 2), hi]) { svg.append(el('line', { x1: L, x2: W - R, y1: y(g), y2: y(g), class: 'grid' }), el('text', { x: L - 6, y: y(g) + 3, class: 'axis', 'text-anchor': 'end' }, `${g}%`)); }
+  svg.append(el('text', { x: L, y: H - 6, class: 'axis' }, `day ${pts[0].day}`));
+  if (pts.length > 1) { svg.append(el('text', { x: W - R, y: H - 6, class: 'axis', 'text-anchor': 'end' }, `day ${pts.at(-1).day}`)); svg.append(el('polyline', { points: pts.map((p, i) => `${x(i).toFixed(1)},${y(p.score).toFixed(1)}`).join(' '), class: 'line' })); }
+  pts.forEach((p, i) => { const g = el('g', { class: 'pt' }); g.append(el('circle', { cx: x(i), cy: y(p.score), r: 10, class: 'hit' }), el('circle', { cx: x(i), cy: y(p.score), r: 4, class: 'dot' }), el('title', {}, `Day ${p.day}: ${p.score}%${p.total ? ` (${p.right} of ${p.total} right)` : ''}`)); svg.append(g); });
+  const last = pts.at(-1); svg.append(el('text', { x: x(pts.length - 1) + 7, y: y(last.score) + 4, class: 'val' }, `${last.score}%`));
+  return h('div', { class: 'chart-box' }, svg);
+}
+// one policy as a card: what, why, who, what it costs, and how it went
+const POLICY_STATUS = { active: 'in force', proposed: 'proposed', done: 'ended', expired: 'ended', rejected: 'rejected', repealed: 'repealed', failed: 'failed' };
+function policyCard(p) {
+  const n = v => (v != null && v !== '' && Number.isFinite(Number(v)) ? Number(v) : null); const day = v => (n(v) != null ? `day ${n(v)}` : null);
+  const where = p.scope === 'city' && p.city ? cityName(p.city) : 'the whole republic';
+  const rows = [['Status', POLICY_STATUS[p.status] || String(p.status || '-').slice(0, 20)], ['Where', where], ['What it does', effectText(p)],
+    ['Cost', n(p.costPerDay) != null ? `${cai(p.costPerDay)} a day${n(p.days) ? ` for ${n(p.days)} days` : ''}` : '-'],
+    ['Proposed by', p.author ? `${p.author.name}${p.author.role ? ` (${p.author.role})` : ''}` : '-'], ...(p.ideaFrom ? [['Idea from', p.ideaFrom.name]] : []),
+    ['Proposed', day(p.proposedDay) || '-'], ...(day(p.enactedDay) ? [['In force from', day(p.enactedDay)]] : []), ...(day(p.endsDay) ? [['Ends', day(p.endsDay)]] : []),
+    ...(p.votes ? [['Council vote', `${n(p.votes.yes) ?? 0} yes · ${n(p.votes.no) ?? 0} no`]] : []), ...(p.grade ? [['Grade', String(p.grade).slice(0, 2)]] : [])];
+  return h('div', { class: 'card' }, h('h4', { text: p.title || '(untitled)' }), p.why ? h('p', { text: p.why }) : null, kv(rows),
+    p.lesson ? h('p', { class: 'lesson', text: `Lesson: ${p.lesson}` }) : null,
+    h('div', { class: 'row' }, p.author ? h('button', { class: 'btn-ghost', type: 'button', text: `Open ${p.author.name}`, onclick: () => openCitizen(p.author.id) }) : null,
+      p.ideaFrom ? h('button', { class: 'btn-ghost', type: 'button', text: `Open ${p.ideaFrom.name}`, onclick: () => openCitizen(p.ideaFrom.id) }) : null));
+}
+function policiesPanel() {
+  loadPolicies(); loadJobs(); // job titles for "what it does"
+  const s = st.policies && typeof st.policies === 'object' ? st.policies : {}; const n = v => Number(v) || 0;
+  const stats = s.stats && typeof s.stats === 'object' ? Object.entries(s.stats).filter(([, v]) => Number.isFinite(Number(v))).slice(0, 10).map(([k, v]) => `${String(k).replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase()} ${n(v)}`).join(' · ') : '';
+  const out = [h('div', { class: 'card' }, h('h4', { text: 'Free policies' }),
+    h('p', { text: 'Officials draft small policies of their own, sometimes from a citizen\'s idea: a lever, its numbers and how many days it runs. Each draft is checked against the law and the budget, decided, paid from the treasury while it runs, then graded on what it changed.' }),
+    kv([['In force', n(s.active)], ['Proposed', n(s.proposed)], ['Cost of those in force', `${cai(s.costPerDay)} a day`], ...(stats ? [['Record', stats]] : [])]))];
+  const list = st.policyList;
+  if (!list) { out.push(h('p', { class: 'empty', text: 'Loading…' })); return out; }
+  if (st.policiesMissing) { out.push(h('p', { class: 'empty', text: 'Policies are not open on this server yet.' })); return out; }
+  for (const [title, keep] of [['In force', p => p.status === 'active'], ['Proposed', p => p.status === 'proposed'], ['Ended', p => p.status !== 'active' && p.status !== 'proposed']]) {
+    const g = list.filter(keep);
+    out.push(h('div', { class: 'side-head', text: `${title} (${g.length})` }));
+    out.push(...(g.length ? g.slice(0, 30).map(policyCard) : [h('div', { class: 'card' }, h('p', { text: title === 'In force' ? 'No policy is in force right now.' : title === 'Proposed' ? 'No draft is waiting.' : 'None yet.' }))]));
+  }
   return out;
 }
 function rankTitle(a) {
@@ -798,6 +936,19 @@ async function load() {
   renderAll();
 }
 const news = newsTicker($('#newsTicker'), { cityName: id => cityName(id) });
+// ?selftest=ideas: made-up policies and exam days (all marked as tests) to see the Ideas & policies tab and the exam
+// chart before the republic has any; nothing is sent anywhere
+if (new URLSearchParams(location.search).get('selftest') === 'ideas') {
+  const never = Date.now() + 1e12; st.policiesAt = never; st.benchAt = never;
+  st.policyList = [
+    { id: 'pol-1', title: '(test) Lunch money for job seekers', why: 'Too many people are looking for work and cannot afford food while they search.', scope: 'nation', city: null, lever: 'grant', params: { group: 'unemployed', amount: 5 }, days: 7, costPerDay: 120, status: 'active', author: { id: 'test-a', name: 'Test Minister', role: 'Minister' }, ideaFrom: { id: 'test-b', name: 'Test Citizen' }, proposedDay: 3, enactedDay: 4, endsDay: 11, votes: { yes: 18, no: 12 }, grade: null, lesson: null },
+    { id: 'pol-2', title: '(test) More builders for Kernel Falls', why: 'The city has half-built blocks and people without work.', scope: 'city', city: 'kernelfalls', lever: 'hire', params: { job: 'construction_worker', seats: 10 }, days: 14, costPerDay: 0, status: 'proposed', author: { id: 'test-c', name: 'Test Mayor', role: 'Mayor' }, ideaFrom: null, proposedDay: 5, enactedDay: null, endsDay: null, votes: null, grade: null, lesson: null },
+    { id: 'pol-3', title: '(test) A park by the river', why: 'Residents asked for green space.', scope: 'city', city: 'kernelfalls', lever: 'project', params: { kind: 'park', cost: 4000 }, days: 3, costPerDay: 1333, status: 'expired', author: { id: 'test-c', name: 'Test Mayor', role: 'Mayor' }, ideaFrom: { id: 'test-d', name: 'Test Gardener' }, proposedDay: 1, enactedDay: 1, endsDay: 4, votes: null, grade: 'B', lesson: 'Mood rose in the city; the cost was fair for three days.' },
+  ];
+  const dom = d => ({ law: [6 + d, 12], economics: [5 + d, 12], medicine: [7, 12], programming: [4 + d, 12] });
+  st.benchFull = { status: 'done today', questions: 325, running: null, history: [0, 1, 2, 3, 4, 5].map(k => ({ day: k + 1, score: [41.2, 43.1, 42.5, 45.8, 47.4, 49.2][k], right: [134, 140, 138, 149, 154, 160][k], total: 325, byDomain: dom(Math.floor(k / 2)), model: '(test) qwen3:8b', adapters: ['general', 'law'] })) };
+  st.benchFull.latest = st.benchFull.history.at(-1);
+}
 function connect() {
   const es = new EventSource('/api/stream');
   news.listen(es); news.load(); if (new URLSearchParams(location.search).get('selftest') === 'news') news.add(TEST_NEWS);

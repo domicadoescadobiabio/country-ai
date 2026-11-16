@@ -33,7 +33,7 @@ export class Agents {
     this.tip = part(new THREE.SphereGeometry(0.62, 10, 8).translate(0, 9.6, 0), new THREE.MeshBasicMaterial({ color: '#ffffff', toneMapped: false }));
     this.group = new THREE.Group(); this.group.add(this.body, this.head, this.visor, this.tip); scene.add(this.group);
     this.pickables = [this.body, this.head, this.visor];
-    this.weights = { work: 3, shop: 2, study: 2, talk: 2, help: 1, volunteer: 1, job_hunt: 0.3 }; // job_hunt: to the job centre (ticket #759)
+    this.weights = { work: 3, shop: 2, study: 2, talk: 2, help: 1, volunteer: 1, job_hunt: 0.3, propose: 0.3 }; // job_hunt: to the job centre (#759); propose: to city hall (#793)
   }
   get visible() { return this.group.visible; }
   set visible(v) { this.group.visible = v; }
