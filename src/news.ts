@@ -23,6 +23,22 @@ const NEWS_KINDS: Record<string, string[]> = {
   election: ['vote', 'law', 'term', 'pass', 'fail'], academy: ['pass', 'review'], cityhall: ['oath', 'veto', 'order'], border: ['raid', 'admitted'],
   streets: ['law', 'payday', 'departure'], life: ['job', 'night'],
 };
+// ---------------------------------------------------------------- breaking news (owner, 16 Nov: the TV window)
+// An item is `breaking: true` only for a big event of the whole republic, decided by the code from the event's channel
+// and kind (never from a model's words):
+//   election:law     an election's result (President, Council, Mayor, a referendum: src/elections.ts)
+//   parliament:law   a national bill signed or a law enacted (src/council.ts)
+//   parliament:oath  a Speaker of the Council elected (src/cabinet.ts)
+//   border:raid      a raid on the border (src/military.ts)
+//   policy_active / policy_rejected of a NATION policy (src/policies.ts)
+//   any announcement its institution marks { breaking: true } in say() (e.g. an impeachment, an official arrested)
+// Jobs, the school, city policies, chat and everything else never are. Rare on purpose: at most one every
+// NEWS_BREAKING_GAP_MIN minutes (90) and NEWS_BREAKING_PER_DAY per republic day (4); a big event over the limit is
+// still published, as an ordinary item. Items from before this have no field and count as false.
+export const NEWS_BREAKING_GAP_MIN = Math.round(env('NEWS_BREAKING_GAP_MIN', 90, 0, 1440));
+export const NEWS_BREAKING_PER_DAY = Math.round(env('NEWS_BREAKING_PER_DAY', 4, 0, 50));
+const MAJOR: Record<string, true> = { 'election:law': true, 'parliament:law': true, 'parliament:oath': true, 'border:raid': true };
+const isMajor = (ch: string, kind: string, m?: any) => MAJOR[`${ch}:${kind}`] === true || m?.breaking === true;
 // a policy's news: the facts from the policy itself (its title was checked by src/policies.ts when it was drafted)
 const POLICY_NEWS: Record<string, true> = { proposed: true, active: true, rejected: true, expired: true, done: true };
 function policyEvent(S: State, p: any, st: string) {
@@ -35,7 +51,8 @@ function policyEvent(S: State, p: any, st: string) {
     : st === 'active' ? (citizen ? `${who}'s idea "${title}" becomes a policy in ${place} for ${p.days} days.` : `"${title}" is in force in ${place} for ${p.days} days.`)
     : st === 'rejected' ? `"${title}" for ${place} is rejected${p.lesson ? `: ${cleanText(p.lesson, 60)}` : ''}.`
     : p.lever === 'project' && st === 'done' ? `The ${cleanText(p.params?.kind, 20)} project "${title}" in ${place} is finished.` : `"${title}" in ${place} has ended.`;
-  return { text: cleanText(text, 600), city: p.scope === 'city' && CITIES.some(c => c.id === p.city) ? p.city : null, speaker: author ? author.name : null };
+  return { text: cleanText(text, 600), city: p.scope === 'city' && CITIES.some(c => c.id === p.city) ? p.city : null, speaker: author ? author.name : null,
+    major: p.scope === 'nation' && (st === 'active' || st === 'rejected') };
 }
 const fnv = (s: string) => { let h = 2166136261; for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619); return h >>> 0; };
 const N = (S: State) => {
@@ -51,7 +68,7 @@ function eventOf(S: State, ch: string, m: any) {
   const a = (S.citizens || []).find((x: Citizen) => x.id === m.agentId);
   const text = cleanText(m.text, 600);
   const city = (a?.city && CITIES.some(c => c.id === a.city) ? a.city : null) || CITIES.find(c => text.includes(c.name))?.id || null;
-  return { ref: String(m.id), ch, kind: String(m.kind), ts: Number(m.ts) || Date.now(), text, city, speaker: a ? a.name : null };
+  return { ref: String(m.id), ch, kind: String(m.kind), ts: Number(m.ts) || Date.now(), text, city, speaker: a ? a.name : null, major: isMajor(ch, String(m.kind), m) };
 }
 // the first sentence of the announcement, at most 100 characters, cut at a word (the template headline)
 export function templateHeadline(text: string) {
@@ -139,13 +156,18 @@ function publish(ctx: Ctx, ev: any, headline: string, by: 'reporter' | 'template
   const s = N(ctx.S);
   if (s.seen.includes(ev.ref)) return;
   s.total++; s.hour.n++;
-  const item = { id: `news-${s.total}`, ts: Date.now(), headline: cleanText(headline, 100), city: ev.city || null, kind: ev.kind, reporter: ev.reporter, anchor: ev.anchor || null, ref: ev.ref, by };
+  // breaking: a big event (decided above from its channel and kind), within the gap and the day's number
+  const now = Date.now(); const b = (s.breaking ||= { last: 0, day: -1, n: 0 });
+  if (b.day !== ctx.S.day) { b.day = ctx.S.day; b.n = 0; }
+  const breaking = ev.major === true && NEWS_BREAKING_PER_DAY > 0 && b.n < NEWS_BREAKING_PER_DAY && now - (b.last || 0) >= NEWS_BREAKING_GAP_MIN * 60000;
+  if (breaking) { b.last = now; b.n++; }
+  const item = { id: `news-${s.total}`, ts: now, headline: cleanText(headline, 100), city: ev.city || null, kind: ev.kind, reporter: ev.reporter, anchor: ev.anchor || null, ref: ev.ref, by, breaking };
   s.items.push(item); if (s.items.length > KEEP) s.items.splice(0, s.items.length - KEEP);
   s.seen.push(ev.ref); if (s.seen.length > SEEN_MAX) s.seen.splice(0, s.seen.length - SEEN_MAX);
-  ctx.record?.('news', ev.reporter?.id || 'state', { ref: ev.ref, headline: item.headline, city: item.city, kind: item.kind, anchor: item.anchor?.id || null, by });
+  ctx.record?.('news', ev.reporter?.id || 'state', { ref: ev.ref, headline: item.headline, city: item.city, kind: item.kind, anchor: item.anchor?.id || null, by, breaking });
 }
 // for the server: the newest n headlines (at most 50), newest first
 export function newsFeed(S: State, n = 20) {
   const k = clamp(Math.round(Number(n) || 20), 1, KEEP);
-  return [...((S as any).news?.items || [])].slice(-k).reverse().map((x: any) => ({ id: x.id, ts: x.ts, headline: x.headline, city: x.city, kind: x.kind, reporter: x.reporter, anchor: x.anchor, ref: x.ref }));
+  return [...((S as any).news?.items || [])].slice(-k).reverse().map((x: any) => ({ id: x.id, ts: x.ts, headline: x.headline, city: x.city, kind: x.kind, reporter: x.reporter, anchor: x.anchor, ref: x.ref, breaking: x.breaking === true })); // (older items: false)
 }

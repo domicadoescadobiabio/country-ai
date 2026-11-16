@@ -93,6 +93,43 @@ check('never a paid API: no call to the paid models at all', paid.length === 0, 
   check('old policies are not news again, and the Mayor\'s #cityhall line about a policy is not told twice', !pn.some(n => /pol-old/.test(n.ref)) && !S.news.items.some(n => /enacts the policy/.test(n.headline)));
 }
 
+// ---- breaking news (owner, 16 Nov): only big events of the republic, by channel and kind; one every 90 min, 4 a day
+{
+  S = republic(); S.news = undefined; news._resetNews(); _resetLocal(); skew += 60000; // offline: the facts' own words
+  const GAP = news.NEWS_BREAKING_GAP_MIN * 60000 + 1000;
+  const byText = re => S.news.items.find(n => re.test(n.headline));
+  post('election', 'state', 'Election for President: Ada Byte wins with 61%. Turnout 80%, blank 2%.', 'law');
+  post('life', 'state', 'Bram Cache found work as Barista in Port Token.', 'job');
+  skew += 50; post('parliament', 'state', 'Law 7 enacted (vote): the tax rate is now 11%.', 'law'); // announced just after the result
+  await news.newsTick(ctx());
+  check('breaking: an election result is breaking news; a new job never is', byText(/Ada Byte wins/)?.breaking === true && byText(/found work as Barista/)?.breaking === false, JSON.stringify(S.news.items.map(n => [n.headline.slice(0, 30), n.breaking])));
+  check('breaking: a second big event within NEWS_BREAKING_GAP_MIN (90) minutes is published as an ordinary item', byText(/Law 7 enacted/)?.breaking === false);
+  skew += GAP;
+  S.policies = { list: [{ id: 'pol-c', status: 'active', origin: 'official', author: S.officer.id, title: 'Repair the square', scope: 'city', city: 'neura', days: 5, proposedDay: S.day, enactedDay: S.day, lever: 'project', params: { kind: 'repair', cost: 1000 }, ts: Date.now() }] };
+  await news.newsTick(ctx());
+  check('breaking: a city policy is never breaking, even with room left', byText(/Repair the square/)?.breaking === false);
+  post('border', 'state', 'Raid from outside: 40 bot accounts tried 12 payloads. Stopped 12/12.', 'raid');
+  await news.newsTick(ctx());
+  check('breaking: a border raid is breaking (the city policy before it did not use up the gap)', byText(/Raid from outside/)?.breaking === true);
+  skew += GAP; const arrest = post('police', S.officer.id, 'Arrest in case #12: the Mayor of Datahaven is held for fraud.', 'arrest'); arrest.breaking = true; // marked big by its institution
+  post('police', S.officer.id, 'Arrest in case #13: a pickpocket in Neura City.', 'arrest');
+  await news.newsTick(ctx());
+  check('breaking: an announcement its institution marks { breaking: true } is breaking; an ordinary arrest is not', byText(/case #12/)?.breaking === true && byText(/case #13/)?.breaking === false);
+  skew += GAP;
+  S.policies.list.push({ id: 'pol-n', status: 'active', origin: 'official', author: S.officer.id, title: 'Grants for job seekers', scope: 'nation', days: 7, proposedDay: S.day, enactedDay: S.day, lever: 'grant', params: { group: 'unemployed', amount: 5 }, ts: Date.now() });
+  await news.newsTick(ctx());
+  check('breaking: a nation policy in force is breaking (the 4th of the day)', byText(/Grants for job seekers/)?.breaking === true);
+  skew += GAP; post('parliament', 'state', 'Elected Speaker of the Council with 18 of 30 votes.', 'oath');
+  await news.newsTick(ctx());
+  check(`breaking: at most NEWS_BREAKING_PER_DAY (${news.NEWS_BREAKING_PER_DAY}) a republic day; the 5th big event is an ordinary item`, byText(/Elected Speaker/)?.breaking === false && S.news.items.filter(n => n.breaking).length === news.NEWS_BREAKING_PER_DAY);
+  S.day += 1; skew += GAP; post('parliament', 'state', 'Law 8 enacted (vote): the wage is now 105 CAI.', 'law');
+  await news.newsTick(ctx());
+  check('breaking: a new republic day opens room again', byText(/Law 8 enacted/)?.breaking === true);
+  S.news.items.unshift({ id: 'news-0', ts: 1, headline: 'An item from before breaking news', city: null, kind: 'law', reporter: null, anchor: null, ref: 'old' });
+  const feed = news.newsFeed(S, 50);
+  check('breaking: every item in newsFeed carries a boolean breaking; an item from before has false', feed.every(n => typeof n.breaking === 'boolean') && feed.find(n => n.ref === 'old')?.breaking === false);
+}
+
 // ---- the hourly limit, and no reporter yet
 skew += 60000; // the local brain goes quiet (no pull for a minute): offline
 S = republic(); S.news = undefined; news._resetNews(); _resetLocal(); ledger.length = 0;
