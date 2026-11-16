@@ -265,6 +265,35 @@ export function assignJobs(ctx: Ctx) {
   return st;
 }
 // once a republic day: a few of those looking for work find a job with room, then a few others lose theirs, so about
+// Republic News never goes quiet (tickets #723, #727, #908): a city left without a reporter or a news anchor (one took
+// an office, was held, left) gets one at once, on the next tick: the best suited free citizen from a job that has more
+// than one holder there. One pass over the citizens, cheap enough for every tick.
+export function fillNewsDesks(ctx: Ctx) {
+  const { S } = ctx; if ((S as any).jobs?.v !== 1) return [];
+  const byCity = new Map<string, Citizen[]>(); const held = new Map<string, Map<string, number>>();
+  for (const a of S.citizens || []) {
+    if (!eligibleAdult(a) || !a.city) continue;
+    (byCity.get(a.city) || byCity.set(a.city, []).get(a.city)!).push(a);
+    const id = (a as any).job; if (!jobById(id)) continue;
+    const h = held.get(a.city) || held.set(a.city, new Map()).get(a.city)!; h.set(id, (h.get(id) || 0) + 1);
+  }
+  const out: any[] = [];
+  for (const [city, list] of byCity) {
+    if (list.length < 4) continue;
+    const h = held.get(city) || new Map();
+    for (const id of ['reporter', 'news_anchor']) {
+      if ((h.get(id) || 0) > 0) continue;
+      const j = jobById(id)!;
+      const from = list.filter(a => a.status === 'free' && jobById((a as any).job) && (h.get((a as any).job) || 0) > 1).map(a => ({ a, f: fit(a, j) })).sort((x, y) => y.f - x.f)[0]?.a;
+      if (!from) continue;
+      const was = (from as any).job; h.set(was, (h.get(was) || 1) - 1); h.set(id, 1); setJob(from, id, S.day, S);
+      out.push({ citizen: from.id, city, from: was, to: id });
+      ctx.record?.('job_change', 'state', { citizen: from.id, city, from: was, to: id, day: S.day });
+      ctx.say?.('life', 'state', `${from.name} found work as ${j.title} in ${cityName(city)}.`, { kind: 'job' });
+    }
+  }
+  return out;
+}
 // UNEMPLOYED_SHARE stay looking; newcomers without a job get one; a student who took an office has none to keep
 export function jobsTick(ctx: Ctx) {
   const { S } = ctx;
@@ -274,6 +303,7 @@ export function jobsTick(ctx: Ctx) {
   // a student chosen or gone): only the bios that change are written
   if (st.bioV !== 2) syncAllBios(ctx);
   else if (Date.now() - (st.bioAt || 0) >= 60000) syncAllBios(ctx, true);
+  fillNewsDesks(ctx); // every tick, not once a day (ticket #908)
   if (st.day === S.day) return null;
   st.day = S.day;
   const byCity = new Map<string, Citizen[]>();
@@ -290,16 +320,7 @@ export function jobsTick(ctx: Ctx) {
     };
     // newcomers (born or arrived since the first assignment): a job with room
     for (const a of list) if (!jobById((a as any).job) && (a as any).job !== 'unemployed') { const to = hire(a); changes.push({ citizen: a.id, city, from: null, to }); }
-    // Republic News never goes quiet (tickets #723, #727): a city left without a reporter or a news anchor (one took an
-    // office, was held, left) gets one the same day, the best suited from a job that has more than one holder
-    for (const id of ['reporter', 'news_anchor']) {
-      if ((held.get(id) || 0) > 0 || list.length < 4) continue;
-      const j = jobById(id)!;
-      const from = list.filter(a => a.status === 'free' && jobById((a as any).job) && (held.get((a as any).job) || 0) > 1).map(a => ({ a, f: fit(a, j) })).sort((x, y) => y.f - x.f)[0]?.a;
-      if (!from) continue;
-      const was = (from as any).job; held.set(was, (held.get(was) || 1) - 1); held.set(id, 1); setJob(from, id, S.day);
-      changes.push({ citizen: from.id, city, from: was, to: id, name: from.name });
-    }
+    // (Republic News: a city's reporter and news anchor are kept by fillNewsDesks on every tick, below)
     // 'hire' policies (ticket #774): the seats of each active policy for this city (or the nation) are filled from
     // those looking for work, the best suited first; a seat stays filled for the policy's life
     const fills = (st.policyHires ||= {});
@@ -327,8 +348,9 @@ export function jobsTick(ctx: Ctx) {
     // (an active hiring policy lowers the number kept looking by the seats it filled here, so its effect is not undone)
     let now = list.filter(isUnemployed).length; const keep = Math.max(0, U - byPolicy);
     if (now < keep) {
-      const can = list.filter(a => jobById((a as any).job) && a.status === 'free' && (a as any).jobSince !== S.day).sort((x, y) => fnv(`lose|${S.day}|${x.id}`) - fnv(`lose|${S.day}|${y.id}`));
-      for (const a of can.slice(0, keep - now)) { const from = (a as any).job; held.set(from, (held.get(from) || 1) - 1); setJob(a, 'unemployed', S.day); changes.push({ citizen: a.id, city, from, to: 'unemployed', name: a.name }); now++; }
+      // never the last holder of a job in the city (ticket #908: the only news anchor of a small city was let go)
+      const can = list.filter(a => jobById((a as any).job) && a.status === 'free' && (a as any).jobSince !== S.day && (held.get((a as any).job) || 0) > 1).sort((x, y) => fnv(`lose|${S.day}|${x.id}`) - fnv(`lose|${S.day}|${y.id}`));
+      for (const a of can) { if (now >= keep) break; const from = (a as any).job; if ((held.get(from) || 0) <= 1) continue; held.set(from, (held.get(from) || 1) - 1); setJob(a, 'unemployed', S.day); changes.push({ citizen: a.id, city, from, to: 'unemployed', name: a.name }); now++; }
     }
   }
   for (const c of changes) {

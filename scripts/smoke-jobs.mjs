@@ -160,6 +160,14 @@ check('a newcomer gets a job with room the next republic day', jobs.jobById(born
   T.day = 2; jobs.jobsTick({ ...ctx, S: T, record: () => ({}), ledgerHas: () => true, say() {} });
   const left = ['reporter', 'news_anchor'].map(id => T.citizens.filter(a => a.city === 'datahaven' && !a.office && a.job === id).length);
   check('a city that lost its reporter and news anchor gets new ones the next republic day (ticket #727)', left.every(n => n === 1), JSON.stringify(left));
+  // the same day too, on the next tick (ticket #908), and 30 days of the job market never leave a city without its desk
+  const tctx = { ...ctx, S: T, record: () => ({}), ledgerHas: () => true, say() {} };
+  for (const a of T.citizens.filter(x => x.city === 'kernelfalls' && x.job === 'news_anchor' && !x.office)) a.office = 'council';
+  jobs.jobsTick(tctx); // same republic day
+  const sameDay = T.citizens.filter(a => a.city === 'kernelfalls' && !a.office && a.job === 'news_anchor').length;
+  const gaps = [];
+  for (let d = 3; d <= 32; d++) { T.day = d; jobs.jobsTick(tctx); for (const c of CITIES) for (const id of ['reporter', 'news_anchor']) if (!T.citizens.some(a => a.city === c.id && !a.office && a.occupation !== 'student' && a.job === id)) gaps.push(`${c.id}:${id}@${d}`); }
+  check('a city that loses its news anchor gets one on the next tick, the same day; 30 days of hiring and layoffs never leave a city without a reporter or an anchor (ticket #908)', sameDay === 1 && !gaps.length, JSON.stringify({ sameDay, gaps: gaps.slice(0, 5) }));
 }
 // ---- policies (ticket #774, src/policies.ts): hire, school_focus, wage, tax_delta, the Mayor's queue, projects, ideas
 {
@@ -251,6 +259,7 @@ check('a newcomer gets a job with room the next republic day', jobs.jobById(born
     for (const a of folks.slice(4, 4 + need)) if (x.status === 'open') asp.supportAspiration(mctx, a.id, x.id);
     check(`voice: enough backers (${need}, 2% of the city) send it to the Mayor for review`, x.status === 'review' && x.reviewDue === S.day + 1, JSON.stringify({ status: x.status, n: x.supporters.length, need }));
     // the Mayor reviews it by its due day (offline here: a plain policy for its topic, checked like any other)
+    S.cities.datahaven.budget = 50000; // a fixed budget (ticket #899: the Mayor's own spending made it vary)
     await cities.tick(mctx);
     const pa = pol.P(S).list.find(p => p.aspirationId === x.id);
     check('the Mayor adopts it by writing a city policy for it (origin citizen, ideaFrom its author, aspirationId) and says why', x.status === 'adopted' && x.response?.by === mayor.id && pa && pa.origin === 'citizen' && pa.ideaFrom === v1.id && pa.city === 'datahaven' && x.response.policyId === pa.id && x.response.reason.length > 3, JSON.stringify({ status: x.status, response: x.response, policy: pa && { lever: pa.lever, status: pa.status } }));
@@ -264,6 +273,14 @@ check('a newcomer gets a job with room the next republic day', jobs.jobById(born
     for (const a of folks.slice(5 + need, 5 + 2 * need)) if (gx.status === 'open') asp.supportAspiration(mctx, a.id, gx.id);
     await cities.tick(mctx);
     check('an aspiration the city cannot act on is declined with a public reason (offline)', gx.status === 'declined' && /Council/.test(gx.response?.reason || ''), JSON.stringify({ status: gx.status, response: gx.response }));
+    // the offline project fits the room left in the city's budget; with no room it is declined, saying so (ticket #899)
+    S.day += 4;
+    const h = folks[5 + 2 * need]; const hr = asp.voiceAspiration(mctx, h.id, { topic: 'health', scope: 'city', text: 'A clinic closer to the harbour district for everyone' });
+    const hx = asp.A(S).list.find(y => y.id === hr.id);
+    for (const a of folks.slice(6 + 2 * need, 6 + 3 * need)) if (hx.status === 'open') asp.supportAspiration(mctx, a.id, hx.id);
+    S.cities.datahaven.budget = 100; S.cities.datahaven.lastDecisionDay = S.day; // the Mayor's own budget decision is done today
+    await cities.tick(mctx);
+    check('with no room in the city budget for a project, the Mayor declines it and says why (offline)', hx.status === 'declined' && /no room/.test(hx.response?.reason || ''), JSON.stringify({ status: hx.status, response: hx.response }));
     mayor.office = null; S.seats.mayor = []; S.cities.datahaven.mayor = null;
   }
   // a finished project lifts its city's mood, once
