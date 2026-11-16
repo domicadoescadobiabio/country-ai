@@ -64,6 +64,8 @@ export interface Citizen {
   jobSince?: number;
   /** an official's lessons from their report cards (the Government box writes them): the last 5 */
   reflections?: { day: number; grade: string; what: string; mistake: string; next: string }[];
+  /** a citizen's own aspiration counters (src/aspirations.ts): the day of their last new one, supports today */
+  voice?: { lastNew: number; day: number; supports: number };
   /** a citizen's ideas for a policy (the People box writes them): the last 5 */
   ideas?: { day: number; title: string; status: string; policyId: string | null }[];
   [k: string]: any;
@@ -161,6 +163,8 @@ export interface State {
   decisions: Decision[];
   /** free policies (src/policies.ts): the last 200, the daily draft count, finished projects, totals */
   policies?: { list: any[]; seq: number; drafts: { day: number; nation: number; citizen?: number; byCity: Record<string, number> }; projectsDone: { id: string; city: string; kind: string; day: number }[]; stats: Record<string, number>; appliedDay?: number };
+  /** the people's aspirations (src/aspirations.ts): the last 300, the day's review count, totals */
+  aspirations?: { list: any[]; seq: number; reviews: { day: number; n: number }; stats: Record<string, number>; tickDay?: number };
   /** the daily fixed exam (src/bench.ts): the last 120 runs and the run in progress */
   bench?: { history: { day: number; date: string; score: number; right: number; total: number; byDomain: Record<string, [number, number]>; adapters: string[]; model: string | null }[]; run: any; lastDay: number; status?: string };
   [k: string]: any;

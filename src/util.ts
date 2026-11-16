@@ -124,6 +124,28 @@ export function capWhereabouts(view: any, maxBytes = 150000) {
   return out;
 }
 
+// ---------------------------------------------------------------- a fair grade (owner, 16 Nov)
+// A city's result is its own change MINUS the average change of the other cities over the same days (so a park is not
+// graded E because every city's mood fell when the basic income was cut); a nation's is its change minus the trend it
+// was already on. Without a comparison the raw change is used and the text says so. The grade compares that own effect
+// with max(|before|, floor), floor being the size of a change that matters for this number (mood 0.1, a share 0.02).
+//   fairGrade({ name, before, after, others?: number[] (other cities' changes), trend?: number (expected change),
+//               better: 'up'|'down', floor, fmt? }) -> { grade A-E, own, compare, effect, raw, text }
+export function fairGrade(o: { name: string; before: number; after: number; others?: number[] | null; trend?: number | null; better: 'up' | 'down'; floor: number; fmt?: (v: number) => string }) {
+  const fmt = o.fmt || ((v: number) => String(Math.round(v * 1000) / 1000));
+  const sgn = (v: number) => `${v > 0 ? '+' : v < 0 ? '-' : ''}${fmt(Math.abs(v))}`;
+  const own = o.after - o.before;
+  const others = (o.others || []).filter(v => Number.isFinite(v));
+  const compare = others.length ? others.reduce((x, y) => x + y, 0) / others.length : Number.isFinite(o.trend as number) ? (o.trend as number) : null;
+  const effect = own - (compare ?? 0);
+  // (rounded first: a float edge must not decide a grade; within +-2% of the scale is "about no effect")
+  const rel = Math.round(((o.better === 'up' ? effect : -effect) / Math.max(Math.abs(o.before), o.floor > 0 ? o.floor : 0.01)) * 10000) / 10000;
+  const grade = rel > 0.05 ? 'A' : rel > 0.02 ? 'B' : rel >= -0.02 ? 'C' : rel >= -0.05 ? 'D' : 'E';
+  const vs = others.length ? `, other cities avg ${sgn(compare!)}` : compare != null ? `, trend before ${sgn(compare)}` : ', no comparison (raw change)';
+  const text = `${o.name} ${fmt(o.before)} -> ${fmt(o.after)} (${sgn(own)})${vs}: own effect ~${sgn(effect)} -> ${grade}`;
+  return { grade, own, compare, effect, raw: compare == null, text };
+}
+
 export const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 export const pick = a => a[Math.floor(Math.random() * a.length)];
 export const chance = p => Math.random() < p;

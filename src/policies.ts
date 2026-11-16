@@ -21,7 +21,7 @@
 // A nation policy becomes a bill through the Council's existing path (the Government box registers the hook with
 // setPolicyHooks); a city policy waits for its Mayor (cityQueue). Each is graded REVIEW_LAG_DAYS after it starts from
 // the number it is meant to move. Ledger: policy_proposed, policy_enacted, policy_rejected, policy_expired.
-import { cleanText, clamp } from './util.ts';
+import { cleanText, clamp, fairGrade } from './util.ts';
 import { borderCheck } from './military.ts';
 import { CITIES } from './cities.ts';
 import { jobById } from './jobs.ts';
@@ -202,7 +202,10 @@ export function validateDraft(S: State, draft: any) {
       if (worst < range[0] || worst > range[1]) errors.push(`${stack.value}: with the ${lever} policies already proposed or in force for ${target} the total would be ${worst}, outside ${range[0]}..${range[1]}`);
     }
   }
-  return { ok: errors.length === 0, errors, costPerDay, clean: errors.length ? null : { title, why, scope, city, lever, params, days, author: author!.id, origin, ideaFrom } };
+  // the people's aspiration this policy answers (src/aspirations.ts), when an official adopts one
+  let aspirationId: string | null = null;
+  if (d.aspirationId != null && d.aspirationId !== '') { if (typeof d.aspirationId === 'string' && /^asp-\d{1,9}$/.test(d.aspirationId)) aspirationId = d.aspirationId; else errors.push('aspirationId: asp-<number>'); }
+  return { ok: errors.length === 0, errors, costPerDay, clean: errors.length ? null : { title, why, scope, city, lever, params, days, author: author!.id, origin, ideaFrom, aspirationId } };
 }
 
 // ---------------------------------------------------------------- the path of a policy
@@ -222,6 +225,7 @@ export function proposePolicy(ctx: Ctx, draft: any): { id: string } | { error: s
   if (byCitizen) s.drafts.citizen = (s.drafts.citizen || 0) + 1; else if (c.scope === 'nation') s.drafts.nation++; else s.drafts.byCity[c.city!] = (s.drafts.byCity[c.city!] || 0) + 1;
   const p: any = { id: `pol-${++s.seq}`, ...c, costPerDay: v.costPerDay, status: 'proposed', proposedDay: S.day, enactedDay: null, endsDay: null, votes: null,
     grade: null, lesson: null, paid: 0, shortfall: 0, billId: null, decidedBy: null, ts: Date.now() };
+  p.pre = snapshot(S, p); // the number before: a nation policy's grade takes off the trend from here to its start
   s.list.push(p); if (s.list.length > POLICY_LIMITS.keep) s.list.splice(0, s.list.length - POLICY_LIMITS.keep);
   s.stats.proposed++;
   ctx.record?.('policy_proposed', p.author, { id: p.id, title: p.title, scope: p.scope, city: p.city, lever: p.lever, params: p.params, days: p.days, costPerDay: p.costPerDay, origin: p.origin, ideaFrom: p.ideaFrom });
@@ -239,7 +243,7 @@ export function enactPolicy(ctx: Ctx, id: string, by: string, votes: { yes: numb
   const v = validateDraft(S, { ...p, params: { ...p.params } });
   if (!v.ok) { p.status = 'proposed'; return rejectPolicy(ctx, id, by, v.errors[0]); }
   // paid on each new day after it starts, `days` times: the last payment is on endsDay
-  Object.assign(p, { status: 'active', enactedDay: S.day, endsDay: S.day + p.days, costPerDay: v.costPerDay, decidedBy: by, votes: votes || p.votes, base: metric(S, p) });
+  Object.assign(p, { status: 'active', enactedDay: S.day, endsDay: S.day + p.days, costPerDay: v.costPerDay, decidedBy: by, votes: votes || p.votes, base: snapshot(S, p) });
   s.stats.enacted++;
   ctx.record?.('policy_enacted', by || 'state', { id: p.id, lever: p.lever, params: p.params, scope: p.scope, city: p.city, days: p.days, costPerDay: p.costPerDay, endsDay: p.endsDay, votes: p.votes });
   return { ok: true };
@@ -332,24 +336,44 @@ export function applyPolicies(ctx: Ctx) {
 
 // ---------------------------------------------------------------- grading: the number the policy is meant to move
 const pct = (x: number) => `${Math.round(x * 1000) / 10}%`;
-function metric(S: State, p: any): { name: string; value: number; better: 'up' | 'down'; line?: number } {
-  const all = free(S); const n = Math.max(1, all.length);
-  if (p.lever === 'hire') return { name: 'citizens looking for work', value: all.filter(isUnemployed).length / n, better: 'down' };
-  if (p.lever === 'wage') { const h = all.filter(a => a.job === p.params.job); return { name: `average wallet of ${jobById(p.params.job)?.title || p.params.job} workers`, value: h.length ? h.reduce((x, a) => x + (Number(a.wallet) || 0), 0) / h.length : 0, better: 'up' }; }
-  if (p.lever === 'school_focus') return { name: `average level in ${p.params.field}`, value: all.reduce((x, a) => x + (Number(fieldLevelOf(a, p.params.field)) || 0), 0) / n, better: 'up' };
-  if (p.lever === 'project') { const r = all.filter(a => a.city === p.city); return { name: `mood in ${CITIES.find(c => c.id === p.city)?.name || p.city}`, value: r.length ? r.reduce((x, a) => x + (Number(a.mood?.v) || 0), 0) / r.length : 0, better: 'up' }; }
-  // grants and tax changes: how many are poor by the line of the day it started
-  const line = p.base?.line ?? poorLine(S);
-  return { name: 'citizens under the poor line', value: all.filter(a => (Number(a.wallet) || 0) < line).length / n, better: 'down', line };
+// the number a policy is meant to move, for the free citizens of one city (or all of them): its name, value, which way
+// is better, and the size of a change that matters (fairGrade's floor)
+function metricIn(S: State, p: any, city: string | null, line: number) {
+  const all = free(S).filter(a => !city || a.city === city); const n = Math.max(1, all.length);
+  const avg = (list: Citizen[], f: (a: Citizen) => number) => (list.length ? list.reduce((x, a) => x + f(a), 0) / list.length : 0);
+  if (p.lever === 'hire') return { name: 'citizens looking for work', value: all.filter(isUnemployed).length / n, better: 'down', floor: 0.02, share: true };
+  if (p.lever === 'wage') return { name: `average wallet of ${jobById(p.params.job)?.title || p.params.job} workers`, value: avg(all.filter(a => a.job === p.params.job), a => Number(a.wallet) || 0), better: 'up', floor: 10, share: false };
+  if (p.lever === 'school_focus') return { name: `average level in ${p.params.field}`, value: avg(all, a => Number(fieldLevelOf(a, p.params.field)) || 0), better: 'up', floor: 0.1, share: false };
+  if (p.lever === 'project') return { name: 'mood', value: avg(all, a => Number(a.mood?.v) || 0), better: 'up', floor: 0.1, share: false };
+  // grants and tax changes: how many are under the poor line
+  return { name: 'citizens under the poor line', value: all.filter(a => (Number(a.wallet) || 0) < line).length / n, better: 'down', floor: 0.02, share: true };
 }
+// the metric now, for the nation and each city (cities without free citizens are left out of the comparison)
+function snapshot(S: State, p: any) {
+  const line = p.base?.line ?? poorLine(S);
+  const nat = metricIn(S, p, null, line); const byCity: Record<string, number> = {};
+  for (const c of CITIES) if (free(S).some(a => a.city === c.id)) byCity[c.id] = metricIn(S, p, c.id, line).value;
+  return { name: nat.name, better: nat.better, floor: nat.floor, share: nat.share, line, nation: nat.value, byCity, day: S.day };
+}
+// Fair grades (owner, 16 Nov): a city's policy (and a project) is its city's change minus the other cities' average
+// change over the same days; a nation's policy is its change minus the trend between its proposal and its start. The
+// lesson names the comparison (fairGrade in util.ts, also for the Government box's report cards).
 function gradePolicy(ctx: Ctx, p: any) {
-  const now = metric(ctx.S, p); const was = p.base || now;
-  const diff = (now.value - was.value) * (was.better === 'up' ? 1 : -1);
-  const rel = diff / Math.max(Math.abs(was.value), 0.01);
-  p.grade = rel > 0.05 ? 'A' : rel > 0.01 ? 'B' : rel >= -0.01 ? 'C' : rel >= -0.05 ? 'D' : 'E';
-  const fmt = (v: number) => (/share|looking|poor/.test(was.name) ? pct(v) : String(Math.round(v * 100) / 100));
-  p.lesson = cleanText(`${was.name}: ${fmt(was.value)} -> ${fmt(now.value)} (${rel > 0.01 ? 'better' : rel < -0.01 ? 'worse' : 'no real change'})${p.shortfall > 0 ? `; ${Math.round(p.shortfall)} CAI could not be paid` : ''}`, 200);
-  ctx.record?.('policy_graded', 'state', { id: p.id, grade: p.grade, lesson: p.lesson });
+  const S = ctx.S; const now = snapshot(S, p); const was = p.base || now;
+  const fmt = (v: number) => (was.share ? pct(v) : String(Math.round(v * 1000) / 1000));
+  const city = p.scope === 'city' || p.lever === 'project' ? p.city : null;
+  let g;
+  if (city && was.byCity?.[city] != null && now.byCity[city] != null) {
+    const others = Object.keys(was.byCity).filter(c => c !== city && now.byCity[c] != null).map(c => now.byCity[c] - was.byCity[c]);
+    g = fairGrade({ name: `${was.name} in ${CITIES.find(c => c.id === city)?.name || city}`, before: was.byCity[city], after: now.byCity[city], others, better: was.better, floor: was.floor, fmt });
+  } else {
+    const pre = p.pre; const span = (p.enactedDay ?? S.day) - (pre?.day ?? p.enactedDay ?? S.day);
+    const trend = pre && span > 0 ? ((was.nation - pre.nation) / span) * Math.max(0, S.day - (p.enactedDay ?? S.day)) : null;
+    g = fairGrade({ name: was.name, before: was.nation, after: now.nation, trend, better: was.better, floor: was.floor, fmt });
+  }
+  p.grade = g.grade; p.fair = { own: g.own, compare: g.compare, effect: g.effect, raw: g.raw };
+  p.lesson = cleanText(`${g.text}${p.shortfall > 0 ? `; ${Math.round(p.shortfall)} CAI could not be paid` : ''}`, 240);
+  ctx.record?.('policy_graded', 'state', { id: p.id, grade: p.grade, lesson: p.lesson, raw: g.raw });
   try { hooks.graded?.(ctx, p); } catch { /* the Government box's reflection */ }
 }
 
@@ -360,7 +384,8 @@ export function policyView(S: State, p: any) {
   return { id: p.id, title: p.title, why: p.why, scope: p.scope, city: p.city || null, lever: p.lever, params: { ...p.params }, days: p.days, costPerDay: p.costPerDay,
     status: p.status === 'checking' ? 'proposed' : p.status, author: au ? { id: au.id, name: au.name, role: au.office ? (ROLES[au.office]?.title || 'Official') : 'Citizen' } : null,
     ideaFrom: idea ? { id: idea.id, name: idea.name } : null, proposedDay: p.proposedDay, enactedDay: p.enactedDay, endsDay: p.endsDay,
-    votes: p.votes && Number.isInteger(p.votes.yes) && Number.isInteger(p.votes.no) ? { yes: p.votes.yes, no: p.votes.no } : null, grade: p.grade || null, lesson: p.lesson || null };
+    votes: p.votes && Number.isInteger(p.votes.yes) && Number.isInteger(p.votes.no) ? { yes: p.votes.yes, no: p.votes.no } : null, grade: p.grade || null, lesson: p.lesson || null,
+    aspirationId: p.aspirationId || null };
 }
 export function policyList(S: State, status: 'active' | 'proposed' | 'done' | null = null, n = 50) {
   const k = clamp(Math.round(Number(n) || 50), 1, 100);

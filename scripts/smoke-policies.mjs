@@ -216,12 +216,48 @@ const money = S => S.treasury + S.citizens.reduce((n, a) => n + a.wallet, 0) + O
   pol._resetPolicyHooks();
 }
 
+// --- fair grades (owner, 16 Nov): a city's result minus the other cities' average change; a nation's minus its trend
+{
+  const { S, ctx } = republic();
+  const setMood = (c, v) => { for (const a of S.citizens) if (a.city === c) a.mood = { v }; };
+  for (const c of cities) setMood(c, 0.085);
+  const park = pol.proposePolicy(ctx, base({ scope: 'city', city: 'neura', lever: 'project', params: { kind: 'park', cost: 600 }, days: 2 })); pol.enactPolicy(ctx, park.id, 'mayor');
+  // every city's mood falls about the same (the basic income was cut): Neura -0.028, the others -0.027
+  setMood('neura', 0.057); for (const c of cities.slice(1)) setMood(c, 0.058);
+  S.day = 2; pol.applyPolicies(ctx);
+  const p = pol.P(S).list.find(x => x.id === park.id);
+  check('a city project is graded against the other cities: all moods fell about the same, so its own effect is ~0 -> C (not D/E), and the lesson names the comparison',
+    p.grade === 'C' && /other cities avg/.test(p.lesson) && /own effect/.test(p.lesson) && /0\.085 -> 0\.057/.test(p.lesson) && p.fair && !p.fair.raw, JSON.stringify({ grade: p.grade, lesson: p.lesson }));
+  // the same fall in Neura alone (the others steady) is the project's own: D or worse
+  const { S: S2, ctx: c2 } = republic();
+  for (const a of S2.citizens) a.mood = { v: 0.085 };
+  const pk2 = pol.proposePolicy(c2, base({ scope: 'city', city: 'neura', lever: 'project', params: { kind: 'park', cost: 600 }, days: 2 })); pol.enactPolicy(c2, pk2.id, 'mayor');
+  for (const a of S2.citizens) if (a.city === 'neura') a.mood = { v: 0.057 };
+  S2.day = 2; pol.applyPolicies(c2);
+  const q = pol.P(S2).list.find(x => x.id === pk2.id);
+  check('the same fall in that city alone (the others steady) is its own: graded D or E', /^[DE]$/.test(q.grade), JSON.stringify({ grade: q.grade, lesson: q.lesson }));
+  // a nation policy: the trend between its proposal and its start is taken off
+  const { S: S3, ctx: c3 } = republic();
+  const hire = pol.proposePolicy(c3, base({ lever: 'hire', params: { job: 'barista', seats: 5 } }));
+  const workers = () => S3.citizens.filter(x => x.job === 'teacher' && x.occupation !== 'student');
+  for (const a of workers().slice(0, 10)) a.job = 'unemployed'; // unemployment rising before it starts
+  S3.day = 2; pol.enactPolicy(c3, hire.id, 'pres');
+  for (const a of workers().slice(0, 10)) a.job = 'unemployed'; // ...and rising the same after
+  S3.day = 3; pol.applyPolicies(c3);
+  const h = pol.P(S3).list.find(x => x.id === hire.id);
+  check('a nation policy is graded against the trend it was already on: unemployment rising at the same pace -> own effect ~0 -> C, lesson says "trend before"', h.grade === 'C' && /trend before/.test(h.lesson) && !h.fair.raw, JSON.stringify({ grade: h.grade, lesson: h.lesson }));
+  const { fairGrade } = await import('../src/util.ts');
+  const raw = fairGrade({ name: 'mood', before: 0.1, after: 0.2, better: 'up', floor: 0.1 });
+  const zero = fairGrade({ name: 'share', before: 0, after: 0, others: [0, 0], better: 'down', floor: 0.02 });
+  check('fairGrade: without a comparison it grades the raw change and says so; a before of 0 never divides by zero', raw.raw && /no comparison/.test(raw.text) && raw.grade === 'A' && zero.grade === 'C' && Number.isFinite(zero.effect), JSON.stringify({ raw, zero }));
+}
+
 // --- the public view
 {
   const { S, ctx } = republic();
   const r = pol.proposePolicy(ctx, base({ origin: 'citizen', author: 'neura-7', ideaFrom: 'neura-8' }));
   const v = pol.policyList(S, 'proposed', 5)[0];
-  const keys = 'author,city,costPerDay,days,enactedDay,endsDay,grade,id,ideaFrom,lesson,lever,params,proposedDay,scope,status,title,votes,why';
+  const keys = 'aspirationId,author,city,costPerDay,days,enactedDay,endsDay,grade,id,ideaFrom,lesson,lever,params,proposedDay,scope,status,title,votes,why';
   check('policyView has exactly the agreed fields; ideaFrom names the citizen whose idea it was', v.id === r.id && Object.keys(v).sort().join() === keys && v.ideaFrom?.name === 'Citizen 08' && v.author.role === 'Citizen', JSON.stringify(v));
   check('the summary counts proposed, active and the cost a day', pol.policySummary(S).proposed === 1 && pol.policySummary(S).active === 0);
 }

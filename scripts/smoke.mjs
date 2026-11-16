@@ -370,7 +370,15 @@ try {
   check('bench: GET /api/bench gives { latest, history, status, questions, running }; without the local brain nothing runs', bv && 'latest' in bv && Array.isArray(bv.history) && typeof bv.status === 'string' && Number.isInteger(bv.questions) && 'running' in bv && bv.history.length === 0, JSON.stringify(bv));
   const stPB = await get('/api/state?parts=policies,bench');
   check('policies and bench ride /api/state (and the live stream) as small summaries', stPB.policies && Number.isInteger(stPB.policies.active) && Number.isInteger(stPB.policies.proposed) && stPB.policies.stats && stPB.bench && 'latest' in stPB.bench && JSON.stringify(stPB).length < 2000, JSON.stringify(stPB));
+  // the people's aspirations (owner, 16 Nov)
+  const asAll = await get('/api/aspirations'), asCity = await get(`/api/aspirations?scope=city&city=${jAll.citizens[0].city}&status=open&page=1`);
+  const asBad = await Promise.all(['scope=galaxy', 'city=atlantis', 'status=pending', 'page=0', 'page=101', 'page=x', 'city=__proto__'].map(q => fetch(`${BASE}/api/aspirations?${q}`).then(r => r.status)));
+  check('aspirations: GET /api/aspirations pages them (?scope, ?city, ?status, ?page) with the fixed topics; anything else is 400',
+    Number.isInteger(asAll.total) && Array.isArray(asAll.aspirations) && asAll.size === 20 && Array.isArray(asAll.topics) && asAll.topics.length === 12 && Array.isArray(asCity.aspirations) && asBad.every(s => s === 400), JSON.stringify({ total: asAll.total, bad: asBad }));
+  const stAs = await get('/api/state?parts=aspirations');
+  check('aspirations ride /api/state (and the live stream) as a small summary', stAs.aspirations && Number.isInteger(stAs.aspirations.open) && Number.isInteger(stAs.aspirations.reviewsLeft) && JSON.stringify(stAs).length < 800, JSON.stringify(stAs));
   const cardPB = (await get(`/api/citizens/${jAll.citizens[0].id}`)).citizen;
+  check('a citizen\'s card carries their aspirations (what they wrote and what they back)', cardPB.aspirations && Array.isArray(cardPB.aspirations.wrote) && Array.isArray(cardPB.aspirations.supported), JSON.stringify(cardPB.aspirations));
   check('a citizen\'s card carries reflections (an official\'s lessons) and ideas (a citizen\'s proposals), the last 5 of each', Array.isArray(cardPB.reflections) && Array.isArray(cardPB.ideas) && cardPB.reflections.length <= 5 && cardPB.ideas.length <= 5, JSON.stringify({ r: cardPB.reflections, i: cardPB.ideas }));
   // --- Republic News: headlines from what happened, newest first; new ones stream on SSE as a small 'news' event
   const newsShape = x => /^news-\d+$/.test(x.id) && typeof x.ts === 'number' && typeof x.headline === 'string' && x.headline.length > 0 && x.headline.length <= 100
