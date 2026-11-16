@@ -658,7 +658,7 @@ const OFFICE_SEAT: Record<string, string> = JOB_SEATS; // one list with the job 
 const hourOf = (S: State, now: number) => ((((now - (S.foundedAt || now)) % DAY_MS) + DAY_MS) % DAY_MS) / DAY_MS * 24;
 const jobNow = (S: State, a: Citizen, now = Date.now()) => jobPlaceNow(S, a, hourOf(S, now), nightOf(S, DAY_MS, now) != null);
 const ACT_CODE: Record<string, string> = { work: 'working', shop: 'shopping', study: 'studying', apply: 'applying', run: 'campaigning', talk: 'talking', help: 'helping',
-  volunteer: 'volunteering', rest: 'resting', gossip: 'chatting', job_hunt: 'looking for work' };
+  volunteer: 'volunteering', rest: 'resting', gossip: 'chatting', job_hunt: 'looking for work', voice: 'speaking up' };
 export function whereabouts(S: State, cityId: string, now = Date.now()) {
   const night = nightOf(S, DAY_MS, now) != null; const shift = night ? 'night' : 'day'; const W = windowMs();
   const h = ((((now - (S.foundedAt || now)) % DAY_MS) + DAY_MS) % DAY_MS) / DAY_MS * 24;

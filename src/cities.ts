@@ -6,7 +6,7 @@ import { EXTRA_ORDERS, nationFacts, ownRecord, tally, teach, isOffline, queueRev
 import { think } from './brains.ts';
 import { constitutionText } from './constitution.mjs';
 import { round, clamp, rint, cai, cleanText, chance } from './util.ts';
-import { cityQueue, enactPolicy, rejectPolicy, proposePolicy, projectsDone, policyAsData, P, PROJECT_KINDS } from './policies.ts'; // ticket #774 (call time only)
+import { cityQueue, enactPolicy, rejectPolicy, proposePolicy, projectsDone, policyAsData, P, PROJECT_KINDS, POLICY_LIMITS } from './policies.ts'; // ticket #774 (call time only)
 import { feel } from './feelings.ts';
 import { reviewQueue, takeReview, decideAspiration, aspirationAsData, A as aspirationState } from './aspirations.ts'; // the people's aspirations (call time only)
 import { borderCheck } from './military.ts';
@@ -318,8 +318,15 @@ export async function mayorAspirations(ctx: Ctx, cityDef: any) {
   let decision = 'decline', reason = '', draft: any = null;
   if (own) { const j = ctx.llm.json(res.text) || {}; decision = String(j.decision || '').toLowerCase().trim() === 'adopt' ? 'adopt' : 'decline'; reason = safeReason(j.reason); draft = j.policy && typeof j.policy === 'object' && !Array.isArray(j.policy) ? j.policy : null; }
   else {
-    const o = OFFLINE_ANSWER[x.topic];
-    if (o) { decision = 'adopt'; draft = { title: `Answer to the residents on ${x.topic}`, why: `${x.supporters.length} residents asked for it`, ...o, days: 7 }; reason = `${x.supporters.length} residents asked; the offline rule answers ${x.topic} with ${o.lever}.`; }
+    const o0 = OFFLINE_ANSWER[x.topic];
+    // a project costs no more a day than the city's room under its limit (20% of the budget, less what its policies in
+    // force already cost: ticket #899); too little room for the smallest project (500) and it is declined, saying so
+    const days = 7;
+    const used = (P(S).list || []).filter((p: any) => p.status === 'active' && p.scope === 'city' && p.city === cityDef.id).reduce((n: number, p: any) => n + (Number(p.costPerDay) || 0), 0);
+    const room = Math.max(0, Math.floor(Math.max(0, Number(city.budget) || 0) * POLICY_LIMITS.cityShare - used));
+    const o = o0 && o0.lever === 'project' ? { ...o0, params: { ...o0.params, cost: Math.min(o0.params.cost, room * days) } } : o0;
+    if (o && o.lever === 'project' && o.params.cost < 500) reason = `the city budget has no room for a ${o0.params.kind} project now (${cai(room)} a day left under its limit); the Mayor will look again when the budget allows.`;
+    else if (o) { decision = 'adopt'; draft = { title: `Answer to the residents on ${x.topic}`, why: `${x.supporters.length} residents asked for it`, ...o, days }; reason = `${x.supporters.length} residents asked; the offline rule answers ${x.topic} with ${o.lever}.`; }
     else reason = `${x.topic} is for the Council, not a city; the Mayor cannot act on it.`;
   }
   tally(S, 'mayor', own ? 'own' : 'offline');
