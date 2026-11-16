@@ -69,6 +69,8 @@ city's anchor reads them. Settings (Railway variables):
 | `JOBS_UNEMPLOYED` | `0.015` | share of adults looking for work (0.005–0.05) |
 | `JOBS_HIRE_CHANCE` | `0.15` | daily chance that someone looking finds work (0–1) |
 | `NEWS_PER_HOUR` | `12` | headlines per real hour (1–120) |
+| `NEWS_BREAKING_GAP_MIN` | `90` | minutes between two breaking news items (0–1440) |
+| `NEWS_BREAKING_PER_DAY` | `4` | breaking news items per republic day at most (0–50; 0 turns them off) |
 
 **Policies and the benchmark.** Leaders draft nation policies and Mayors city policies within daily spending limits;
 each is graded some days after it starts. Once a republic day, in the quiet hours, the local brain sits a fixed
