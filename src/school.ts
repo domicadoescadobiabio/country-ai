@@ -22,6 +22,7 @@ import { borderCheck } from './military.ts';
 import { feel } from './feelings.ts';
 import { FIELD_IDS, isField, fieldName, talentsOf, fieldSkill, fieldLevel, topFields } from './population.mjs';
 import { round, cleanText, clamp, pick } from './util.ts';
+import { activeEffects } from './policies.ts'; // 'school_focus' policies (Nation box, ticket #774)
 import type { Ctx, State, Citizen } from './types.ts';
 
 export const SUBJECTS = ['office', 'economy', 'law', 'ethics', 'civics', 'adapt'] as const;
@@ -853,6 +854,13 @@ const serveSoon = (id: string) => { if (!soon.includes(id)) soon.push(id); if (s
 const soon: string[] = [];
 // today's field: mostly the one they chose, sometimes another interest, now and then something from their menu
 function fieldOfToday(S: State, a: Citizen) {
+  // a 'school_focus' policy (ticket #774: the nation's, or this city's) teaches its field more often: 10% of a
+  // citizen's field lessons for each point of weight (1..3), on top of what they chose
+  for (const e of activeEffects(S, 'school_focus')) {
+    if (e.scope === 'city' && e.city !== a.city) continue;
+    const f = e.params?.field, w = clamp(Math.round(Number(e.params?.weight) || 0), 0, 3);
+    if (isField(f) && w > 0 && Math.random() < 0.1 * w) return f;
+  }
   const p = profile(a); const t = talentsOf(a); const x = Math.random();
   const gifted = giftedFields(S, a.id);
   if (gifted.length && x < 0.6) return pick(gifted); // the talent programme trains them in what they are gifted at
@@ -1401,3 +1409,4 @@ export const _teacherPending = () => [...teaching.values()].filter(e => !e.done)
 export const _pending = () => [...pending.values()];
 export const promptFor = lessonPrompt; // the lesson's system prompt (tests: notes and worked examples in it)
 export { addNote, fieldItem };
+export const _fieldOfToday = (S: State, a: Citizen) => fieldOfToday(S, a); // tests (school_focus policies)

@@ -8,14 +8,30 @@ import { constitutionText } from './constitution.mjs';
 import { cityWageFactor } from './cities.ts';
 import type { Ctx } from './types.ts';
 import { think } from './brains.ts';
+import { activeEffects, groupMembers } from './policies.ts'; // wage and tax_delta policies (Nation box, ticket #774)
 
+// Policies (ticket #774, src/policies.ts): 'wage' moves one job's daily wage by a percent (the nation's, or one
+// city's); 'tax_delta' moves a group's tax rate by points, the result kept within 0..50%. Built once per payday.
+function policyAdjustments(S: any) {
+  const wageBy = new Map<string, number>(); const taxBy = new Map<string, number>();
+  for (const e of activeEffects(S, 'wage')) {
+    const pct = Math.max(-20, Math.min(20, Math.round(Number(e.params?.percent) || 0))); if (!pct || !e.params?.job) continue;
+    for (const a of S.citizens) if ((a as any).job === e.params.job && (e.scope !== 'city' || a.city === e.city)) wageBy.set(a.id, (wageBy.get(a.id) ?? 1) * (1 + pct / 100));
+  }
+  for (const e of activeEffects(S, 'tax_delta')) {
+    const pts = Math.max(-10, Math.min(10, Math.round(Number(e.params?.points) || 0))); if (!pts || !e.params?.group) continue;
+    for (const a of groupMembers(S, e.params.group, e.scope === 'city' ? e.city : null)) taxBy.set(a.id, (taxBy.get(a.id) || 0) + pts / 100);
+  }
+  return { wageBy, taxBy };
+}
 export function payday(ctx: Ctx) {
   const { S } = ctx; const p = S.policy;
   let gross = 0, tax = 0;
+  const { wageBy, taxBy } = policyAdjustments(S);
   for (const a of S.citizens) {
     if (a.status !== 'free') continue;
-    const wage = round(p.wage * cityWageFactor(S, a), 2);
-    const t = round(wage * p.taxRate, 2);
+    const wage = round(p.wage * cityWageFactor(S, a) * (wageBy.get(a.id) ?? 1), 2);
+    const t = round(wage * Math.max(0, Math.min(0.5, p.taxRate + (taxBy.get(a.id) || 0))), 2);
     a.wallet = round(a.wallet + wage - t, 2);
     if (a.debt > 0) { const pay = Math.min(a.debt, round((wage - t) * 0.5, 2)); a.debt = round(a.debt - pay, 2); a.wallet = round(a.wallet - pay, 2); S.treasury = round(S.treasury + pay, 2); }
     gross += wage; tax += t;

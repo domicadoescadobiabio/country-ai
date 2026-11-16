@@ -161,6 +161,62 @@ check('a newcomer gets a job with room the next republic day', jobs.jobById(born
   const left = ['reporter', 'news_anchor'].map(id => T.citizens.filter(a => a.city === 'datahaven' && !a.office && a.job === id).length);
   check('a city that lost its reporter and news anchor gets new ones the next republic day (ticket #727)', left.every(n => n === 1), JSON.stringify(left));
 }
+// ---- policies (ticket #774, src/policies.ts): hire, school_focus, wage, tax_delta, the Mayor's queue, projects, ideas
+{
+  const pol = await import('../src/policies.ts');
+  const life = await import('../src/life.ts');
+  const { institution: cities, offlinePolicyRule } = await import('../src/cities.ts');
+  S.policies = undefined; S.policy ||= { wage: 100, taxRate: 0.1, ubi: 20 }; S.econ ||= { taxCollected: 0 }; S.treasury = 100000;
+  for (const c of CITIES) S.cities[c.id].budget = 50000;
+  const enact = draft => { const r = pol.proposePolicy(ctx, { why: 'a test', days: 5, author: S.citizens[0].id, origin: 'official', ...draft }); if (r.error) throw new Error(r.error); pol.enactPolicy(ctx, r.id, S.citizens[0].id); return r.id; };
+  // hire: 5 seats for baristas in Neura City, from those looking for work there; not undone by the daily layoffs
+  const lookingNeura = () => S.citizens.filter(a => a.city === 'neura' && a.job === 'unemployed' && !a.office && a.occupation !== 'student').length;
+  const before = lookingNeura(); const baristas0 = S.citizens.filter(a => a.city === 'neura' && a.job === 'barista').length;
+  const hid = enact({ title: 'More baristas', scope: 'city', city: 'neura', lever: 'hire', params: { job: 'barista', seats: 5 } });
+  S.day += 1; jobs.jobsTick(ctx);
+  const viaPolicy = ledger.filter(e => e.kind === 'job_change' && e.data.policy === hid);
+  check('hire: an active policy fills its seats from those looking for work in its city, on the ledger with the policy', viaPolicy.length === 5 && viaPolicy.every(e => e.data.to === 'barista' && e.data.from === 'unemployed' && e.data.city === 'neura') && S.citizens.filter(a => a.city === 'neura' && a.job === 'barista').length >= baristas0 + 5, JSON.stringify({ hired: viaPolicy.length, before, after: lookingNeura() }));
+  S.day += 1; jobs.jobsTick(ctx);
+  check('hire: the seats are filled once, and the daily layoffs do not undo them while the policy runs', ledger.filter(e => e.kind === 'job_change' && e.data.policy === hid).length === 5 && lookingNeura() <= Math.max(0, before - 5) + 1, `${before} -> ${lookingNeura()}`);
+  // school_focus: agriculture weight 3 for the nation: about 30% more of the field lessons are agriculture
+  const learner = S.citizens.find(a => a.occupation === 'student');
+  const share = () => Array.from({ length: 600 }, () => school._fieldOfToday(S, learner)).filter(f => f === 'agriculture').length / 600;
+  const base = share();
+  enact({ title: 'Grow food', scope: 'nation', lever: 'school_focus', params: { field: 'agriculture', weight: 3 } });
+  const focused = share();
+  check('school_focus: the field is taught more often (weight 3: about 30 points more of the field lessons)', focused - base > 0.15, `${base.toFixed(2)} -> ${focused.toFixed(2)}`);
+  // wage and tax_delta at payday
+  const bar = S.citizens.find(a => a.city === 'neura' && a.job === 'barista' && a.status === 'free');
+  const look = S.citizens.find(a => a.job === 'unemployed' && a.status === 'free' && !a.office && a.occupation !== 'student' && a.city === 'portoken');
+  const plain = S.citizens.find(a => a.city === 'neura' && a.job === 'cashier' && a.status === 'free');
+  const w = () => [bar.wallet, look.wallet, plain.wallet];
+  let w0 = w(); life.payday({ ...ctx }); const d0 = w().map((x, i) => x - w0[i]);
+  enact({ title: 'Pay baristas more', scope: 'city', city: 'neura', lever: 'wage', params: { job: 'barista', percent: 20 } });
+  enact({ title: 'Lighter tax when looking for work', scope: 'nation', lever: 'tax_delta', params: { group: 'unemployed', points: -10 } });
+  w0 = w(); life.payday({ ...ctx }); const d1 = w().map((x, i) => x - w0[i]);
+  check('wage: a barista in Neura City is paid 20% more; a cashier the same as before', Math.abs(d1[0] / d0[0] - 1.2) < 0.02 && Math.abs(d1[2] - d0[2]) < 0.01, JSON.stringify({ d0, d1 }));
+  check('tax_delta: someone looking for work pays 10 points less tax (the rate never below 0%)', d1[1] > d0[1] && Math.abs((d1[1] - d0[1]) - S.policy.wage * 0.1 * (d0[1] / (S.policy.wage * (1 - S.policy.taxRate)))) < 1, JSON.stringify({ before: d0[1], after: d1[1] }));
+  // a citizen's idea goes to the Mayor's queue and into their ideas; a bad one is refused and kept as invalid
+  const idea = S.citizens.find(a => a.city === 'datahaven' && a.status === 'free' && !a.office && !a.brain && a !== founder);
+  await daily.doAct(ctx, idea, { act: 'propose', policy: { title: 'A park by the river', why: 'Children need room to play', lever: 'project', params: { kind: 'park', cost: 2000 }, days: 10 } }, 'test', ['propose']);
+  const q = pol.cityQueue(S, 'datahaven');
+  check('a citizen\'s idea goes to the Mayor\'s queue (origin citizen) and into their ideas', q.some(p => p.origin === 'citizen' && p.author === idea.id && p.title === 'A park by the river') && idea.ideas.at(-1).status === 'proposed' && idea.ideas.at(-1).policyId, JSON.stringify([idea.ideas, idea.diary.at(-1)]));
+  const idea2 = S.citizens.find(a => a.city === 'datahaven' && a.status === 'free' && !a.office && !a.brain && a !== idea && a !== founder);
+  await daily.doAct(ctx, idea2, { act: 'propose', policy: { title: 'Free money', lever: 'grant', params: { group: 'all', amount: 9999 }, days: 99 } }, 'test', ['propose']);
+  check('an idea that breaks the grammar is refused by the code and kept as invalid', idea2.ideas.at(-1).status === 'invalid' && !pol.cityQueue(S, 'datahaven').some(p => p.author === idea2.id), JSON.stringify(idea2.ideas));
+  // the offline Mayor rule; without a Mayor the policy lapses after 3 days and the author hears of it
+  check('the offline Mayor rule: within 10% of the budget yes; too costly, a wage cut or a tax rise on the poor no', offlinePolicyRule({ budget: 50000 }, { costPerDay: 200, lever: 'project', params: {} }).enact && !offlinePolicyRule({ budget: 1000 }, { costPerDay: 200, lever: 'project', params: {} }).enact && !offlinePolicyRule({ budget: 50000 }, { costPerDay: 0, lever: 'wage', params: { percent: -5 } }).enact && !offlinePolicyRule({ budget: 50000 }, { costPerDay: 0, lever: 'tax_delta', params: { group: 'poor', points: 3 } }).enact);
+  S.seats.mayor = []; for (const c of CITIES) S.cities[c.id].mayor = null;
+  S.day += 3; await cities.tick(ctx);
+  check('with no Mayor to decide, a city policy lapses after 3 days and the author\'s idea says so', !pol.cityQueue(S, 'datahaven').length && idea.ideas.at(-1).status === 'rejected', JSON.stringify(idea.ideas.at(-1)));
+  // a finished project lifts its city's mood, once
+  pol.P(S).projectsDone.push({ id: 'pol-test', city: 'lumenbay', kind: 'park', day: S.day });
+  const { ensureFeelings } = await import('../src/feelings.ts');
+  const sample = S.citizens.filter(a => a.city === 'lumenbay' && a.status === 'free').slice(0, 50); for (const a of sample) ensureFeelings(S, a);
+  const moods = () => sample.map(a => a.mood?.v ?? 0);
+  const m0 = moods(); await cities.tick(ctx); const m1 = moods(); await cities.tick(ctx); const m2 = moods();
+  check('a finished city project lifts its residents\' mood once (not again on the next tick)', m1.every((v, i) => v > m0[i]) && m2.every((v, i) => Math.abs(v - m1[i]) < 1e-9), JSON.stringify({ up: m1.filter((v, i) => v > m0[i]).length, same2: m2.filter((v, i) => Math.abs(v - m1[i]) < 1e-9).length, of: m0.length, ex: m0.map((v, i) => [v, m1[i], m2[i]]).find(([a, b, c]) => !(b > a) || Math.abs(c - b) >= 1e-9) }));
+}
 // expected quotas of a 2,000-citizen city (for the report)
 const q = jobs.cityQuotas('neura', 1700);
 console.log(`  (quotas of a city with 1,700 working adults: ${jobs.NEW_JOB_IDS.map(id => `${id} ${q.get(id)}`).join(', ')})`);

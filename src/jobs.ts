@@ -18,6 +18,7 @@ import { ROLES } from './roles.mjs';
 import { CITIES } from './cities.ts';
 import { isStudent, assignStudents } from './school.ts';
 import { clamp } from './util.ts';
+import { activeEffects } from './policies.ts'; // 'hire' policies (Nation box, ticket #774): read at call time only
 import type { Ctx, State, Citizen } from './types.ts';
 
 export type Shift = 'day' | 'night' | 'mixed';
@@ -173,7 +174,9 @@ export const unemployedTarget = (adults: number) => (adults <= 0 ? 0 : adults < 
 //   their job) their talents keep leaning on the trade they had (a.skillsFrom, src/population.mjs); a new job brings
 //   new talents with it, as before.
 const BIO_RE = /^([^.]+?) in ([^.]+)\.\s*(.*)$/s;
-const CITY_NAMES = new Set(CITIES.map(c => c.name));
+// (built on first use: cities.ts -> policies.ts -> jobs.ts is an import cycle, so CITIES is not ready at load time)
+let cityNames: Set<string> | null = null;
+const CITY_NAMES = { has: (n: string) => (cityNames ||= new Set(CITIES.map(c => c.name))).has(n) };
 const aOr = (w: string) => (/^[aeiou]/i.test(w) ? 'an' : 'a');
 export function bioFirst(S: State, a: Citizen): string | null {
   const city = cityName(String(a.city));
@@ -297,25 +300,46 @@ export function jobsTick(ctx: Ctx) {
       const was = (from as any).job; held.set(was, (held.get(was) || 1) - 1); held.set(id, 1); setJob(from, id, S.day);
       changes.push({ citizen: from.id, city, from: was, to: id, name: from.name });
     }
+    // 'hire' policies (ticket #774): the seats of each active policy for this city (or the nation) are filled from
+    // those looking for work, the best suited first; a seat stays filled for the policy's life
+    const fills = (st.policyHires ||= {});
+    let byPolicy = 0;
+    for (const e of activeEffects(S, 'hire')) {
+      if (e.scope === 'city' && e.city !== city) continue;
+      const j = jobById(e.params?.job); const seats = Math.max(0, Math.min(50, Math.round(Number(e.params?.seats) || 0)));
+      if (!j || !seats) continue;
+      const f = (fills[e.id] ||= { seats, filled: 0, byCity: {} });
+      byPolicy += f.byCity[city] || 0;
+      const room = seats - f.filled; if (room <= 0) continue;
+      const take = list.filter(a => isUnemployed(a) && a.status === 'free').map(a => ({ a, f: fit(a, j) })).sort((x, y) => y.f - x.f).slice(0, e.scope === 'city' ? room : Math.max(1, Math.ceil(room / byCity.size))).map(x => x.a);
+      for (const a of take.slice(0, room)) {
+        held.set(j.id, (held.get(j.id) || 0) + 1); setJob(a, j.id, S.day, S);
+        f.filled++; f.byCity[city] = (f.byCity[city] || 0) + 1; byPolicy++;
+        changes.push({ citizen: a.id, city, from: 'unemployed', to: j.id, name: a.name, policy: e.id });
+      }
+    }
     // some of those looking find work
     for (const a of list.filter(isUnemployed)) {
       if (a.status !== 'free' || unit(`hire|${S.day}|${a.id}`) >= HIRE_CHANCE) continue;
       const to = hire(a); changes.push({ citizen: a.id, city, from: 'unemployed', to, name: a.name });
     }
     // and a few lose theirs, so a small number keeps looking (never an official or a student, nor someone hired today)
-    let now = list.filter(isUnemployed).length;
-    if (now < U) {
+    // (an active hiring policy lowers the number kept looking by the seats it filled here, so its effect is not undone)
+    let now = list.filter(isUnemployed).length; const keep = Math.max(0, U - byPolicy);
+    if (now < keep) {
       const can = list.filter(a => jobById((a as any).job) && a.status === 'free' && (a as any).jobSince !== S.day).sort((x, y) => fnv(`lose|${S.day}|${x.id}`) - fnv(`lose|${S.day}|${y.id}`));
-      for (const a of can.slice(0, U - now)) { const from = (a as any).job; held.set(from, (held.get(from) || 1) - 1); setJob(a, 'unemployed', S.day); changes.push({ citizen: a.id, city, from, to: 'unemployed', name: a.name }); now++; }
+      for (const a of can.slice(0, keep - now)) { const from = (a as any).job; held.set(from, (held.get(from) || 1) - 1); setJob(a, 'unemployed', S.day); changes.push({ citizen: a.id, city, from, to: 'unemployed', name: a.name }); now++; }
     }
   }
   for (const c of changes) {
-    ctx.record?.('job_change', 'state', { citizen: c.citizen, city: c.city, from: c.from, to: c.to, day: S.day });
+    ctx.record?.('job_change', 'state', { citizen: c.citizen, city: c.city, from: c.from, to: c.to, day: S.day, ...(c.policy ? { policy: c.policy } : {}) });
     if (c.from === null || !c.name) continue;
     const a = ctx.agent?.(c.citizen); if (!a) continue;
     if (c.to === 'unemployed') ctx.say?.('life', 'state', `${a.name} lost their job as ${jobById(c.from)?.title || 'a worker'} in ${cityName(c.city)} and is looking for work.`, { kind: 'job' });
     else ctx.say?.('life', 'state', `${a.name} found work as ${jobById(c.to)?.title || 'a worker'} in ${cityName(c.city)}.`, { kind: 'job' });
   }
+  // forget the seats of hiring policies that are no longer active
+  const live = new Set(activeEffects(S, 'hire').map(e => e.id)); for (const id of Object.keys(st.policyHires || {})) if (!live.has(id)) delete st.policyHires[id];
   st.hired = (st.hired || 0) + changes.filter(c => c.from === 'unemployed').length;
   st.lost = (st.lost || 0) + changes.filter(c => c.to === 'unemployed').length;
   return changes;
