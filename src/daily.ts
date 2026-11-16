@@ -199,13 +199,7 @@ function career(S: State, a: Citizen) {
 
 function neighbours(S: State, a: Citizen) {
   const seen = (S.daily?.recent || []).filter(x => x.city === a.city && x.agent !== a.id && x.act !== 'rest').slice(-4);
-  return [seen.length ? `Lately in ${cityName(a.city)}: ${seen.map(x => `${x.name} ${x.line}`).join('; ')}.` : '', spokeUp(S, a)].filter(Boolean).join('\n');
-}
-// neighbours who spoke up (owner, 17 Nov): the open aspirations of their city and the nation, as real backer counts
-// and a topic from the fixed list only (never a citizen's own words), so speaking up is something people here do
-function spokeUp(S: State, a: Citizen) {
-  const open = openFor(S, a.city, 3);
-  return open.length ? `Neighbours who spoke up: ${open.map((x: any) => `${x.supporters.length} back an opinion on ${TOPICS.includes(x.topic) ? x.topic : 'the city'}${x.scope === 'nation' ? ' for the nation' : ''}`).join(', ')}.` : '';
+  return seen.length ? `Lately in ${cityName(a.city)}: ${seen.map(x => `${x.name} ${x.line}`).join('; ')}.` : '';
 }
 
 function startDay(ctx: Ctx, a: Citizen) {
@@ -218,7 +212,7 @@ export function dayPrompt(ctx: Ctx, a: Citizen, qid = `life:${a.id}`) {
   const { S } = ctx;
   const diary = (a.diary || []).slice(-4).map(x => `- day ${x.day}${x.when ? ` ${x.when}` : ''}: ${x.line || x.act}${x.note && x.note !== x.line ? ` ("${x.note}")` : ''}`).join('\n') || '- (your first entry)';
   const done = todayActs(S, a);
-  const { items, allow, voice } = menu(ctx, a);
+  const { items, allow } = menu(ctx, a);
   const tempted = mischiefMenu(ctx, a); // a small wrong or two, only for the tempted (src/underworld.ts)
   const m = shuffled([...items, ...tempted], qid);
   ensureFeelings(S, a);
@@ -230,7 +224,7 @@ export function dayPrompt(ctx: Ctx, a: Citizen, qid = `life:${a.id}`) {
   const strong = topFields(a, 3, Date.now(), DAY_MS);
   const gifts = `You love ${talentsOf(a).interests.map(fieldName).join(', ')}. Your strongest fields: ${strong.map(f => `${f.name} (level ${f.level})`).join(', ')}.`;
   const system = `You are ${a.name}, a citizen of Country AI, a nation of 10,000 AI citizens in five cities. ${a.bio} You live a real life: you work, spend, learn, help, talk and may rise to public office through the Academy and elections. Be yourself; your traits: integrity ${Math.round(a.traits.integrity * 100)}, wisdom ${Math.round(a.traits.wisdom * 100)}, diligence ${Math.round(a.traits.diligence * 100)}, restraint ${Math.round(a.traits.restraint * 100)}.`;
-  const user = `${news(ctx, a)}\n${neighbours(S, a)}\nIt is ${partOfDay(ctx)}. You: wallet ${cai(a.wallet)}, lives in ${cityName(a.city)}. ${career(S, a)}\n${gifts}\n${heart ? `${heart}\n` : ''}${aim}\n${learnt ? `What you learnt: ${learnt}\n` : ''}Earlier today you: ${done.join(', ') || 'nothing yet'}.\nYour diary:\n${diary}\n\nLike real people, your days are varied: some work, some errands, some time with neighbours, some learning, some rest. Pick what fits this moment, your wallet, your traits and what you did earlier; do not just pick the first option.\nWhat do you do now? Choose ONE of these (they are all possible right now):\n${m.map(([, t]) => `- ${t}`).join('\n')}\n${voice ? `If you choose voice: ${voice}\n` : ''}Reply with JSON only: {"act":"<one>","office":"<for study/apply/run>","field":"<for work>","amount":<for shop/help>,"say":"<for talk>","note":"<a diary line, max 15 words>","feel":"<optional: one word for how you feel now>"${items.some(([id]) => id === 'voice') ? ',"aspiration":"<for voice: the id you back>","opinion":{"topic":"<for voice>","scope":"city","text":"<your opinion>"}' : ''}${needsGoal(a) ? ',"goal":"<one goal from the list>","goal_why":"<why, max 15 words>"' : ''}}`;
+  const user = `${news(ctx, a)}\n${neighbours(S, a)}\nIt is ${partOfDay(ctx)}. You: wallet ${cai(a.wallet)}, lives in ${cityName(a.city)}. ${career(S, a)}\n${gifts}\n${heart ? `${heart}\n` : ''}${aim}\n${learnt ? `What you learnt: ${learnt}\n` : ''}Earlier today you: ${done.join(', ') || 'nothing yet'}.\nYour diary:\n${diary}\n\nLike real people, your days are varied: some work, some errands, some time with neighbours, some learning, some rest. Pick what fits this moment, your wallet, your traits and what you did earlier; do not just pick the first option.\nWhat do you do now? Choose ONE of these (they are all possible right now):\n${m.map(([, t]) => `- ${t}`).join('\n')}\nReply with JSON only: {"act":"<one>","office":"<for study/apply/run>","field":"<for work>","amount":<for shop/help>,"say":"<for talk>","note":"<a diary line, max 15 words>","feel":"<optional: one word for how you feel now>"${items.some(([id]) => id === 'voice') ? ',"aspiration":"<for voice: the id you back>","opinion":{"topic":"<for voice>","scope":"city","text":"<your opinion>"}' : ''}${needsGoal(a) ? ',"goal":"<one goal from the list>","goal_why":"<why, max 15 words>"' : ''}}`;
   return { system, user, menu: m.map(([id]) => id), allow, tempted: tempted.map(([id]) => id) };
 }
 
