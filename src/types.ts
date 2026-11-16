@@ -160,7 +160,7 @@ export interface State {
   policy: { taxRate: number; ubi: number; wage: number; wageCap: number; finePct?: number; borderLevel?: number };
   decisions: Decision[];
   /** free policies (src/policies.ts): the last 200, the daily draft count, finished projects, totals */
-  policies?: { list: any[]; seq: number; drafts: { day: number; nation: number; byCity: Record<string, number> }; projectsDone: { id: string; city: string; kind: string; day: number }[]; stats: Record<string, number>; appliedDay?: number };
+  policies?: { list: any[]; seq: number; drafts: { day: number; nation: number; citizen?: number; byCity: Record<string, number> }; projectsDone: { id: string; city: string; kind: string; day: number }[]; stats: Record<string, number>; appliedDay?: number };
   /** the daily fixed exam (src/bench.ts): the last 120 runs and the run in progress */
   bench?: { history: { day: number; date: string; score: number; right: number; total: number; byDomain: Record<string, [number, number]>; adapters: string[]; model: string | null }[]; run: any; lastDay: number; status?: string };
   [k: string]: any;

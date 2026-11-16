@@ -29,13 +29,18 @@ import { FIELD_IDS } from './population.mjs';
 import { ROLES, fieldLevelOf } from './roles.mjs';
 import type { Ctx, State, Citizen } from './types.ts';
 
-const envInt = (k: string, d: number, lo: number, hi: number) => { const v = Number(process.env[k]); return process.env[k] != null && process.env[k] !== '' && Number.isFinite(v) ? Math.round(clamp(v, lo, hi)) : d; };
+// (module-level code uses no imported binding: cities.ts -> policies.ts -> jobs.ts -> cities.ts is an import cycle,
+// so every import here is only read inside functions, after all modules have loaded; ticket #791)
+const envInt = (k: string, d: number, lo: number, hi: number) => { const v = Number(process.env[k]); return process.env[k] != null && process.env[k] !== '' && Number.isFinite(v) ? Math.round(Math.min(hi, Math.max(lo, v))) : d; };
 export const REVIEW_LAG_DAYS = envInt('REVIEW_LAG_DAYS', 1, 1, 7);
 export const POLICY_LIMITS = {
   nationShare: envInt('POLICY_NATION_PCT', 5, 1, 20) / 100,  // of the treasury, every active nation policy together, a day
   cityShare: envInt('POLICY_CITY_PCT', 20, 1, 50) / 100,     // of a city's budget, its active city policies, a day
   nationActive: envInt('POLICY_NATION_MAX', 12, 1, 50), cityActive: envInt('POLICY_CITY_MAX', 4, 1, 20),
   nationDrafts: envInt('POLICY_NATION_DRAFTS', 3, 1, 20), cityDrafts: envInt('POLICY_CITY_DRAFTS', 2, 1, 20),
+  // citizens' own nation drafts have their own quota, so their ideas never take the officials' and the President's
+  // places (Security #824)
+  citizenDrafts: envInt('POLICY_CITIZEN_DRAFTS', 1, 0, 20),
   keep: 200,
 };
 export const LEVERS: Record<string, Record<string, [number, number] | 'group' | 'job' | 'field' | 'kind'>> = {
@@ -47,6 +52,12 @@ export const LEVERS: Record<string, Record<string, [number, number] | 'group' | 
   project: { kind: 'kind', cost: [500, 50000] },
 };
 export const PROJECT_KINDS = ['repair', 'park', 'clinic', 'market', 'housing', 'transit'];
+// levers whose policies add up on one target: the total of those that can apply together keeps one policy's range
+const STACKS: Record<string, { target: string; value: string }> = {
+  wage: { target: 'job', value: 'percent' }, hire: { target: 'job', value: 'seats' },
+  tax_delta: { target: 'group', value: 'points' }, school_focus: { target: 'field', value: 'weight' },
+};
+const ONE_AT_A_TIME = ['wage', 'tax_delta'];
 const GROUPS = ['all', 'unemployed', 'students', 'poor'];
 const STATUS_DONE = ['rejected', 'expired', 'done'];
 
@@ -162,14 +173,34 @@ export function validateDraft(S: State, draft: any) {
     if (mine.length >= (scope === 'nation' ? POLICY_LIMITS.nationActive : POLICY_LIMITS.cityActive)) errors.push(`active: already ${mine.length} ${scope} policies in force`);
     const key = sameKey({ lever, scope, city, params });
     if (s.list.some((p: any) => live(p) && sameKey(p) === key)) errors.push('duplicate: the same policy is already proposed or in force');
+    // stacking (Security #806): policies on the same target add up (a job's wage, its places, a group's tax, a field's
+    // weight); together, wherever they apply at once (the nation's plus one city's), they stay inside one policy's limits
+    const stack = STACKS[lever!];
+    // one at a time (Security #804): wages are paid at payday, so a job's wage (and a group's tax) has at most one
+    // policy proposed or in force per scope (the nation, or one city), whatever its percent
+    if (stack && ONE_AT_A_TIME.includes(lever!) && s.list.some((p: any) => live(p) && p.lever === lever && p.params?.[stack.target] === params[stack.target] && p.scope === scope && (p.city || null) === city))
+      errors.push(`one at a time: a ${lever} policy for ${params[stack.target]} is already proposed or in force (${scope === 'city' ? city : 'nation'}); it must end or be refused first`);
+    if (stack) {
+      const target = params[stack.target], range = LEVERS[lever!][stack.value] as [number, number];
+      const same = s.list.filter((p: any) => live(p) && p.lever === lever && p.params?.[stack.target] === target);
+      const sumIn = (list: any[]) => list.reduce((n: number, p: any) => n + (Number(p.params?.[stack.value]) || 0), 0);
+      const nation = sumIn(same.filter((p: any) => p.scope === 'nation'));
+      const cityOf = (c: string) => sumIn(same.filter((p: any) => p.scope === 'city' && p.city === c));
+      // a city draft meets the nation's and its own city's; a nation draft meets the nation's and each city's
+      const others = scope === 'city' ? [nation + cityOf(city!)] : [nation, ...CITIES.map(c => nation + cityOf(c.id))];
+      const v = params[stack.value];
+      const worst = others.map(o => o + v).reduce((w, t) => (Math.abs(t) > Math.abs(w) ? t : w), v);
+      if (worst < range[0] || worst > range[1]) errors.push(`${stack.value}: with the ${lever} policies already proposed or in force for ${target} the total would be ${worst}, outside ${range[0]}..${range[1]}`);
+    }
   }
   return { ok: errors.length === 0, errors, costPerDay, clean: errors.length ? null : { title, why, scope, city, lever, params, days, author: author!.id, origin, ideaFrom } };
 }
 
 // ---------------------------------------------------------------- the path of a policy
-function draftsLeft(S: State, scope: string, city: string | null) {
+function draftsLeft(S: State, scope: string, city: string | null, origin = 'official') {
   const s = P(S);
-  if (s.drafts.day !== S.day) s.drafts = { day: S.day, nation: 0, byCity: {} };
+  if (s.drafts.day !== S.day) s.drafts = { day: S.day, nation: 0, citizen: 0, byCity: {} };
+  if (scope === 'nation' && origin === 'citizen') return POLICY_LIMITS.citizenDrafts - (s.drafts.citizen || 0);
   return scope === 'nation' ? POLICY_LIMITS.nationDrafts - s.drafts.nation : POLICY_LIMITS.cityDrafts - (s.drafts.byCity[city!] || 0);
 }
 export function proposePolicy(ctx: Ctx, draft: any): { id: string } | { error: string; errors?: string[] } {
@@ -177,8 +208,9 @@ export function proposePolicy(ctx: Ctx, draft: any): { id: string } | { error: s
   const v = validateDraft(S, draft);
   if (!v.ok) { s.stats.invalid++; return { error: v.errors[0], errors: v.errors }; }
   const c = v.clean!;
-  if (draftsLeft(S, c.scope, c.city) <= 0) { s.stats.invalid++; return { error: `drafts: at most ${c.scope === 'nation' ? POLICY_LIMITS.nationDrafts : POLICY_LIMITS.cityDrafts} new ${c.scope} drafts a day` }; }
-  if (c.scope === 'nation') s.drafts.nation++; else s.drafts.byCity[c.city!] = (s.drafts.byCity[c.city!] || 0) + 1;
+  const byCitizen = c.scope === 'nation' && c.origin === 'citizen';
+  if (draftsLeft(S, c.scope, c.city, c.origin) <= 0) { s.stats.invalid++; return { error: `drafts: at most ${byCitizen ? `${POLICY_LIMITS.citizenDrafts} new nation drafts from citizens` : `${c.scope === 'nation' ? POLICY_LIMITS.nationDrafts : POLICY_LIMITS.cityDrafts} new ${c.scope} drafts`} a day` }; }
+  if (byCitizen) s.drafts.citizen = (s.drafts.citizen || 0) + 1; else if (c.scope === 'nation') s.drafts.nation++; else s.drafts.byCity[c.city!] = (s.drafts.byCity[c.city!] || 0) + 1;
   const p: any = { id: `pol-${++s.seq}`, ...c, costPerDay: v.costPerDay, status: 'proposed', proposedDay: S.day, enactedDay: null, endsDay: null, votes: null,
     grade: null, lesson: null, paid: 0, shortfall: 0, billId: null, decidedBy: null, ts: Date.now() };
   s.list.push(p); if (s.list.length > POLICY_LIMITS.keep) s.list.splice(0, s.list.length - POLICY_LIMITS.keep);

@@ -98,9 +98,41 @@ const money = S => S.treasury + S.citizens.reduce((n, a) => n + a.wallet, 0) + O
   const fourth = pol.proposePolicy(ctx, base({ params: { group: 'unemployed', amount: 13 } }));
   S.day = 2; const nextDay = pol.proposePolicy(ctx, base({ params: { group: 'unemployed', amount: 14 } }));
   check('at most 3 new nation drafts a day (the 4th waits for tomorrow)', /drafts/.test(fourth.error || '') && nextDay.id, JSON.stringify([fourth, nextDay]));
+  // citizens' nation ideas have their own quota (1 a day) and never take the officials' places (Security #824)
+  {
+    const { S: Q, ctx: qc } = republic();
+    const ci1 = pol.proposePolicy(qc, base({ origin: 'citizen', author: 'neura-7', params: { group: 'unemployed', amount: 3 } }));
+    const ci2 = pol.proposePolicy(qc, base({ origin: 'citizen', author: 'neura-8', params: { group: 'unemployed', amount: 4 } }));
+    const of = [5, 6, 7].map(n => pol.proposePolicy(qc, base({ params: { group: 'unemployed', amount: n } })));
+    check('a citizen\'s nation idea has its own quota (1 a day): the 2nd waits, and the officials still have all 3 places', ci1.id && /citizens/.test(ci2.error || '') && of.every(x => x.id), JSON.stringify([ci1, ci2, ...of].map(x => x.id || x.error)));
+  }
   const c1 = pol.proposePolicy(ctx, base({ scope: 'city', city: 'neura', params: { group: 'all', amount: 1 } })), c2 = pol.proposePolicy(ctx, base({ scope: 'city', city: 'neura', params: { group: 'all', amount: 2 } }));
   const c3 = pol.proposePolicy(ctx, base({ scope: 'city', city: 'neura', params: { group: 'all', amount: 3 } })), other = pol.proposePolicy(ctx, base({ scope: 'city', city: 'portoken', params: { group: 'all', amount: 3 } }));
   check('at most 2 new drafts a day per city; another city has its own 2', c1.id && c2.id && /drafts/.test(c3.error || '') && other.id, JSON.stringify([c1, c2, c3, other]));
+  // stacking (Security #806): policies on the same target add up and the total keeps one policy's range
+  {
+    const { S: T, ctx: tc } = republic();
+    const w1 = pol.proposePolicy(tc, base({ lever: 'wage', params: { job: 'barista', percent: 15 } }));
+    const w2 = pol.proposePolicy(tc, base({ lever: 'wage', params: { job: 'barista', percent: 1 } }));          // the nation already has one for baristas
+    const wc = pol.proposePolicy(tc, base({ scope: 'city', city: 'neura', lever: 'wage', params: { job: 'barista', percent: 6 } })); // 15 + 6 > 20 where both apply
+    tc.S.day = 2;
+    const w3 = pol.proposePolicy(tc, base({ scope: 'city', city: 'neura', lever: 'wage', params: { job: 'barista', percent: 5 } })); // 15 + 5 = 20: fine
+    const w4 = pol.proposePolicy(tc, base({ scope: 'city', city: 'neura', lever: 'wage', params: { job: 'barista', percent: -5 } })); // Neura already has one for baristas
+    const wo = pol.proposePolicy(tc, base({ scope: 'city', city: 'portoken', lever: 'wage', params: { job: 'teacher', percent: 20 } })); // another job: its own range
+    check('one wage policy per job and scope at a time, whatever its percent (Security #804); the nation\'s and a city\'s together stay within +-20% (#806); another job keeps its own',
+      w1.id && /one at a time/.test(w2.error || '') && /percent/.test(wc.error || '') && w3.id && /one at a time/.test(w4.error || '') && wo.id, JSON.stringify([w1, w2, wc, w3, w4, wo].map(x => x.id || x.error)));
+    const tx1 = pol.proposePolicy(tc, base({ scope: 'city', city: 'kernelfalls', lever: 'tax_delta', params: { group: 'students', points: -2 } }));
+    tc.S.day = 3;
+    const tx2 = pol.proposePolicy(tc, base({ scope: 'city', city: 'kernelfalls', lever: 'tax_delta', params: { group: 'students', points: 3 } }));
+    check('one tax_delta policy per group and scope at a time, whatever its points', tx1.id && /one at a time/.test(tx2.error || ''), JSON.stringify([tx1, tx2].map(x => x.id || x.error)));
+    tc.S.day = 4;
+    const h1 = pol.proposePolicy(tc, base({ lever: 'hire', params: { job: 'barista', seats: 40 } })), h2 = pol.proposePolicy(tc, base({ lever: 'hire', params: { job: 'barista', seats: 11 } }));
+    const t1 = pol.proposePolicy(tc, base({ lever: 'tax_delta', params: { group: 'poor', points: -8 } })), t2 = pol.proposePolicy(tc, base({ scope: 'city', city: 'portoken', lever: 'tax_delta', params: { group: 'poor', points: -3 } }));
+    tc.S.day = 5;
+    const f1 = pol.proposePolicy(tc, base({ lever: 'school_focus', params: { field: FIELD_IDS[0], weight: 2 } })), f2 = pol.proposePolicy(tc, base({ scope: 'city', city: 'lumenbay', lever: 'school_focus', params: { field: FIELD_IDS[0], weight: 2 } }));
+    check('the same holds for hire (50 places a job), tax_delta (+-10 points a group) and school_focus (weight 3 a field)', h1.id && /seats/.test(h2.error || '') && t1.id && /points/.test(t2.error || '') && f1.id && /weight/.test(f2.error || ''),
+      JSON.stringify([h1, h2, t1, t2, f1, f2].map(x => x.id || x.error)));
+  }
   const s = pol.P(S); for (let i = 0; i < 12; i++) s.list.push({ id: `x${i}`, status: 'active', scope: 'nation', lever: 'hire', params: { job: 'barista', seats: i + 1 }, costPerDay: 0 });
   S.day = 3; const over = pol.validateDraft(S, base({ lever: 'hire', params: { job: 'teacher', seats: 1 } }));
   check('at most 12 nation policies in force at once', !over.ok && over.errors.some(e => /active/.test(e)), JSON.stringify(over.errors));

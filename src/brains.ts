@@ -488,7 +488,9 @@ export function saveExample(ctx, { question, teacher, explanation = '', student 
 export const REMOTE_WAIT_MS = 150000; // a self-run agent has 2.5 minutes to answer
 // paid: false = this thought may only use the free local brain (daily life); no API, no memory, no cost
 // domain: the field of study of a school question, handed to the local runner with the job (its LoRA adapter)
-export async function think(ctx, a, qid, { system, user, kind = 'question', format = 'text', options = null, claudeModel = null, wait = true, paid = true, domain = null }) {
+// effort: 'low' | 'medium' | 'high' to choose how hard a paid model thinks (e.g. a leader's short reflection after a
+// report card is 'low'); null keeps the default (leaders' decisions and votes medium, everything else low)
+export async function think(ctx, a, qid, { system, user, kind = 'question', format = 'text', options = null, claudeModel = null, wait = true, paid = true, domain = null, effort = null }) {
   // school (kind 'train') and night school (kind 'night'): the student answers with the free local brain only;
   // the paid teachers are teach()
   // the daily fixed exam (kind 'bench', src/bench.ts) too: local only, last in the queue like the school
@@ -546,8 +548,8 @@ export async function think(ctx, a, qid, { system, user, kind = 'question', form
       // leaders: Claude (the judges' court model, or the leadership model); everyone else: their own model on OpenRouter
       const leaderModel = tier === 'leader' ? (claudeModel || ctx.cfg?.leaderModel || 'claude-opus-5-5') : null;
       // decisions think a little more; citizens and routine answers think as little as possible
-      const effort = tier === 'leader' && ['decision', 'vote'].includes(kind) ? 'medium' : 'low';
-      const r = await ctx.llm.askDetailed({ model: a.model, system, user, claudeModel: leaderModel, effort, route: tier === 'leader' ? null : 'openrouter' });
+      const level = ['low', 'medium', 'high'].includes(effort) ? effort : tier === 'leader' && ['decision', 'vote'].includes(kind) ? 'medium' : 'low';
+      const r = await ctx.llm.askDetailed({ model: a.model, system, user, claudeModel: leaderModel, effort: level, route: tier === 'leader' ? null : 'openrouter' });
       charge(ctx, tier, r.cost || 0);
       if (r.text) { learn(S, user, options, r.text); return { text: r.text, engine: r.via }; }
     } else budgetState(ctx).denied[tier]++;
