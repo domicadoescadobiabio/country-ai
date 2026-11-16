@@ -374,7 +374,8 @@ try {
   check('a citizen\'s card carries reflections (an official\'s lessons) and ideas (a citizen\'s proposals), the last 5 of each', Array.isArray(cardPB.reflections) && Array.isArray(cardPB.ideas) && cardPB.reflections.length <= 5 && cardPB.ideas.length <= 5, JSON.stringify({ r: cardPB.reflections, i: cardPB.ideas }));
   // --- Republic News: headlines from what happened, newest first; new ones stream on SSE as a small 'news' event
   const newsShape = x => /^news-\d+$/.test(x.id) && typeof x.ts === 'number' && typeof x.headline === 'string' && x.headline.length > 0 && x.headline.length <= 100
-    && (x.city === null || typeof x.city === 'string') && typeof x.kind === 'string' && x.reporter && x.reporter.id && x.reporter.name && (x.anchor === null || (x.anchor.id && x.anchor.name)) && typeof x.ref === 'string';
+    && (x.city === null || typeof x.city === 'string') && typeof x.kind === 'string' && x.reporter && x.reporter.id && x.reporter.name && (x.anchor === null || (x.anchor.id && x.anchor.name)) && typeof x.ref === 'string'
+    && typeof x.breaking === 'boolean'; // breaking news (owner, 16 Nov): always a boolean, on /api/news and the SSE news event
   // every city has its own reporter and news anchor, also in this 400-citizen republic (People box, tickets #723/#727)
   const jbNow = await get('/api/jobs'), reporters = jbNow.total?.reporter || 0;
   const desks = Object.entries(jbNow.byCity || {}).map(([c, o]) => [c, o.reporter || 0, o.news_anchor || 0]);

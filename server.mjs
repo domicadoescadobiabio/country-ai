@@ -286,7 +286,9 @@ const person = x => (x && typeof x === 'object' && /^[a-z0-9-]{1,40}$/.test(Stri
 function newsItems(n) {
   let list = []; try { list = newsFeed(S, n) || []; } catch { list = []; }
   return list.map(x => ({ id: cleanText(x.id, 40), ts: Number(x.ts) || 0, headline: placeText(x.headline, 100), city: CITIES.some(c => c.id === x.city) ? x.city : null,
-    kind: /^[a-z_]{1,20}$/.test(String(x.kind)) ? x.kind : 'news', reporter: person(x.reporter), anchor: person(x.anchor), ref: cleanText(x.ref, 40) })).filter(x => x.headline);
+    kind: /^[a-z_]{1,20}$/.test(String(x.kind)) ? x.kind : 'news', reporter: person(x.reporter), anchor: person(x.anchor), ref: cleanText(x.ref, 40),
+    // a republic-wide event the code marked as breaking (src/news.ts: by its kind, a few a day); older items false
+    breaking: x.breaking === true })).filter(x => x.headline);
 }
 // new headlines go out on SSE as a small 'news' event (only the new ones, newest first), never the whole state
 let newsSent = null;
