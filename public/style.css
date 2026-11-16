@@ -279,3 +279,17 @@ dialog::backdrop { background: rgba(5, 3, 15, .7); backdrop-filter: blur(4px); }
 .chart .pt:hover .dot { r: 5; fill: #fff; }
 .chart .val { fill: var(--text); font: 700 10px var(--mono); }
 .chart-empty { color: var(--muted); font-style: italic; padding: 10px 0; }
+
+/* the people's aspirations (app.js aspirationsPanel) */
+.asp-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.asp-head small, .asp-by, .asp-support small { color: var(--muted); font-size: 11.5px; }
+.asp-text { font-size: 14px; color: var(--text); margin: 8px 0 4px; }
+.asp-support { display: grid; gap: 4px; margin-top: 8px; }
+.asp-note { color: var(--gold); font-size: 12px; margin: 6px 0 0; }
+.asp-reply { margin-top: 8px; padding: 8px 10px; border-radius: 8px; border-left: 3px solid var(--dim); background: rgba(255, 255, 255, .03); display: grid; gap: 4px; }
+.asp-reply.ok { border-left-color: var(--green); }
+.asp-reply.no { border-left-color: var(--red); }
+.asp-reply small { color: var(--muted); font-size: 11.5px; }
+.asp-filters { display: flex; flex-wrap: wrap; gap: 6px; }
+.asp.asp-expired { opacity: .65; }
+.card.flash { box-shadow: 0 0 0 2px var(--gold), 0 0 18px rgba(34, 211, 238, .45); transition: box-shadow .3s; }

@@ -15,7 +15,7 @@ function clean(x) {
 }
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 
-const SPEED = 32;              // px a second: slow enough to read on a phone (it was 70)
+const SPEED = 16;              // px a second: slow enough to read on a phone (owner, 16 Nov: 70 -> 32 -> 16)
 const TV_MS = 45000;           // the TV window closes by itself after this long
 const TV_FRESH = 10 * 60000;   // on opening the page: show the last breaking item only if it is this recent
 
@@ -39,7 +39,7 @@ export function newsTicker(root, { cityName = id => id, max = 20, tv = null } = 
     const copy = run.cloneNode(true); copy.setAttribute('aria-hidden', 'true'); copy.classList.add('nt-copy'); // the seamless loop
     track.replaceChildren(run, copy);
     // about SPEED px a second, whatever the length (CSSOM: the page's CSP allows no style attributes)
-    requestAnimationFrame(() => track.style.setProperty('--nt-dur', `${Math.max(30, Math.round(run.scrollWidth / SPEED))}s`));
+    requestAnimationFrame(() => track.style.setProperty('--nt-dur', `${Math.max(60, Math.round(run.scrollWidth / SPEED))}s`));
   };
   const box = tv ? breakingTV({ cityName, ...tv }) : null;
   // new headlines first; the same id never twice. live: they came in just now (the stream), so a breaking one goes on TV

@@ -2,7 +2,7 @@
 // Every time shown is the republic's clock (US Eastern, "ET"), never the visitor's own zone: see clock.js.
 import { setClock, fmtTime, fmtDate, fmtDateTime, clockDetail } from './clock.js';
 import { jobLine, actLabel } from './jobs.js?v=3'; // a citizen's job line (citizen.job), act labels
-import { newsTicker, TEST_NEWS, testBreaking } from './news.js?v=3'; // Republic News, running under the header; breaking news on TV
+import { newsTicker, TEST_NEWS, testBreaking } from './news.js?v=4'; // Republic News, running under the header; breaking news on TV
 const $ = s => document.querySelector(s);
 const st = { config: { channels: [], roles: [], constitution: [] }, citizens: [], feed: {}, stats: {}, seats: {}, academy: {}, ch: 'academy', tab: 'academy', citizen: null };
 
@@ -212,6 +212,7 @@ const TABS = [
   ['border', 'Border', () => st.military !== undefined, true],
   ['school', 'School', () => st.school !== undefined, true],
   ['policies', 'Ideas & policies', () => true, true],
+  ['aspirations', 'Aspirations', () => true, true],
   ['treasury', 'Treasury', () => true],
   ['ledger', 'Ledger', () => true],
   ['constitution', 'Constitution', () => true],
@@ -273,6 +274,21 @@ async function loadPolicies() {
     if (st.tab === 'policies') renderPanel();
   } catch { /* offline: try again on the next refresh */ }
 }
+// the people's aspirations (owner, 16 Nov): GET /api/aspirations?scope=&city=&status=&page=, read at most once a minute
+// while the tab is open, at once when a filter changes; the small numbers (state.aspirations) come with the state stream
+const ASP_ID = /^asp-\d{1,9}$/;
+async function loadAspirations(force = false) {
+  if (!force && st.aspAt && Date.now() - st.aspAt < 60000) return; st.aspAt = Date.now();
+  const q = st.aq ||= { page: 1 }; const p = new URLSearchParams();
+  for (const k of ['scope', 'city', 'status']) if (q[k]) p.set(k, q[k]); if (q.page > 1) p.set('page', String(q.page));
+  try {
+    const r = await fetch('/api/aspirations' + (p.size ? '?' + p : ''));
+    if (r.status === 404) { st.asps = { total: 0, page: 1, size: 20, aspirations: [], topics: [], missing: true }; }
+    else if (r.ok) { const j = await r.json(); st.asps = { total: Number(j?.total) || 0, page: Number(j?.page) || 1, size: Number(j?.size) || 20, topics: Array.isArray(j?.topics) ? j.topics.slice(0, 20) : [], aspirations: (Array.isArray(j?.aspirations) ? j.aspirations : []).filter(x => x && ASP_ID.test(String(x.id))) }; }
+    else return;
+    if (st.tab === 'aspirations') renderPanel();
+  } catch { /* offline: try again on the next refresh */ }
+}
 // the local brain's daily fixed exam (GET /api/bench: latest, history, status, questions, running), with the School tab
 async function loadBench() {
   if (st.benchAt && Date.now() - st.benchAt < 60000) return; st.benchAt = Date.now();
@@ -284,7 +300,7 @@ async function loadBench() {
 // fetches them: through /api/state?parts= when the server announces it (config.stateParts), otherwise the whole
 // /api/state, but at most once a minute (the Academy tab: every 5 minutes) and only while that tab is open.
 const TAB_PARTS = { academy: ['training', 'gov'], offices: ['applications', 'command', 'cities'], elections: ['elections'], court: ['court', 'audit'], laws: ['bills', 'laws'],
-  police: ['police', 'underworld', 'daily'], border: ['military'], school: ['school', 'bench'], treasury: ['orders'], policies: ['policies'] };
+  police: ['police', 'underworld', 'daily'], border: ['military'], school: ['school', 'bench'], treasury: ['orders'], policies: ['policies'], aspirations: ['aspirations'] };
 const TAB_EVERY = { academy: 300000 };
 const seenAt = {}; let lastFull = 0;
 const markSeen = d => { const now = Date.now(); for (const k of Object.keys(d || {})) seenAt[k] = now; };
@@ -293,6 +309,7 @@ async function refreshTab() {
   if (st.tab === 'citizen') return loadCitizen(st.citizen || (cit((st.seats.president || [])[0]) || st.citizens[0])?.id);
   if (st.tab === 'citizens') return st.cres ? searchCitizens() : undefined;
   if (st.tab === 'policies') loadPolicies();
+  if (st.tab === 'aspirations') loadAspirations();
   if (st.tab === 'school') loadBench();
   const every = TAB_EVERY[st.tab] || 60000; const now = Date.now();
   const stale = (TAB_PARTS[st.tab] || []).filter(k => now - (seenAt[k] || 0) > Math.max(45000, every - 5000));
@@ -376,7 +393,15 @@ const PANELS = {
     const ideas = (Array.isArray(a.ideas) ? a.ideas : []).filter(x => x?.title).slice().reverse();
     if (ideas.length) out.push(h('div', { class: 'card' }, h('h4', { text: 'Their policy ideas' }), ideas.map(x => h('div', { class: 'list-row' },
       h('small', { text: [x.day != null ? `day ${x.day}` : null, IDEA[x.status] ?? String(x.status || '').replace(/_/g, ' '), x.policyId].filter(Boolean).join(' · ') }),
-      h('div', { text: x.title }), x.policyId ? h('b', { class: 'link', text: 'See the policy', onclick: () => { st.tab = 'policies'; renderTabs(); renderPanel(); } }) : null))));
+      h('div', { text: x.title }), x.policyId ? h('b', { class: 'link', text: 'See the policy', onclick: () => openPolicy(x.policyId) }) : null))));
+    // their aspirations (owner, 16 Nov): what they voiced and what they back, each with its support and outcome
+    const asp = a.aspirations && typeof a.aspirations === 'object' ? a.aspirations : null;
+    const aspRow = x => h('div', { class: 'list-row' }, h('small', { text: [prettyId(x.topic), ASP_STATUS[x.status] || prettyId(x.status)].filter(Boolean).join(' · ') }),
+      h('div', { text: `“${x.text}”` }), x.status === 'open' || x.status === 'review' ? supportBar(x) : null,
+      h('div', { class: 'row' }, h('b', { class: 'link', text: 'Open it', onclick: () => openAspiration(x.id) }), x.policyId && POLICY_ID.test(String(x.policyId)) ? h('b', { class: 'link', text: ' · See the policy', onclick: () => openPolicy(x.policyId) }) : null));
+    const wrote = (Array.isArray(asp?.wrote) ? asp.wrote : []).filter(x => x && ASP_ID.test(String(x.id)) && x.text), backed = (Array.isArray(asp?.supported) ? asp.supported : []).filter(x => x && ASP_ID.test(String(x.id)) && x.text);
+    if (wrote.length || backed.length) out.push(h('div', { class: 'card' }, h('h4', { text: 'Their aspirations' }),
+      wrote.length ? h('h4', { class: 'sub', text: 'Voiced' }) : null, ...wrote.map(aspRow), backed.length ? h('h4', { class: 'sub', text: 'Backed' }) : null, ...backed.map(aspRow)));
     // night school: talent badges, interests, best fields (from /api/citizens/:id, loaded once per opening)
     const sc = schoolFor(a.id);
     if (sc) {
@@ -609,6 +634,7 @@ const PANELS = {
   },
   school: () => schoolPanel(),
   policies: () => policiesPanel(),
+  aspirations: () => aspirationsPanel(),
   treasury() {
     const p = st.policy || {}, e = st.econ || {};
     const out = [h('div', { class: 'card' }, h('h4', { text: 'Treasury' }), kv([
@@ -818,10 +844,74 @@ function policyCard(p) {
     ['Proposed by', p.author ? `${p.author.name}${p.author.role ? ` (${p.author.role})` : ''}` : '-'], ...(p.ideaFrom ? [['Idea from', p.ideaFrom.name]] : []),
     ['Proposed', day(p.proposedDay) || '-'], ...(day(p.enactedDay) ? [['In force from', day(p.enactedDay)]] : []), ...(day(p.endsDay) ? [['Ends', day(p.endsDay)]] : []),
     ...(p.votes ? [['Council vote', `${n(p.votes.yes) ?? 0} yes · ${n(p.votes.no) ?? 0} no`]] : []), ...(p.grade ? [['Grade', String(p.grade).slice(0, 2)]] : [])];
-  return h('div', { class: 'card' }, h('h4', { text: p.title || '(untitled)' }), p.why ? h('p', { text: p.why }) : null, kv(rows),
+  return h('div', { class: 'card', 'data-policy': POLICY_ID.test(String(p.id)) ? p.id : null }, h('h4', { text: p.title || '(untitled)' }), p.why ? h('p', { text: p.why }) : null, kv(rows),
     p.lesson ? h('p', { class: 'lesson', text: `Lesson: ${p.lesson}` }) : null,
-    h('div', { class: 'row' }, p.author ? h('button', { class: 'btn-ghost', type: 'button', text: `Open ${p.author.name}`, onclick: () => openCitizen(p.author.id) }) : null,
+    h('div', { class: 'row' }, p.aspirationId && ASP_ID.test(String(p.aspirationId)) ? h('button', { class: 'btn-ghost', type: 'button', text: 'The aspiration it answers', onclick: () => openAspiration(p.aspirationId) }) : null,
+      p.author ? h('button', { class: 'btn-ghost', type: 'button', text: `Open ${p.author.name}`, onclick: () => openCitizen(p.author.id) }) : null,
       p.ideaFrom ? h('button', { class: 'btn-ghost', type: 'button', text: `Open ${p.ideaFrom.name}`, onclick: () => openCitizen(p.ideaFrom.id) }) : null));
+}
+// open another tab and bring one card into view (a policy from an aspiration, an aspiration from a policy)
+function jumpTo(tab, attr, id) {
+  st.tab = tab; renderTabs(); renderPanel(); refreshTab();
+  const find = () => document.querySelector(`[${attr}="${id}"]`);
+  const go = (n = 0) => { const el = find(); if (el) { el.scrollIntoView({ block: 'center' }); el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 2000); } else if (n < 10) setTimeout(() => go(n + 1), 300); };
+  go();
+}
+const openPolicy = id => { if (POLICY_ID.test(String(id))) jumpTo('policies', 'data-policy', id); };
+const openAspiration = id => { if (ASP_ID.test(String(id))) { st.aq = { page: 1 }; st.aspAt = 0; jumpTo('aspirations', 'data-asp', id); loadAspirations(true); } };
+// support towards the threshold: "34 of 60 supporters", a bar, and how many cities they come from (nation)
+const ASP_STATUS = { open: 'gathering support', review: 'under review', adopted: 'taken up', declined: 'declined', expired: 'expired' };
+function supportBar(x) {
+  const n = v => (Number.isFinite(Number(v)) ? Number(v) : 0); const s = n(x.supporters), need = n(x.need);
+  const pctv = need ? Math.min(100, Math.round(s / need * 100)) : 0;
+  return h('div', { class: 'asp-support' }, h('div', { class: 'bar' }, h('i', { style: `width:${pctv}%` })),
+    h('small', { text: need ? `${s.toLocaleString('en')} of ${need.toLocaleString('en')} supporters${x.cities != null && x.scope === 'nation' ? ` · from ${n(x.cities)} cit${n(x.cities) === 1 ? 'y' : 'ies'}` : ''}` : `${s.toLocaleString('en')} supporters` }));
+}
+function aspirationCard(x) {
+  const where = x.scope === 'city' && x.city ? cityName(x.city) : 'the whole republic';
+  const card = h('div', { class: `card asp asp-${x.status}`, 'data-asp': x.id },
+    h('div', { class: 'asp-head' }, h('span', { class: 'badge violet', text: prettyId(x.topic) }), h('small', { text: `${where} · ${ASP_STATUS[x.status] || prettyId(x.status)}${x.day != null ? ` · day ${x.day}` : ''}` })),
+    h('p', { class: 'asp-text', text: `“${x.text}”` }),
+    x.author ? h('small', { class: 'asp-by' }, 'First voiced by ', h('b', { class: 'link', text: x.author.name, onclick: () => openCitizen(x.author.id) })) : null);
+  if (x.status === 'open' || x.status === 'review' || x.status === 'expired') card.append(supportBar(x));
+  if (x.status === 'review') card.append(h('p', { class: 'asp-note', text: `With ${x.scope === 'city' ? `the Mayor of ${cityName(x.city)}` : 'the Council'}${x.reviewDue != null ? `: a decision by day ${x.reviewDue}` : ''}.` }));
+  const r = x.response;
+  if (r) {
+    card.append(h('div', { class: `asp-reply ${r.decision === 'adopt' ? 'ok' : 'no'}` },
+      h('small', { text: `${r.decision === 'adopt' ? 'Taken up' : 'Declined'}${r.by ? ` by ${r.by.name}${r.by.role ? ` (${r.by.role})` : ''}` : ''}${r.day != null ? ` · day ${r.day}` : ''}` }),
+      r.reason ? h('div', { text: r.reason }) : null,
+      r.policyId && POLICY_ID.test(String(r.policyId)) ? h('b', { class: 'link', text: `See the policy ${r.policyId}`, onclick: () => openPolicy(r.policyId) }) : null));
+  }
+  return card;
+}
+function aspirationsPanel() {
+  loadAspirations();
+  const s = st.aspirations && typeof st.aspirations === 'object' ? st.aspirations : {}; const n = v => Number(v) || 0;
+  const stats = s.stats && typeof s.stats === 'object' ? Object.entries(s.stats).filter(([, v]) => Number.isFinite(Number(v))).slice(0, 10).map(([k, v]) => `${String(k).replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase()} ${n(v)}`).join(' · ') : '';
+  const out = [h('div', { class: 'card' }, h('h4', { text: 'The people\'s aspirations' }),
+    h('p', { text: 'Citizens say what they want in their own words, or back what a neighbour already said. When enough people back the same thing (a share of the city for a city matter, of the whole republic from several cities for a national one), it goes for review: the Mayor or the Council either takes it up as a policy or declines it, with a public reason.' }),
+    kv([['Gathering support', n(s.open)], ['Under review', n(s.review)], ['Taken up', n(s.adopted)], ['Declined', n(s.declined)], ['Reviews left today', n(s.reviewsLeft)], ...(stats ? [['Record', stats]] : [])]))];
+  // filters: where, which status
+  const q = st.aq ||= { page: 1 }; const set = patch => { st.aq = { ...q, ...patch, page: patch.page || 1 }; loadAspirations(true); };
+  out.push(h('div', { class: 'card asp-filters' },
+    h('select', { 'aria-label': 'Scope', onchange: e => set({ scope: e.target.value || null }) }, ...[['', 'city and nation'], ['city', 'city matters'], ['nation', 'national matters']].map(([v, t]) => h('option', { value: v, text: t, selected: (q.scope || '') === v }))),
+    h('select', { 'aria-label': 'City', onchange: e => set({ city: e.target.value || null }) }, h('option', { value: '', text: 'every city' }), ...(st.cities || []).map(c => h('option', { value: c.id, text: c.name, selected: q.city === c.id }))),
+    h('select', { 'aria-label': 'Status', onchange: e => set({ status: e.target.value || null }) }, ...[['', 'every status'], ['open', 'gathering support'], ['review', 'under review'], ['adopted', 'taken up'], ['declined', 'declined'], ['expired', 'expired']].map(([v, t]) => h('option', { value: v, text: t, selected: (q.status || '') === v })))));
+  const v = st.asps;
+  if (!v) { out.push(h('p', { class: 'empty', text: 'Loading…' })); return out; }
+  if (v.missing) { out.push(h('p', { class: 'empty', text: 'Aspirations are not open on this server yet.' })); return out; }
+  if (!v.aspirations.length) { out.push(h('div', { class: 'card' }, h('p', { text: q.scope || q.city || q.status ? 'Nothing matches these filters.' : 'No one has voiced an aspiration yet.' }))); return out; }
+  // grouped as the server orders them: under review, gathering support (most backed first), decided, expired
+  let last = null;
+  for (const x of v.aspirations) {
+    const g = x.status === 'adopted' || x.status === 'declined' ? 'decided' : x.status;
+    if (g !== last) { out.push(h('div', { class: 'side-head', text: { review: 'Under review', open: 'Gathering support', decided: 'Decided', expired: 'Expired' }[g] || g })); last = g; }
+    out.push(aspirationCard(x));
+  }
+  const pages = Math.max(1, Math.ceil(v.total / (v.size || 20)));
+  if (pages > 1) out.push(h('div', { class: 'list-row' }, h('button', { type: 'button', text: '‹ prev', disabled: v.page <= 1, onclick: () => set({ page: v.page - 1 }) }),
+    h('span', { text: ` page ${v.page} of ${pages} (${v.total.toLocaleString('en')}) ` }), h('button', { type: 'button', text: 'next ›', disabled: v.page >= pages, onclick: () => set({ page: v.page + 1 }) })));
+  return out;
 }
 function policiesPanel() {
   loadPolicies(); loadJobs(); // job titles for "what it does"
@@ -949,6 +1039,14 @@ if (new URLSearchParams(location.search).get('selftest') === 'ideas') {
   const dom = d => ({ law: [6 + d, 12], economics: [5 + d, 12], medicine: [7, 12], programming: [4 + d, 12] });
   st.benchFull = { status: 'done today', questions: 325, running: null, history: [0, 1, 2, 3, 4, 5].map(k => ({ day: k + 1, score: [41.2, 43.1, 42.5, 45.8, 47.4, 49.2][k], right: [134, 140, 138, 149, 154, 160][k], total: 325, byDomain: dom(Math.floor(k / 2)), model: '(test) qwen3:8b', adapters: ['general', 'law'] })) };
   st.benchFull.latest = st.benchFull.history.at(-1);
+  // and aspirations, one of each status
+  st.aspAt = never; const mk = (id, status, extra) => ({ id, topic: 'jobs', scope: 'city', city: 'kernelfalls', text: '(test) More jobs at the factories for people looking for work', author: { id: 'test-b', name: 'Test Citizen' }, supporters: 12, need: 20, cities: 1, day: 4, status, reviewDue: null, response: null, ...extra });
+  st.asps = { total: 4, page: 1, size: 20, topics: [], aspirations: [
+    mk('asp-2', 'review', { topic: 'housing', scope: 'nation', city: null, text: '(test) Cheaper rent near the city centre', supporters: 64, need: 50, cities: 3, reviewDue: 6 }),
+    mk('asp-1', 'open', {}),
+    mk('asp-3', 'adopted', { topic: 'environment', text: '(test) A park by the river', response: { by: { id: 'test-c', name: 'Test Mayor', role: 'Mayor' }, day: 2, decision: 'adopt', reason: 'Many residents asked for green space; the city can pay for it.', policyId: 'pol-3' } }),
+    mk('asp-4', 'declined', { topic: 'tax', scope: 'nation', city: null, text: '(test) No tax for anyone', supporters: 70, need: 50, cities: 4, response: { by: { id: 'test-e', name: 'Test Speaker', role: 'Speaker of the Council' }, day: 3, decision: 'decline', reason: 'The treasury would run dry in a week; the basic income depends on it.', policyId: null } })] };
+  st.policyList[2].aspirationId = 'asp-3';
 }
 function connect() {
   const es = new EventSource('/api/stream');

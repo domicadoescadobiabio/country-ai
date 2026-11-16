@@ -13,7 +13,7 @@ import { Scenes, SCENE_COLOR } from './scenes.js';
 import { TYPES, CATS, ACT_COLOR, REP, MOODS, BOND_COLOR } from './catalog.js';
 import { setClock, fmtTime, hourOf, clockDetail } from '../clock.js'; // every time on the map is the republic's (ET)
 import { jobLine, workingLine, actLabel } from '../jobs.js?v=3'; // everyone's job (citizen.job), act labels
-import { newsTicker, TEST_NEWS, testBreaking } from '../news.js?v=3'; // Republic News, running in the people HUD; breaking news on TV
+import { newsTicker, TEST_NEWS, testBreaking } from '../news.js?v=4'; // Republic News, running in the people HUD; breaking news on TV
 
 const $ = s => document.querySelector(s);
 function h(tag, attrs = {}, ...kids) {
@@ -796,6 +796,10 @@ function showAgent(a, keepBonds) {
   const refl = (Array.isArray(rec?.reflections) ? rec.reflections : []).filter(r => r && (r.mistake || r.next)).at(-1);
   if (refl) body.append(h('h4', { text: `Learned${refl.day != null ? ` on day ${refl.day}` : ''}${refl.grade ? ` · grade ${refl.grade}` : ''}` }),
     h('div', { class: 'kv' }, ...[['Mistake', refl.mistake], ['Next time', refl.next]].filter(([, v]) => v).flatMap(([k, v]) => [h('span', { text: k }), h('b', { text: String(v) })])));
+  // and the aspiration they voiced last (citizen.aspirations.wrote, newest first), with its support
+  const asp = (Array.isArray(rec?.aspirations?.wrote) ? rec.aspirations.wrote : []).find(x => x?.text);
+  if (asp) body.append(h('h4', { text: `Their aspiration · ${String(asp.topic || '').replace(/_/g, ' ')}` }),
+    h('p', { class: 'quote', text: `${asp.text}${Number(asp.need) ? ` (${Number(asp.supporters) || 0} of ${Number(asp.need)} supporters, ${String(asp.status || '').replace(/_/g, ' ')})` : ''}` }));
   const idea = (Array.isArray(rec?.ideas) ? rec.ideas : []).filter(x => x?.title).at(-1);
   if (idea) body.append(h('h4', { text: `Latest idea${idea.day != null ? ` · day ${idea.day}` : ''}` }), h('p', { class: 'quote', text: `${idea.title}${idea.status && idea.status !== 'unknown' ? ` (${String(idea.status).replace(/_/g, ' ')})` : ''}` }));
   body.append(h('div', { class: 'poke' }, h('button', { type: 'button', class: 'poke-btn', onclick: () => pokeAgent(a) }, '👉 Poke'),
