@@ -268,25 +268,37 @@ export function assignJobs(ctx: Ctx) {
 // Republic News never goes quiet (tickets #723, #727, #908): a city left without a reporter or a news anchor (one took
 // an office, was held, left) gets one at once, on the next tick: the best suited free citizen from a job that has more
 // than one holder there. One pass over the citizens, cheap enough for every tick.
+// A desk counts as staffed only the way news.ts staffFor sees it (ticket #914): a free reporter without a brain of its
+// own, a free news anchor; a held reporter does not count, so the city gets a stand-in. Candidates never have a brain.
+const deskHolder = (a: Citizen, id: string) =>
+  (a as any).job === id && a.status === 'free' && !(a as any).office && (id !== 'reporter' || !(a as any).brain);
 export function fillNewsDesks(ctx: Ctx) {
   const { S } = ctx; if ((S as any).jobs?.v !== 1) return [];
   const byCity = new Map<string, Citizen[]>(); const held = new Map<string, Map<string, number>>();
+  const desks = new Map<string, Map<string, number>>();
   for (const a of S.citizens || []) {
     if (!eligibleAdult(a) || !a.city) continue;
     (byCity.get(a.city) || byCity.set(a.city, []).get(a.city)!).push(a);
     const id = (a as any).job; if (!jobById(id)) continue;
     const h = held.get(a.city) || held.set(a.city, new Map()).get(a.city)!; h.set(id, (h.get(id) || 0) + 1);
+    if ((id === 'reporter' || id === 'news_anchor') && deskHolder(a, id)) {
+      const d = desks.get(a.city) || desks.set(a.city, new Map()).get(a.city)!; d.set(id, (d.get(id) || 0) + 1);
+    }
   }
   const out: any[] = [];
   for (const [city, list] of byCity) {
     if (list.length < 4) continue;
-    const h = held.get(city) || new Map();
+    const h = held.get(city) || new Map(); const d = desks.get(city) || new Map();
     for (const id of ['reporter', 'news_anchor']) {
-      if ((h.get(id) || 0) > 0) continue;
+      if ((d.get(id) || 0) > 0) continue;
       const j = jobById(id)!;
-      const from = list.filter(a => a.status === 'free' && jobById((a as any).job) && (h.get((a as any).job) || 0) > 1).map(a => ({ a, f: fit(a, j) })).sort((x, y) => y.f - x.f)[0]?.a;
+      const from = list.filter(a => a.status === 'free' && !(a as any).brain && !(a as any).office && jobById((a as any).job) && (a as any).job !== id
+        && (h.get((a as any).job) || 0) > 1 && !((d.get((a as any).job) || 0) === 1 && deskHolder(a, (a as any).job)))
+        .map(a => ({ a, f: fit(a, j) })).sort((x, y) => y.f - x.f)[0]?.a;
       if (!from) continue;
-      const was = (from as any).job; h.set(was, (h.get(was) || 1) - 1); h.set(id, 1); setJob(from, id, S.day, S);
+      const was = (from as any).job; h.set(was, (h.get(was) || 1) - 1); h.set(id, (h.get(id) || 0) + 1);
+      if (deskHolder(from, was)) d.set(was, (d.get(was) || 1) - 1);
+      setJob(from, id, S.day, S); d.set(id, 1);
       out.push({ citizen: from.id, city, from: was, to: id });
       ctx.record?.('job_change', 'state', { citizen: from.id, city, from: was, to: id, day: S.day });
       ctx.say?.('life', 'state', `${from.name} found work as ${j.title} in ${cityName(city)}.`, { kind: 'job' });

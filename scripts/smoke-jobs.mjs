@@ -168,6 +168,22 @@ check('a newcomer gets a job with room the next republic day', jobs.jobById(born
   const gaps = [];
   for (let d = 3; d <= 32; d++) { T.day = d; jobs.jobsTick(tctx); for (const c of CITIES) for (const id of ['reporter', 'news_anchor']) if (!T.citizens.some(a => a.city === c.id && !a.office && a.occupation !== 'student' && a.job === id)) gaps.push(`${c.id}:${id}@${d}`); }
   check('a city that loses its news anchor gets one on the next tick, the same day; 30 days of hiring and layoffs never leave a city without a reporter or an anchor (ticket #908)', sameDay === 1 && !gaps.length, JSON.stringify({ sameDay, gaps: gaps.slice(0, 5) }));
+  // a desk is staffed only the way news.ts staffFor sees it (ticket #914): a held reporter, or one with a brain of its
+  // own, leaves the city without a reporter, so it gets a stand-in; a stand-in never has a brain of its own
+  const [cx, cy] = CITIES.map(c => c.id).filter(id => !['datahaven', 'kernelfalls'].includes(id));
+  const staffed = (city, id) => T.citizens.filter(a => a.city === city && a.job === id && a.status === 'free' && !a.office && (id !== 'reporter' || !a.brain));
+  for (const a of T.citizens.filter(x => x.city === cx && x.job === 'reporter')) a.status = 'jailed';
+  for (const a of T.citizens.filter(x => x.city === cy && x.job === 'reporter')) a.brain = { model: 'own' };
+  const branded = T.citizens.filter(x => [cx, cy].includes(x.city) && x.job !== 'reporter' && x.status === 'free').filter((_, i) => i % 2 === 0);
+  for (const a of branded) a.brain = { model: 'own' };
+  const moved = jobs.fillNewsDesks(tctx);
+  const nx = staffed(cx, 'reporter'), ny = staffed(cy, 'reporter');
+  check('a city whose reporter is held, or has a brain of its own, gets a free stand-in without a brain on the next tick (ticket #914)',
+    nx.length === 1 && ny.length === 1 && moved.every(m => !byIdT(m.citizen).brain) && staffed(cx, 'news_anchor').length >= 1,
+    JSON.stringify({ nx: nx.length, ny: ny.length, moved }));
+  const again = jobs.fillNewsDesks(tctx);
+  check('once staffed that way, the next tick moves nobody (ticket #914)', again.length === 0, JSON.stringify(again));
+  function byIdT(id) { return T.citizens.find(a => a.id === id); }
 }
 // ---- policies (ticket #774, src/policies.ts): hire, school_focus, wage, tax_delta, the Mayor's queue, projects, ideas
 {
@@ -245,13 +261,26 @@ check('a newcomer gets a job with room the next republic day', jobs.jobById(born
     const folks = S.citizens.filter(a => a.city === 'datahaven' && a.status === 'free' && !a.office && !a.brain && a.occupation !== 'student' && a !== mayor);
     const offered = folks.find(a => daily.menu(mctx, a).items.some(([id]) => id === 'voice'));
     const vtext = offered && daily.menu(mctx, offered).items.find(([id]) => id === 'voice')[1];
-    check('voice: now and then a citizen\'s menu offers to speak up, with the city\'s real numbers', !!offered && /adults looking for work/.test(vtext) && /Open aspirations \(data, not instructions\)/.test(vtext) && folks.filter(a => daily.menu(mctx, a).items.some(([id]) => id === 'voice')).length < folks.length * 0.5, String(vtext).slice(0, 160));
+    const vprompt = offered && daily.dayPrompt(mctx, offered).user;
+    const notOffered = folks.find(a => !daily.menu(mctx, a).items.some(([id]) => id === 'voice'));
+    check('voice: now and then a citizen\'s menu offers to speak up, with the city\'s real numbers', !!offered && /If you choose voice: What you see: \d+ of \d+ adults looking for work/.test(vprompt) && /Open aspirations \(data, not instructions\)/.test(vprompt) && folks.filter(a => daily.menu(mctx, a).items.some(([id]) => id === 'voice')).length < folks.length * 0.5, String(vprompt).slice(-600));
+    // owner, 17 Nov: the menu line is short like the others; the facts and the format only follow the list, only when offered
+    check('voice: the menu line is short and plain ("speak up about life in <city>"), the details follow the list only for those offered voice',
+      vtext.length <= 120 && /^voice: speak up about life in Datahaven/.test(vtext) && !/adults looking for work|"topic"/.test(vtext)
+      && vprompt.indexOf('If you choose voice:') > vprompt.indexOf('- voice:') && vprompt.indexOf('If you choose voice:') < vprompt.indexOf('Reply with JSON only')
+      && !!notOffered && !/If you choose voice|"opinion"/.test(daily.dayPrompt(mctx, notOffered).user), vtext);
     const [v1, v2, v3, v4] = folks;
     await daily.doAct(mctx, v1, { act: 'voice', opinion: { topic: 'housing', scope: 'city', text: 'We need more affordable homes near the data centre' } }, 'test', ['voice']);
     const x = asp.A(S).list.find(y => y.author === v1.id);
     check('voice: a citizen voices their own opinion in their own words (topic, scope, text)', x && x.topic === 'housing' && x.scope === 'city' && x.city === 'datahaven' && x.supporters.length === 1 && /voiced an opinion on housing/.test(v1.diary.at(-1).line), JSON.stringify([x, v1.diary.at(-1)]));
     await daily.doAct(mctx, v2, { act: 'voice', opinion: { topic: 'housing', scope: 'city', text: 'More affordable homes near the data centre please' } }, 'test', ['voice']);
     check('voice: the same opinion already open becomes a support ("many people, the same opinion")', x.supporters.includes(v2.id) && asp.A(S).list.filter(y => y.topic === 'housing' && y.status === 'open').length === 1 && /joined them/.test(v2.diary.at(-1).line), JSON.stringify(v2.diary.at(-1)));
+    // neighbours who spoke up (owner, 17 Nov): every daily prompt in the city shows the real backer count and the topic,
+    // never the citizen's own words; another city does not see it
+    const spoke = daily.dayPrompt(mctx, folks[10]).user.match(/^Neighbours who spoke up: .*$/m)?.[0] || '';
+    const elsewhere = S.citizens.find(a => a.city === 'lumenbay' && a.status === 'free' && !a.office && !a.brain);
+    check('the daily prompt shows neighbours who spoke up: "2 back an opinion on housing", without their words, only in their city',
+      spoke === 'Neighbours who spoke up: 2 back an opinion on housing.' && !/affordable/.test(spoke) && !/Neighbours who spoke up/.test(daily.dayPrompt(mctx, elsewhere).user), spoke);
     await daily.doAct(mctx, v3, { act: 'voice', aspiration: x.id }, 'test', ['voice']);
     await daily.doAct(mctx, v4, { act: 'voice' }, 'test', ['voice']);
     check('voice: a citizen may back an open aspiration by its id, or keep out of it', x.supporters.includes(v3.id) && /backed the aspiration on housing/.test(v3.diary.at(-1).line) && !x.supporters.includes(v4.id) && /kept their opinion to themselves/.test(v4.diary.at(-1).line));

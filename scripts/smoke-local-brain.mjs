@@ -25,7 +25,14 @@ const ollama = http.createServer((req, res) => {
     const body = JSON.parse(b || '{}'); asked++;
     const userText = String(body.messages?.find(m => m.role === 'user')?.content || '');
     if (/What do you do now\?/.test(userText)) lifePrompts.push(userText);
-    const text = smartAnswer(userText);
+    // a citizen offered 'voice' takes it (their own opinion, or backing an open one) so the whole path is tested:
+    // menu -> prompt -> local brain -> reply -> doAct -> aspiration (owner, 17 Nov: none in production yet)
+    const topics = (userText.match(/"topic": one of ([\w|]+)/) || [])[1];
+    const openId = (userText.match(/\b(asp-\d+)\b/) || [])[1];
+    const text = /What do you do now\?/.test(userText) && /^- voice:/m.test(userText) && topics
+      ? JSON.stringify(openId && asked % 2 ? { act: 'voice', aspiration: openId, note: 'backed my neighbours' }
+        : { act: 'voice', opinion: { topic: topics.split('|')[0], scope: 'city', text: `We need more evening buses for night shift workers ${asked % 3}` }, note: 'spoke up' })
+      : smartAnswer(userText);
     res.end(JSON.stringify({ message: { role: 'assistant', content: `<think>hm</think>${text}` }, prompt_eval_count: 300, eval_count: 20 }));
   });
 });
@@ -263,6 +270,21 @@ try {
   const top = acts.sort((x, y) => y[1] - x[1])[0] || ['', 0];
   // the mock always takes the first option shown; with a shuffled menu no act should take most of a small sample
   check('daily life is varied, not one act for everyone', total >= 10 && acts.length >= 3 && top[1] / Math.max(1, total) <= 0.6, JSON.stringify(life?.byAct));
+  // the people's aspirations end to end (owner, 17 Nov): the menu offers voice to about 1 in 4, the local brain picks it,
+  // the reply is acted on: an aspiration is made (or backed) and voice is counted in byAct, never turned into rest
+  {
+    const offeredVoice = lifePrompts.filter(p => /^- voice:/m.test(p));
+    for (let i = 0; i < 40 && !((await get('/api/state')).daily?.byAct?.voice > 0); i++) await wait(500);
+    const st = await get('/api/state'); const aspv = await get('/api/aspirations');
+    const longest = Math.max(0, ...lifePrompts.map(p => p.length));
+    check('voice: the menu offers it to some citizens, not all (about 1 in 4 a day)', offeredVoice.length > 0 && offeredVoice.length < lifePrompts.length, `${offeredVoice.length}/${lifePrompts.length}`);
+    check('voice: a reply choosing voice goes through the local brain to an aspiration, counted as voice in byAct', st.daily?.byAct?.voice > 0 && aspv.total > 0 && (aspv.aspirations || []).some(x => x.supporters >= 1 || x.supporters?.length >= 1),
+      JSON.stringify({ byAct: st.daily?.byAct, total: aspv.total, first: aspv.aspirations?.[0] }));
+    const off = st.daily?.offered || {};
+    check('daily.offered counts what each answered thought was offered (voice offered >= voice chosen; no wrongs listed)', off.voice >= st.daily.byAct.voice && off.rest > 0 && Object.keys(off).every(k => ['work', 'shop', 'study', 'apply', 'run', 'talk', 'help', 'volunteer', 'rest', 'voice'].includes(k)) && typeof st.daily.offeredSince === 'number',
+      JSON.stringify({ offered: off, since: st.daily?.offeredSince }));
+    check('voice: the daily prompt stays well inside a 3072-token slot of the local brain (under 6,000 characters)', longest > 0 && longest < 6000, String(longest));
+  }
   // feelings in their thinking: one short line with their own mood (and people they care about)
   const heart = lifePrompts.map(p => (p.match(/^You feel .*$/m) || [])[0]).filter(Boolean);
   check('the daily prompt carries a short feelings line', heart.length > 0 && heart.every(l => l.length <= 300) && lifePrompts.every(p => /"feel":/.test(p)), `${heart.length}/${lifePrompts.length} ${heart[0] || ''}`);
