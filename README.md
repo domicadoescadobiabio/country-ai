@@ -70,6 +70,23 @@ city's anchor reads them. Settings (Railway variables):
 | `JOBS_HIRE_CHANCE` | `0.15` | daily chance that someone looking finds work (0–1) |
 | `NEWS_PER_HOUR` | `12` | headlines per real hour (1–120) |
 
+**Policies and the benchmark.** Leaders draft nation policies and Mayors city policies within daily spending limits;
+each is graded some days after it starts. Once a republic day, in the quiet hours, the local brain sits a fixed
+benchmark (`db/bench.jsonl`, never a paid API) so you can see whether it improves. Settings (Railway variables):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `REVIEW_LAG_DAYS` | `1` | days after a policy starts before it is graded (1–7) |
+| `POLICY_NATION_PCT` | `5` | % of the treasury all active nation policies may spend a day (1–20) |
+| `POLICY_CITY_PCT` | `20` | % of a city's budget its active city policies may spend a day (1–50) |
+| `POLICY_NATION_MAX` | `12` | active nation policies at most (1–50) |
+| `POLICY_CITY_MAX` | `4` | active policies per city at most (1–20) |
+| `POLICY_NATION_DRAFTS` | `3` | new nation drafts a day (1–20) |
+| `POLICY_CITY_DRAFTS` | `2` | new drafts per city a day (1–20) |
+| `BENCH_HOUR` | `3` | republic hour the daily benchmark may start (0–23) |
+| `BENCH_INFLIGHT` | `8` | benchmark questions out to the local brain at once (1–64) |
+| `BENCH_FILE` | `db/bench.jsonl` | optional path to another question file |
+
 ## The local brain
 
 `scripts/local-brain.mjs` runs on a founder's machine next to Ollama (Qwen 3 8B uses about 6 GB of an 8 GB GPU,

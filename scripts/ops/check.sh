@@ -38,6 +38,7 @@ suite "smoke: the underworld and mischievous citizens (Node)" scripts/smoke-unde
 suite "smoke: the school (Node)" scripts/smoke-school.mjs
 suite "smoke: jobs and the labour market (Node)" scripts/smoke-jobs.mjs
 suite "smoke: the news (Node)" scripts/smoke-news.mjs
+suite "smoke: policies and their grades (Node)" scripts/smoke-policies.mjs
 
 if (( ${#failed[@]} )); then die "failed: ${failed[*]}"; fi
 ok "all checks passed"
