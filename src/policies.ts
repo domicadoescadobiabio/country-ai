@@ -87,11 +87,13 @@ export function groupOk(g: unknown) {
   if (g.startsWith('city:')) return cityOk(g.slice(5));
   return false;
 }
-// the 25th percentile of free citizens' wallets (the "poor" line)
-export function poorLine(S: State) {
-  const w = free(S).map(a => Number(a.wallet) || 0).sort((x, y) => x - y);
-  return w.length ? w[Math.floor(w.length * 0.25)] : 0;
-}
+// The "poor" line: the one every official already reads in their facts ("citizens under 300 CAI", president.ts,
+// cities.ts, daily.ts, cases.mjs), so the group an official names is the group that is paid (ticket #841: a 25th
+// percentile line made "poor" ~2,500 citizens while the Minister had read "3 under 300 CAI"). POLICY_POOR_LINE.
+export const POOR_LINE = envInt('POLICY_POOR_LINE', 300, 1, 1000000);
+export function poorLine(_S?: State) { return POOR_LINE; }
+// how many free citizens a group holds now (in a city, for a city policy): for officials' prompts
+export const groupSize = (S: State, group: string, city: string | null = null) => (groupOk(group) ? groupMembers(S, group, city).length : 0);
 // who a group is (free citizens only), inside the policy's city when it is a city policy
 export function groupMembers(S: State, group: string, city: string | null = null, line = poorLine(S)) {
   let list = free(S);
@@ -166,6 +168,13 @@ export function validateDraft(S: State, draft: any) {
   let costPerDay = 0;
   if (!errors.length) {
     costPerDay = costOf(S, lever!, params, scope === 'city' ? city : null, days!);
+    // the author may say what they expect it to cost a day (maxCostPerDay): more than that is refused, with the size
+    // of the group, so a policy never costs far more than the one who wrote it meant
+    if (d.maxCostPerDay != null) {
+      const want = Number(d.maxCostPerDay);
+      if (!Number.isFinite(want) || want < 0) errors.push('maxCostPerDay: a number of CAI, 0 or more');
+      else if (costPerDay > want) errors.push(`cost: ${costPerDay} CAI a day is more than the ${Math.round(want)} expected${params.group ? ` (group ${params.group}: ${groupMembers(S, params.group, scope === 'city' ? city : null).length} citizens)` : ''}`);
+    }
     const mine = s.list.filter((p: any) => p.status === 'active' && (scope === 'nation' ? p.scope === 'nation' : p.scope === 'city' && p.city === city));
     const spent = mine.reduce((n: number, p: any) => n + (p.costPerDay || 0), 0);
     const cap = scope === 'nation' ? Math.max(0, Number(S.treasury) || 0) * POLICY_LIMITS.nationShare : Math.max(0, Number(S.cities?.[city!]?.budget) || 0) * POLICY_LIMITS.cityShare;
@@ -234,6 +243,23 @@ export function enactPolicy(ctx: Ctx, id: string, by: string, votes: { yes: numb
   s.stats.enacted++;
   ctx.record?.('policy_enacted', by || 'state', { id: p.id, lever: p.lever, params: p.params, scope: p.scope, city: p.city, days: p.days, costPerDay: p.costPerDay, endsDay: p.endsDay, votes: p.votes });
   return { ok: true };
+}
+// The Court's review of a nation policy (the Government box's court.ts, between the Council's timelock and enactPolicy):
+// the code's checks run again now, nothing changes. { ok, reasons, costPerDay, facts }: reasons are the rules it would
+// break today (empty when ok); facts are plain lines for the judges, the policy's own words only inside << >>.
+export function reviewPolicy(S: State, id: string) {
+  const p = find(S, id);
+  if (!p || p.status !== 'proposed') return { ok: false, reasons: ['not a proposed policy'], costPerDay: 0, facts: [] as string[] };
+  p.status = 'checking'; // not its own duplicate while it is checked
+  let v; try { v = validateDraft(S, { ...p, params: { ...p.params } }); } finally { p.status = 'proposed'; }
+  const cap = p.scope === 'nation' ? Math.floor(Math.max(0, Number(S.treasury) || 0) * POLICY_LIMITS.nationShare) : Math.floor(Math.max(0, Number(S.cities?.[p.city]?.budget) || 0) * POLICY_LIMITS.cityShare);
+  const facts = [
+    `Policy ${p.id}: ${policyAsData(p)}`,
+    `Scope: ${p.scope}${p.city ? ` (${p.city})` : ''}; proposed on day ${p.proposedDay} by ${p.origin === 'citizen' ? 'a citizen' : 'an official'}.`,
+    `Cost a day: ${v.costPerDay} CAI; the limit for all ${p.scope} policies together is ${cap} CAI a day.`,
+    v.ok ? 'The code finds no rule it would break today.' : `The code finds these rules broken today: ${v.errors.join('; ')}.`,
+  ];
+  return { ok: v.ok, reasons: v.errors, costPerDay: v.costPerDay, facts };
 }
 export function rejectPolicy(ctx: Ctx, id: string, by: string, reason = 'refused', votes: { yes: number; no: number } | null = null) {
   const { S } = ctx; const s = P(S); const p = find(S, id);

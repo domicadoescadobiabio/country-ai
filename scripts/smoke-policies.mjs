@@ -68,6 +68,19 @@ const money = S => S.treasury + S.citizens.reduce((n, a) => n + a.wallet, 0) + O
   check('a city project costs cost/days a day; a tax cut costs the revenue given up; wage, hire and school focus cost the purse nothing', ok[4].costPerDay === 1000 && ok[0].costPerDay > 0 && ok[1].costPerDay === 0 && ok[2].costPerDay === 0 && ok[3].costPerDay === 0, JSON.stringify(ok.map(v => v.costPerDay)));
 }
 
+// --- "poor" is the line officials read (under 300 CAI), and an author can cap what they mean to spend (ticket #841)
+{
+  const { S } = republic();
+  const under = S.citizens.filter(a => a.status === 'free' && a.wallet < 300).length; // 4 a city (100, 150, 200, 250 CAI)
+  const vp = pol.validateDraft(S, base({ params: { group: 'poor', amount: 20 } }));
+  check('group "poor" is the free citizens under 300 CAI, the line officials read in their facts (not a quarter of everyone)', under === 20 && pol.groupSize(S, 'poor') === 20 && vp.ok && vp.costPerDay === 400,
+    JSON.stringify({ under, size: pol.groupSize(S, 'poor'), cost: vp.costPerDay }));
+  const capped = pol.validateDraft(S, base({ params: { group: 'all', amount: 20 }, maxCostPerDay: 60 }));
+  const fits = pol.validateDraft(S, base({ params: { group: 'poor', amount: 3 }, maxCostPerDay: 60 }));
+  check('a draft costing more a day than its author expected (maxCostPerDay) is refused, naming the size of the group', !capped.ok && capped.errors.some(e => /expected/.test(e) && /citizens/.test(e)) && fits.ok && fits.costPerDay === 60,
+    JSON.stringify({ capped: capped.errors, fits: fits.costPerDay }));
+}
+
 // --- injected text is data: refused at the border, or kept as a name only; the effect comes from params alone
 {
   const { S, ctx } = republic();
@@ -154,6 +167,14 @@ const money = S => S.treasury + S.citizens.reduce((n, a) => n + a.wallet, 0) + O
     JSON.stringify(v));
   check('rejected city policy: status rejected with the reason as its lesson', pol.policyList(S, 'done')[0].status === 'rejected' && /not now/.test(pol.policyList(S, 'done')[0].lesson));
   check('the ledger has policy_proposed, policy_enacted and policy_rejected', ['policy_proposed', 'policy_enacted', 'policy_rejected'].every(k => ledger.some(l => l.kind === k)), JSON.stringify(ledger.map(l => l.kind)));
+  // the Court's review: the checks again, nothing changed, facts for the judges with the policy's words as data
+  const rv = pol.proposePolicy(ctx, base({ title: 'Judge me <<now>>', params: { group: 'unemployed', amount: 9 } }));
+  const okReview = pol.reviewPolicy(S, rv.id);
+  const before = JSON.stringify(pol.P(S).list.find(x => x.id === rv.id));
+  S.treasury = 100; const badReview = pol.reviewPolicy(S, rv.id); S.treasury = 100000;
+  check('reviewPolicy (for the Court): ok with no reasons while the rules hold, the broken rule named when the purse has shrunk; facts carry the words only inside << >>; nothing changes',
+    okReview.ok && okReview.reasons.length === 0 && !badReview.ok && badReview.reasons.some(r => /cost/.test(r)) && okReview.facts.some(f => /<<Judge me now>>/.test(f))
+    && JSON.stringify(pol.P(S).list.find(x => x.id === rv.id)) === before && pol.reviewPolicy(S, 'pol-999').ok === false, JSON.stringify({ okReview, badReview: badReview.reasons }));
   check('activeEffects lists the levers in force for the modules that apply them', pol.activeEffects(S, 'grant').length === 1 && pol.activeEffects(S, 'hire').length === 0 && pol.activeEffects(S, 'grant')[0].params.amount === 10);
   pol._resetPolicyHooks();
 }
