@@ -105,7 +105,7 @@ async function autonomyChecks(check) {
     S.day += pres.reviewLag(); S.tick++;
     await pres.institution.day(ctx);
     const card = p.reportCards?.at(-1);
-    check('report card: graded REVIEW_LAG_DAYS later from poverty, crime and mood, written by the server', card && /^[ABCD]$/.test(card.grade) && /\d+ days? later in neura/i.test(card.lesson) && S.gov.gradeN === 1, card?.lesson);
+    check('report card: graded REVIEW_LAG_DAYS later from poverty, crime and mood, written by the server', card && /^[A-E]$/.test(card.grade) && /\d+ days? later in neura/i.test(card.lesson) && S.gov.gradeN === 1, card?.lesson);
     check('runway: the report card shows the treasury runway before and after the decision', /runway \d+(\.\d+)? days -> \d+(\.\d+)? days/.test(card?.lesson || ''), card?.lesson);
   }
 
@@ -612,6 +612,38 @@ async function policyChecks(check) {
     const b = extras.find(x => x.breaking);
     check('news: a recall vote is announced as breaking news in #election (kind vote), with the state\'s own reason', b && b.ch === 'election' && b.kind === 'vote' && /Recall vote opened against Mayor c39: failed in-service training twice/.test(b.text), JSON.stringify(extras));
     mayor.office = null; S.seats.mayor = [];
+  }
+  // 12. fair report cards (owner, 16 Nov): a city's change minus the other cities' average; a nation's minus its trend
+  {
+    const r = { city: 'neura', before: { poor: 0.1, crimes: 2, mood: 0.085, cities: { neura: { poor: 0.1, crimes: 2, mood: 0.085 }, portoken: { poor: 0.1, crimes: 2, mood: 0.085 }, datahaven: { poor: 0.1, crimes: 2, mood: 0.084 } } } };
+    const fc = pres.fairCard(r, { poor: 0.1, crimes: 2, mood: 0.057 }, { neura: { poor: 0.1, crimes: 2, mood: 0.057 }, portoken: { poor: 0.1, crimes: 2, mood: 0.058 }, datahaven: { poor: 0.1, crimes: 2, mood: 0.056 } }, null);
+    check('report card: a city whose mood fell like every other city\'s (UBI cut) is graded C, the text names the other cities\' average', fc.grade === 'C' && /mood 0\.085 -> 0\.057 \(-0\.028\), other cities avg -0\.028: own effect ~-?0(\.00\d)? -> C/.test(fc.text), JSON.stringify(fc));
+    const fd = pres.fairCard(r, { poor: 0.1, crimes: 2, mood: 0.01 }, { neura: { poor: 0.1, crimes: 2, mood: 0.01 }, portoken: { poor: 0.1, crimes: 2, mood: 0.085 }, datahaven: { poor: 0.1, crimes: 2, mood: 0.084 } }, null);
+    check('report card: a city whose mood fell while the others held is graded below C', ['D', 'E'].includes(fd.grade), JSON.stringify(fd));
+    const fn = pres.fairCard({ city: null, before: { poor: 0.1, crimes: 4, mood: 0.085 } }, { poor: 0.1, crimes: 4, mood: 0.057 }, {}, { poor: 0, crimes: 0, mood: -0.028 });
+    check('report card: a national decision is compared with the nation\'s trend before it', fn.grade === 'C' && /trend before -0\.028/.test(fn.text), JSON.stringify(fn));
+  }
+  // 13. the people's aspirations for the nation: the Council reviews them (Speaker assigns, the reviewer adopts or declines)
+  {
+    let asp; try { asp = await import('../src/aspirations.ts'); } catch { asp = null; }
+    if (asp) {
+      S.day++; S.cabinet.speaker = 'c5';
+      const mk = (topic, text, author) => { const v = asp.voiceAspiration(ctx, author, { topic, scope: 'nation', text }); const x = asp.A(S).list.find(y => y.id === v.id); Object.assign(x, { status: 'review', thresholdDay: S.day, reviewDue: S.day + 1 }); return x; };
+      const xa = mk('school', 'teach more history in every school please', 'c32');
+      mi.inbox = [];
+      await council.councilTick(ctx);
+      const aq = mi.inbox.find(q => /^aspiration:/.test(q.id));
+      check('aspiration: the Speaker assigns a national aspiration on school to the Minister of education, who reads it as data', xa.takenBy === 'c21' && aq && /<<teach more history in every school please>>/.test(aq.prompt) && /Adopt it by writing a nation policy/.test(aq.prompt) && decisions.some(d => d.type === 'aspiration' && d.agentId === 'c5' && /assigned/.test(d.title)), JSON.stringify({ takenBy: xa.takenBy, prompt: aq?.prompt?.slice(0, 200) }));
+      answer(mi, { decision: 'adopt', reason: 'History levels are low; the schools will teach it more.', title: 'More history in school', why: 'citizens asked for it', lever: 'school_focus', params: { field: 'history', weight: 1 }, days: 5, maxCostPerDay: 0 });
+      await council.councilTick(ctx);
+      const pa = pol.P(S).list.find(p => p.aspirationId === xa.id);
+      check('aspiration: adopted, the reviewer\'s own policy carries origin citizen, ideaFrom the author and the aspirationId, and goes to the Council as a bill', xa.status === 'adopted' && xa.response.policyId === pa?.id && pa.origin === 'citizen' && pa.ideaFrom === 'c32' && pa.author === 'c21' && S.bills.some(b => b.policyId === pa.id), JSON.stringify({ status: xa.status, response: xa.response, pa }));
+      const xd = mk('government', 'publish every council vote online', 'c33');
+      await council.councilTick(ctx); // assigned; the reviewer has no mind in this test (offline)
+      check('aspiration: an aspiration with no answer stays in review until its deadline', xd.status === 'review' && !!xd.takenBy);
+      S.day = xd.reviewDue + 1; await council.councilTick(ctx);
+      check('aspiration: past the deadline without an answer it is declined in public with that reason (never adopted by a rule)', xd.status === 'declined' && /before the deadline/.test(xd.response.reason) && !pol.P(S).list.some(p => p.aspirationId === xd.id), JSON.stringify(xd.response));
+    }
   }
   // 9. the President's other graded decisions (nominating the Cabinet) also read their own lessons
   const cab = await import('../src/cabinet.ts');

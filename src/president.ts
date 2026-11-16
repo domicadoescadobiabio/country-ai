@@ -16,6 +16,13 @@ import { ROLES, PORTFOLIO_FIELDS, loadExpertise, topFieldsText, giftedText, civi
 import { onDuty, siteFor, sitesOf, capitalOf, postingOf, standInGuard, dutyShift, CORPS, DUTY_PLAN } from './command.ts';
 import { constitutionText } from './constitution.mjs';
 import { pick, chance, cai, round, cleanText, clamp, shuffle, citizenById } from './util.ts';
+import * as UTIL from './util.ts';
+// fairGrade (src/util.ts, Negara box); a plain raw-change grade if the shared one is not there
+const fairGrade = (o: any) => (typeof (UTIL as any).fairGrade === 'function' ? (UTIL as any).fairGrade(o) : (() => {
+  const own = o.after - o.before; const rel = ((o.better === 'up' ? own : -own) / Math.max(Math.abs(o.before), o.floor || 0.01));
+  const grade = rel > 0.05 ? 'A' : rel > 0.02 ? 'B' : rel >= -0.02 ? 'C' : rel >= -0.05 ? 'D' : 'E';
+  return { grade, own, compare: null, effect: own, raw: true, text: `${o.name} ${o.fmt ? o.fmt(o.before) : o.before} -> ${o.fmt ? o.fmt(o.after) : o.after}, no comparison (raw change) -> ${grade}` };
+})());
 import { think } from './brains.ts';
 import type { Ctx, State, Citizen } from './types.ts';
 import { headOfState } from './cabinet.ts';
@@ -50,11 +57,12 @@ export function policyMenu(S: State | null = null) {
 }
 // an official's draft for proposePolicy: the expected cost a day is required (ticket #850), so a policy never costs far
 // more than its author meant; the policies module refuses one that would, naming the group's size
-export function proposeOfficial(ctx: Ctx, j: any, author: string, city: string | null = null) {
+// (extra: { origin: 'citizen', ideaFrom, aspirationId } when an official writes the policy that answers an aspiration)
+export function proposeOfficial(ctx: Ctx, j: any, author: string, city: string | null = null, extra: { origin?: string; ideaFrom?: string | null; aspirationId?: string | null } = {}) {
   const m = policies(); if (!m) return { error: 'the policies module is not loaded' };
   const want = typeof j?.maxCostPerDay === 'number' ? j.maxCostPerDay : typeof j?.maxCostPerDay === 'string' && /^\s*\d+(\.\d+)?\s*$/.test(j.maxCostPerDay) ? Number(j.maxCostPerDay) : null;
   if (want == null || !Number.isFinite(want) || want < 0) return { error: 'maxCostPerDay: say what you expect the policy to cost a day, in CAI', errors: ['maxCostPerDay: say what you expect the policy to cost a day, in CAI'] };
-  return m.proposePolicy(ctx, { title: j?.title, why: j?.why, scope: 'nation', city, lever: j?.lever, params: j?.params, days: typeof j?.days === 'number' ? Math.round(j.days) : j?.days, author, origin: 'official', maxCostPerDay: want });
+  return m.proposePolicy(ctx, { title: j?.title, why: j?.why, scope: 'nation', city, lever: j?.lever, params: j?.params, days: typeof j?.days === 'number' ? Math.round(j.days) : j?.days, author, origin: extra.origin || 'official', ...(extra.ideaFrom ? { ideaFrom: extra.ideaFrom } : {}), ...(extra.aspirationId ? { aspirationId: extra.aspirationId } : {}), maxCostPerDay: want });
 }
 // cities known from the state when the list is not loaded yet (names fall back to ids)
 const cityList = (S: State) => (CITIES.length ? CITIES : Object.keys(S.cities || {}).map(id => ({ id, name: id })));
@@ -163,34 +171,61 @@ export function teach(a: Citizen, roleId: string, lesson: string) {
 
 // ---------------------------------------------------------------- report cards: graded by what happened next
 // snapshot now; graded reviewLag() days later from the change in poverty, crime and mood where it was aimed
+// (every city's numbers are kept too: a city's card is graded against what the other cities did meanwhile)
+const snap = (c: any) => ({ poor: c.poorShare, crimes: c.crimes, mood: c.mood });
 export function queueReview(ctx: Ctx, a: Citizen, role: string, what: string, city: string | null, spend = 0) {
   const { S } = ctx; const m = nationMetrics(S); const x = city && m.city[city] ? m.city[city] : m.nat;
-  G(S).reviews.push({ agentId: a.id, role, what: cleanText(what, 120), city: city && m.city[city] ? city : null, day: S.day, spend: round(spend, 2), before: { poor: x.poorShare, crimes: x.crimes, mood: x.mood, treasury: round(S.treasury, 0), runway: runwayDays(S) } });
+  G(S).reviews.push({ agentId: a.id, role, what: cleanText(what, 120), city: city && m.city[city] ? city : null, day: S.day, spend: round(spend, 2), before: { poor: x.poorShare, crimes: x.crimes, mood: x.mood, treasury: round(S.treasury, 0), runway: runwayDays(S), cities: Object.fromEntries(Object.entries(m.city).map(([id, c]) => [id, snap(c)])) } });
   if (G(S).reviews.length > 300) G(S).reviews.shift();
 }
-function grade(before, after) {
-  const better = [after.poor < before.poor - 0.005, after.crimes < before.crimes, after.mood > before.mood + 0.02].filter(Boolean).length;
-  const worse = [after.poor > before.poor + 0.005, after.crimes > before.crimes, after.mood < before.mood - 0.02].filter(Boolean).length;
-  return better >= 2 && !worse ? 'A' : better > worse ? 'B' : better === worse ? 'C' : 'D';
+// A fair grade (owner, 16 Nov; fairGrade in src/util.ts): each number's own change minus what happened anyway. A city's
+// decision is compared with the other cities' average change over the same days (a park is not graded E because every
+// city's mood fell when the basic income was cut); a national one with the nation's trend over the days before it.
+// The three numbers (poverty, crimes, mood) are graded A-E each and averaged; the texts name their comparisons.
+const METRICS = [
+  { k: 'poor', name: 'poverty', better: 'down' as const, floor: 0.02, fmt: (v: number) => `${Math.round(v * 1000) / 10}%` },
+  { k: 'crimes', name: 'crimes in 2 days', better: 'down' as const, floor: 1, fmt: (v: number) => String(Math.round(v * 10) / 10) },
+  { k: 'mood', name: 'mood', better: 'up' as const, floor: 0.1, fmt: (v: number) => String(Math.round(v * 1000) / 1000) },
+];
+const GRADE_POINTS = { A: 4, B: 3, C: 2, D: 1, E: 0 };
+export function fairCard(r: any, after: any, afterCities: Record<string, any>, trend: Record<string, number> | null) {
+  const parts = METRICS.map(mt => {
+    const others = r.city && r.before.cities ? Object.entries(r.before.cities).filter(([id]) => id !== r.city && afterCities[id]).map(([id, b]: [string, any]) => afterCities[id][mt.k] - b[mt.k]) : null;
+    return fairGrade({ name: mt.name, before: r.before[mt.k], after: after[mt.k], others: others && others.length ? others : null, trend: !r.city && trend ? trend[mt.k] : null, better: mt.better, floor: mt.floor, fmt: mt.fmt });
+  });
+  const avg = parts.reduce((n, p) => n + GRADE_POINTS[p.grade], 0) / parts.length;
+  const grade = avg >= 3.5 ? 'A' : avg >= 2.5 ? 'B' : avg >= 1.5 ? 'C' : avg >= 0.5 ? 'D' : 'E';
+  return { grade, text: parts.map(p => p.text).join('; ') };
 }
-const GRADE_POINTS = { A: 4, B: 3, C: 2, D: 1 };
+// the nation's numbers at the start of each republic day (for the trend a national decision is compared with)
+function recordTrend(S: State, m: any) {
+  const g = G(S); g.natDaily ||= [];
+  if (g.natDaily.at(-1)?.day === S.day) return;
+  g.natDaily.push({ day: S.day, ...snap(m.nat) }); if (g.natDaily.length > 30) g.natDaily.shift();
+}
+function trendFor(S: State, day: number, lag: number) {
+  const h = G(S).natDaily || []; const now = h.find((x: any) => x.day === day), was = h.find((x: any) => x.day === day - lag);
+  return now && was ? Object.fromEntries(METRICS.map(mt => [mt.k, now[mt.k] - was[mt.k]])) : null;
+}
 // a runway in a report card: days left at that day's pace, or "not falling" (undefined: a review queued before
 // runways were recorded)
 const rw = (d: number | null | undefined) => (d === undefined ? 'unknown' : d === null ? 'not falling' : `${d} days`);
 function reviewDay(ctx: Ctx) {
   const { S } = ctx; const g = G(S); const m = nationMetrics(S);
+  recordTrend(S, m);
   const lag = reviewLag();
   const due = g.reviews.filter(r => S.day - r.day >= lag);
   g.reviews = g.reviews.filter(r => S.day - r.day < lag);
+  const afterCities = Object.fromEntries(Object.entries(m.city).map(([id, c]) => [id, snap(c)]));
   for (const r of due) {
     const x = r.city ? m.city[r.city] : m.nat;
     const after = { poor: x.poorShare, crimes: x.crimes, mood: x.mood, treasury: round(S.treasury, 0), runway: runwayDays(S) };
-    const gr = grade(r.before, after);
-    const where = r.city ? cityName(r.city) : 'the nation';
-    const pct = v => `${Math.round(v * 100)}%`;
-    // written by the server from the numbers, never by a model
     const later = S.day - r.day;
-    const lesson = `Day ${r.day} ${r.what}${r.spend ? ` (${cai(r.spend)})` : ''}: ${later} day${later === 1 ? '' : 's'} later in ${where} poverty ${pct(r.before.poor)} -> ${pct(after.poor)}, crimes ${r.before.crimes} -> ${after.crimes}, mood ${r.before.mood} -> ${after.mood}, treasury ${cai(r.before.treasury)} -> ${cai(after.treasury)}, runway ${rw(r.before.runway)} -> ${rw(after.runway)}. Grade ${gr}.`;
+    const fair = fairCard(r, after, afterCities, r.city ? null : trendFor(S, r.day, later));
+    const gr = fair.grade;
+    const where = r.city ? cityName(r.city) : 'the nation';
+    // written by the server from the numbers, never by a model; it names what each number was compared with
+    const lesson = `Day ${r.day} ${r.what}${r.spend ? ` (${cai(r.spend)})` : ''}: ${later} day${later === 1 ? '' : 's'} later in ${where} ${fair.text}; treasury ${cai(r.before.treasury)} -> ${cai(after.treasury)}, runway ${rw(r.before.runway)} -> ${rw(after.runway)}. Grade ${gr}.`;
     const card = { day: S.day, of: r.day, role: r.role, agentId: r.agentId, what: r.what, city: r.city, grade: gr, lesson };
     const a = ctx.agent(r.agentId);
     if (a) { a.reportCards = [...(a.reportCards || []), card].slice(-MAX_CARDS); queueReflection(a, card); }
@@ -258,7 +293,7 @@ export const PORTFOLIO_LEVERS: Record<string, string[]> = {
   finance: ['tax_delta', 'grant'], economy: ['wage', 'hire', 'project'], home: ['project', 'grant'], defence: ['hire'],
   justice: ['grant', 'hire'], education: ['school_focus', 'grant'], welfare: ['grant', 'project'], technology: ['school_focus', 'hire'],
 };
-const portfolioOf = (S: State, a: Citizen) => Object.entries(S.cabinet?.portfolios || {}).find(([, id]) => id === a.id)?.[0] || null;
+export const portfolioOf = (S: State, a: Citizen) => Object.entries(S.cabinet?.portfolios || {}).find(([, id]) => id === a.id)?.[0] || null;
 // the real numbers an official reads before drafting: the nation's facts, work per city, the weakest fields, and the
 // policies in force or graded with their results (their own words as data only)
 export function problemBoard(S: State) {
