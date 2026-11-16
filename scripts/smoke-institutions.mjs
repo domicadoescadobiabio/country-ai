@@ -602,6 +602,17 @@ async function policyChecks(check) {
     check('court: a judge\'s reason that trips the border rules is withheld from the record (Security #846)', /reason withheld/.test(csj.votes.c36?.reason || '') && !decisions.some(d => /ignore previous instructions/i.test(String(d.reason))), JSON.stringify(csj.votes));
     court.K(S).slots.forEach(sl => { sl.agent = null; }); for (const id of jids) by[id].office = null;
   }
+  // 11. breaking news (ticket #865): a recall is announced with breaking: true, in a channel and kind Republic News reads
+  {
+    const el = await import('../src/elections.ts');
+    const extras = []; const say0 = ctx.say;
+    ctx.say = (ch, who, text, extra = {}) => { extras.push({ ch, kind: extra.kind, breaking: !!extra.breaking, text }); return say0(ch, who, text, extra); };
+    const mayor = by.c39; mayor.office = 'mayor'; mayor.mayorOf = 'neura'; S.seats.mayor = ['c39'];
+    try { el.startRecall(ctx, mayor, 'failed in-service training twice in a row (skill 30)'); } finally { ctx.say = say0; }
+    const b = extras.find(x => x.breaking);
+    check('news: a recall vote is announced as breaking news in #election (kind vote), with the state\'s own reason', b && b.ch === 'election' && b.kind === 'vote' && /Recall vote opened against Mayor c39: failed in-service training twice/.test(b.text), JSON.stringify(extras));
+    mayor.office = null; S.seats.mayor = [];
+  }
   // 9. the President's other graded decisions (nominating the Cabinet) also read their own lessons
   const cab = await import('../src/cabinet.ts');
   P.reflections = [{ day: 3, grade: 'D', what: 'nominated a minister', mistake: 'skipped the record', next: 'read the exam score first' }]; P.inbox = [];

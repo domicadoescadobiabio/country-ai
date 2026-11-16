@@ -165,7 +165,10 @@ async function applyRuling(ctx: Ctx, cs: CourtCase) {
   const { S } = ctx;
   if (cs.kind === 'criminal') {
     const { convict, acquit } = await import('./police.ts');
-    if (cs.ruling === 'guilty') { const r = convict(ctx, cs.ref.incident, cs.id); if (r) ctx.say('court', 'state', `Sentence in case #${cs.id}: ${r.parts.join('; ')}.`, { kind: 'law' }); }
+    // an official's conviction is breaking news (ticket #865): an office held when charged (police.ts keeps the list) or now
+    const inc = (S.police?.incidents || []).find(i => i.id === cs.ref.incident);
+    const official = (inc?.officials || []).length > 0 || (cs.ref.agents || []).some(id => ctx.agent(id)?.office);
+    if (cs.ruling === 'guilty') { const r = convict(ctx, cs.ref.incident, cs.id); if (r) ctx.say('court', 'state', `Sentence in case #${cs.id}: ${r.parts.join('; ')}.`, { kind: 'law', ...(official ? { breaking: true } : {}) }); }
     else { acquit(ctx, cs.ref.incident); ctx.say('court', 'state', `Case #${cs.id}: not guilty, the defendants are released.`, { kind: 'law' }); }
   }
   if (cs.kind === 'appointment' && cs.ruling === 'annul') {
@@ -313,7 +316,7 @@ async function impeachmentStep(ctx: Ctx, force: string | null = null) {
   const yes = Object.values(imp.votes).filter(v => v === 'yes').length;
   if (yes >= IMPEACH()) {
     imp.stage = 'court';
-    ctx.say('parliament', 'state', `The Council impeaches President ${g.p.name} (${yes} of ${ROLES.council.seats}). The Court rules on the grounds within 3 days.`, { kind: 'vote' });
+    ctx.say('parliament', 'state', `The Council impeaches President ${g.p.name} (${yes} of ${ROLES.council.seats}). The Court rules on the grounds within 3 days.`, { kind: 'vote', breaking: true });
     file(ctx, { kind: 'impeachment', subject: `president:${g.p.id}:${imp.openedDay}`, filedBy: 'council', claim: `Impeachment of President ${g.p.name}: ${imp.grounds}.`, evidence: [`failed constitutional checks in the last 10 days: ${g.failed}`, `last report card: ${g.grade || 'none'}`], objective: g.real ? 'confirm' : 'reject', ref: { agent: g.p.id } });
   } else {
     ctx.say('parliament', 'state', `The impeachment motion fails (${yes} of ${ROLES.council.seats}, needs ${IMPEACH()}).`, { kind: 'vote' });

@@ -156,6 +156,8 @@ async function arrest(ctx: Ctx, officer: Citizen, inc: Incident) {
   const days = sentenceDays(inc);
   const finePct = S.policy.finePct ?? 0.5;
   const parts = [];
+  // the suspects who hold an office when they are arrested (breaking news, ticket #865; the Court reads it too)
+  inc.officials = inc.perps.filter(id => !!ctx.agent(id)?.office);
   for (const id of inc.perps) {
     const a = ctx.agent(id); if (!a) continue;
     a.status = 'detained'; a.detainedDay = S.day;
@@ -180,7 +182,8 @@ async function arrest(ctx: Ctx, officer: Citizen, inc: Incident) {
     outcome: parts.join('; '),
   });
   const statement = await report(ctx, officer, facts);
-  ctx.say('police', officer.id, `Arrest in case #${inc.id}: ${facts}${statement ? `\n"${statement}"` : ''}`, { kind: 'arrest', caseId: inc.id });
+  // an official's arrest is breaking news (ticket #865); the officials are kept on the incident for the conviction
+  ctx.say('police', officer.id, `Arrest in case #${inc.id}: ${facts}${statement ? `\n"${statement}"` : ''}`, { kind: 'arrest', caseId: inc.id, ...(inc.officials?.length ? { breaking: true } : {}) });
   ctx.log('police', `${officer.name} solved case #${inc.id} (${inc.type})`);
   ctx.record?.('arrest', officer.id, { case: inc.id, type: inc.type, perps: inc.perps, amount: inc.amount, days, evidence: inc.evidence });
 }

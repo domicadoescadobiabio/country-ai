@@ -96,6 +96,8 @@ function seat(ctx: Ctx, a: Citizen, office: string, how: string, extra: Record<s
   Object.assign(a, extra);
   const title = office === 'minister' ? PORTFOLIO_TITLES[a.portfolio] : ROLES[office].title;
   ctx.say(ROLES[office].channel, a.id, `Sworn in as ${title} (${how}). Oath: "${ROLES[office].oath}"`, { kind: 'oath' });
+  // breaking news (ticket #865): Republic News reads #parliament oaths, not the palace's, so the state says it there too
+  if (office === 'vice_president' || office === 'minister') ctx.say('parliament', 'state', `${a.name} takes office as ${title} (${how}).`, { kind: 'oath', breaking: true });
   ctx.record('appointed', 'state', { office, agent: a.id, portfolio: a.portfolio || null, how, termEnds: a.termEnds ?? null });
 }
 
@@ -347,7 +349,7 @@ function speakerStep(ctx: Ctx) {
   }
   const win = Object.keys(tally).sort((x, y) => tally[y] - tally[x])[0]; if (!win) return;
   c.speaker = win; const a = ctx.agent(win);
-  ctx.say('parliament', win, `Elected Speaker of the Council with ${tally[win]} of ${council.length} votes.`, { kind: 'oath' });
+  ctx.say('parliament', win, `Elected Speaker of the Council with ${tally[win]} of ${council.length} votes.`, { kind: 'oath', breaking: true });
   ctx.decide({ agentId: 'state', role: 'council', type: 'election', engine: 'offline', title: 'Speaker of the Council', inputs: [['Councillors voting', String(council.length)], ['Method', 'plurality of the councillors, each vote on the record']], options: Object.keys(tally).map(id => ctx.agent(id)?.name), chosen: a.name, reason: `Most votes (${tally[win]}) from the councillors, each voting on the record.`, checks: [['A sitting councillor', true]], outcome: `${a.name} is Speaker` });
   ctx.record('speaker', 'council', { agent: win, votes: tally[win], of: council.length });
 }

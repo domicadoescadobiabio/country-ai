@@ -188,6 +188,8 @@ function appointHead(ctx: Ctx, f: any, id: string, how: string, reason: string) 
   a.sworn = { day: S.day, roleId: f.chief }; a.lastDrillDay = S.day; a.drillFails = 0;
   cmd.procs[f.chief] = null; cmd.acting[f.chief] = null;
   ctx.say(f.channel, id, `Appointed ${role.title} until day ${a.termEnds}${how === 'silence' ? ' (President silent past the deadline)' : ''}. Oath: "${role.oath}"`, { kind: 'oath' });
+  // breaking news (ticket #865): Republic News reads #parliament oaths (not #police oaths or #border)
+  ctx.say('parliament', 'state', `${a.name} takes office as ${role.title} until day ${a.termEnds}.`, { kind: 'oath', breaking: true });
   ctx.log('office', `${a.name} appointed ${role.title} (${how})`);
   ctx.record('appointed', how === 'silence' ? 'state' : S.seats.president?.[0] || 'state', { office: f.chief, agent: id, how, termEnds: a.termEnds, reason });
 }

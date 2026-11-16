@@ -522,7 +522,10 @@ async function certify(ctx: Ctx, e: Election) {
   e.voted = Object.keys(e.ballots || {}).length; e.ballots = {}; e.electorateSize = e.electorate?.length ?? 0; e.electorate = null;
   if (e.kind === 'recall' || e.kind === 'impeachment') {
     const t = ctx.agent(e.target);
-    if (e.result.winners[0] === 'yes' && t?.office === e.office) { t.recalledCount = (t.recalledCount || 0) + 1; vacate(ctx, t.id, e.kind === 'impeachment' ? 'removed by impeachment' : 'recalled by the voters'); }
+    if (e.result.winners[0] === 'yes' && t?.office === e.office) {
+      t.recalledCount = (t.recalledCount || 0) + 1; vacate(ctx, t.id, e.kind === 'impeachment' ? 'removed by impeachment' : 'recalled by the voters');
+      ctx.say('election', 'state', `${t.name} is removed as ${ROLES[e.office].title}: ${e.kind === 'impeachment' ? 'the people confirmed the impeachment' : 'recalled by the voters'}.`, { kind: 'term', breaking: true });
+    }
     if (e.kind === 'impeachment') { const { K } = await import('./court.ts'); K(S).impeachment = null; }
     return;
   }
@@ -547,6 +550,8 @@ async function certify(ctx: Ctx, e: Election) {
     a.lastDrillDay = S.day; a.drillFails = 0; (a.skill ||= {})[e.office] ??= 0.6;
     if (e.city) { S.cities[e.city].mayor = a.id; a.mayorOf = e.city; }
     ctx.say(ROLES[e.office].channel, a.id, `Sworn in as ${titleOf(e)} until day ${a.termEnds} by the vote of the people. Oath: "${ROLES[e.office].oath}"`, { kind: 'oath' });
+    // breaking news (ticket #865): a President taking office, said where Republic News reads oaths (#parliament)
+    if (e.office === 'president') ctx.say('parliament', 'state', `${a.name} takes office as President until day ${a.termEnds}, elected by the people.`, { kind: 'oath', breaking: true });
     ctx.record('sworn', a.id, { office: e.office, city: e.city, election: e.id, termEnds: a.termEnds, mandate: 'elected' });
   }
   // staggering: when the whole Council is elected at once, the last two elected serve a half term
@@ -590,6 +595,8 @@ export function startRecall(ctx: Ctx, a: Citizen, reason: string) {
   if (running(S).some(e => e.kind === 'recall' && e.target === a.id)) return;
   const e = open(ctx, { office: a.office, seats: 1, city: a.mayorOf && a.office === 'mayor' ? a.mayorOf : null, kind: 'recall', target: a.id, stage: 'voting' });
   e.reason = reason;
+  // breaking news (ticket #865): the reason is the state's own text (src/training.ts)
+  ctx.say('election', 'state', `Recall vote opened against ${ROLES[a.office]?.title || a.office} ${a.name}: ${cleanText(reason, 160)}.`, { kind: 'vote', breaking: true });
 }
 
 async function advance(ctx: Ctx, e: Election) {
