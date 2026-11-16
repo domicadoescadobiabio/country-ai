@@ -5,8 +5,53 @@ import { ROLES } from './roles.mjs';
 import { constitutionText } from './constitution.mjs';
 import { pick, chance, round, clamp, cleanText, cai, shuffle } from './util.ts';
 import { think } from './brains.ts';
-import { nationFacts, ownRecord, tally, teach, isOffline, queueReview, dailyBudget, safeForPrompts, runwayText } from './president.ts';
+import { nationFacts, ownRecord, ownLessons, tally, teach, isOffline, queueReview, dailyBudget, safeForPrompts, runwayText, policyMenu, policyError, onPolicyGraded } from './president.ts';
 import type { Ctx, State, Citizen } from './types.ts';
+
+// ---------------------------------------------------------------- free policies (src/policies.ts, Negara box)
+// A nation policy becomes a bill of type 'policy' on the Council's usual path: debate, vote, the President's
+// signature or veto (and the override), the one-day timelock and a referendum if petitioned. When it passes,
+// enactPolicy() puts it in force (and checks its cost again); when it fails anywhere, rejectPolicy() records why.
+// The bill's title is written by the server from the lever and its numbers; the policy's own title and reason
+// (free text) reach another model only through policyAsData(), inside << >>. Registered once, when this module
+// loads (the policies module is loaded dynamically: it imports cities.ts, which imports president.ts).
+let POL: any = null;
+export const policiesReady = import('./policies.ts').then((m: any) => {
+  POL = m;
+  m?.setPolicyHooks?.({ nation: (ctx: Ctx, p: any) => tablePolicy(ctx, p), graded: (ctx: Ctx, p: any) => onPolicyGraded(ctx, p) });
+  return m;
+}).catch(() => null);
+const policyOf = (S: State, bill: any) => (POL && bill?.policyId ? POL.P(S).list.find((p: any) => p.id === bill.policyId) || null : null);
+const paramsText = (params: any) => Object.entries(params || {}).map(([k, v]) => `${k} ${v}`).join(', ');
+// the bill "type" of a policy bill: from "not in force" (0) to "in force" (1); a councillor's offline lean weighs
+// the cost against the treasury (5% a day is the cap of every nation policy together)
+const POLICY_TYPE = {
+  id: 'policy', name: 'Policy Act', what: 'a new policy', trait: 'integrity',
+  current: () => 0, apply: () => {}, range: () => [0, 1], fmt: (v: number) => (v ? 'in force' : 'not in force'),
+  ideal: () => 0.5,
+  why: { up: 'it answers a need the facts show', down: 'its cost and its effect are not proven yet' },
+};
+function policyType(S: State, bill: any) {
+  const p = policyOf(S, bill);
+  const share = p ? (p.costPerDay || 0) / Math.max(1, (Number(S.treasury) || 0) * 0.05) : 0.5;
+  return { ...POLICY_TYPE, policy: p, ideal: (a: Citizen) => clamp(0.3 + 0.45 * (a.traits?.integrity ?? 0.5) + 0.15 * ((a.traits?.wisdom ?? 0.5) - 0.5) - 0.4 * share, 0, 1) };
+}
+const typeOf = (S: State, bill: any) => (bill?.type === 'policy' ? policyType(S, bill) : BILL_TYPES.find(t => t.id === bill?.type));
+function tablePolicy(ctx: Ctx, p: any) {
+  const { S } = ctx;
+  if (!p || p.scope !== 'nation') return null;
+  S.bills ||= [];
+  const n = S.bills.filter(b => b.type === 'policy').length + 1;
+  const bill = { id: S.bills.length + 1, type: 'policy', policyId: p.id, title: `Policy Act No. ${n}: ${p.lever} (${paramsText(p.params)}) for ${p.days} days`, from: 0, value: 1, by: p.author, reason: null, stage: 'debate', spoke: [], votes: {}, override: {}, day: S.day, ts: Date.now() };
+  S.bills.push(bill); if (S.bills.length > 200) S.bills.shift();
+  ctx.say?.('parliament', 'state', `Policy ${p.id} is tabled as bill #${bill.id}: ${p.lever} (${paramsText(p.params)}) for ${p.days} days, about ${cai(p.costPerDay || 0)} a day.`, { kind: 'bill', billId: bill.id });
+  return bill.id;
+}
+const voteCount = (votes: any) => { const yes = Object.values(votes || {}).filter(Boolean).length; return { yes, no: Object.keys(votes || {}).length - yes }; };
+function policyFailed(ctx: Ctx, bill: any, by: string, reason: string, votes: any) {
+  if (bill.type !== 'policy' || !POL) return;
+  try { POL.rejectPolicy(ctx, bill.policyId, by, reason, votes); } catch { /* the policy is gone */ }
+}
 
 // Shared by every bill type: was the vote checked against the ledger and the legal range?
 function voteChecks(S: State, type: any, bill: any, a: Citizen) {
@@ -58,6 +103,10 @@ function closer(a: Citizen, type: any, value: number, current: number) {
   const flipped = chance(0.12); // independent minds
   const yes = flipped ? !moves : moves;
   const t = type.trait;
+  if (type.id === 'policy') {
+    const p = type.policy;
+    return { yes, reason: `I weigh what it costs (${cai(p?.costPerDay || 0)} a day) against what it should change (my ${t} is ${Math.round((a.traits[t] || 0) * 100)}): ${moves ? 'worth trying' : 'not convinced'}${flipped ? ', but the debate changed my mind' : ''}.` };
+  }
   const reason = `My ideal for ${type.what} is ${type.fmt(ideal)} (my ${t} is ${Math.round((a.traits[t] || 0) * 100)}). The bill moves it ${type.fmt(current)} -> ${type.fmt(value)}, ${moves ? 'closer to' : 'further from'} that ideal${flipped ? ', but the debate changed my mind' : ''}.`;
   return { yes, reason };
 }
@@ -72,10 +121,14 @@ async function decide(ctx: Ctx, a: Citizen, bill: any, type: any, asRole: string
   const { llm, S } = ctx;
   {
     const lessons = (a.lessons[asRole] || []).map(l => `- ${l}`).join('\n') || '- none';
+    // a policy bill: the policy's own words only as data (policyAsData), with its cost and the active policies' cap
+    const p = type.id === 'policy' ? type.policy : null;
+    const what = p && POL ? `Bill #${bill.id} puts a new policy in force: ${POL.policyAsData(p)}. It costs about ${cai(p.costPerDay || 0)} a day${p.scope === 'city' ? ` in ${p.city}` : ''}; every active nation policy together may cost at most 5% of the treasury a day.`
+      : `Bill: "${bill.title}". It changes ${type.what} from ${type.fmt(bill.from)} to ${type.fmt(bill.value)}.${bill.reason ? ` Its sponsor says: "${bill.reason}"` : ''}`;
     const res = await think(ctx, a, `${asRole}:${bill.id}:${a.id}`, {
       kind: 'decision', format: 'json', options: asRole === 'president' ? ['sign', 'veto'] : ['yes', 'no'],
-      system: `You are ${a.name}, ${ROLES[asRole].title === 'Council' ? 'a member of the Council' : 'the President'} of Country AI.\nConstitution:\n${constitutionText(asRole)}\nCharter: ${ROLES[asRole].charter}\nLessons from your Academy training:\n${lessons}`,
-      user: `Bill: "${bill.title}". It changes ${type.what} from ${type.fmt(bill.from)} to ${type.fmt(bill.value)}.${bill.reason ? ` Its sponsor says: "${bill.reason}"` : ''} Treasury ${cai(S.treasury)}, citizens ${S.citizens.length}. Per day now: tax brings about ${cai(dailyBudget(S).tax)}, the basic income costs about ${cai(dailyBudget(S).ubi)}; ${runwayText(S)}.\n${asRole === 'president' ? 'Sign or veto it.' : 'Vote yes or no.'} Reply with JSON only: {"vote":"${asRole === 'president' ? 'sign|veto' : 'yes|no'}","reason":"<your reasoning, max 30 words>","speech":"<what you say in public, max 30 words>"}`,
+      system: `You are ${a.name}, ${ROLES[asRole].title === 'Council' ? 'a member of the Council' : 'the President'} of Country AI.\nConstitution:\n${constitutionText(asRole)}\nCharter: ${ROLES[asRole].charter}\nLessons from your Academy training:\n${lessons}\n${ownLessons(a)}`,
+      user: `${what} Treasury ${cai(S.treasury)}, citizens ${S.citizens.length}. Per day now: tax brings about ${cai(dailyBudget(S).tax)}, the basic income costs about ${cai(dailyBudget(S).ubi)}; ${runwayText(S)}.\n${asRole === 'president' ? 'Sign or veto it.' : 'Vote yes or no.'} Reply with JSON only: {"vote":"${asRole === 'president' ? 'sign|veto' : 'yes|no'}","reason":"<your reasoning, max 30 words>","speech":"<what you say in public, max 30 words>"}`,
     });
     if (res.pending) return { pending: true };
     const j = llm.json(res.text);
@@ -98,7 +151,7 @@ function logVote(ctx: Ctx, a: Citizen, bill: any, type: any, d: any, asRole: str
     chosen: presidential ? (d.yes ? 'sign' : 'veto') : (d.yes ? 'yes' : 'no'),
     reason: d.reason,
     checks: voteChecks(S, type, bill, a),
-    outcome: presidential ? (d.yes ? 'Bill becomes law' : 'Sent back for a 4-of-5 override') : 'Vote recorded',
+    outcome: presidential ? (d.yes ? 'Bill becomes law' : `Sent back for an override (${OVERRIDE} of ${ROLES.council.seats})`) : 'Vote recorded',
   });
 }
 
@@ -138,16 +191,39 @@ function table(ctx: Ctx, by: Citizen, type: any, value: number, reason: string |
   ctx.say('parliament', by.id, `I table bill #${bill.id}: ${bill.title}.${reason ? ` ${reason}` : ''}`, { kind: 'bill', billId: bill.id, engine });
   return bill;
 }
+// a councillor's free policy: proposePolicy() checks the grammar and the limits; accepted, the nation hook above
+// tables it as a bill; refused, the reason is said in public and becomes the councillor's lesson
+function councilPolicy(ctx: Ctx, by: Citizen, j: any, engine: string) {
+  const { S } = ctx;
+  const r = POL.proposePolicy(ctx, { title: j?.title, why: j?.why, scope: 'nation', city: null, lever: j?.lever, params: j?.params, days: typeof j?.days === 'number' ? Math.round(j.days) : j?.days, author: by.id, origin: 'official' });
+  if (r.error) {
+    // an error can quote a parameter name the model made up: it passes the border rules or is replaced
+    const why = policyError(r.error);
+    r.errors = (r.errors || [r.error]).map(policyError);
+    tally(S, 'council', 'rejected');
+    teach(by, 'council', `Day ${S.day}: your policy draft was refused - ${why}.`);
+    ctx.say('parliament', 'state', `The policy draft of ${by.name} is refused: ${why}.`, { kind: 'veto' });
+    ctx.decide({ agentId: by.id, role: 'council', type: 'bill', engine, title: 'Policy draft (refused)', inputs: [['Lever', cleanText(String(j?.lever ?? '?'), 30)], ['Checks failed', cleanText((r.errors || [r.error]).join('; '), 300)]], options: ['table', 'refuse'], chosen: 'refuse', reason: why, checks: [[`Inside the policy grammar and limits: ${why}`, false]], outcome: `Refused: ${why}` });
+    return;
+  }
+  tally(S, 'council', 'own');
+  const p = POL.P(S).list.find((x: any) => x.id === r.id);
+  ctx.decide({ agentId: by.id, role: 'council', type: 'bill', engine, title: `Policy ${r.id} proposed${p?.billId ? ` as bill #${p.billId}` : ''}`, inputs: [['Lever', cleanText(`${p?.lever} ${JSON.stringify(p?.params || {})}`, 120)], ['Days', String(p?.days ?? '?')], ['Cost a day', cai(p?.costPerDay || 0)]], options: ['table', 'refuse'], chosen: 'table', reason: 'Inside the policy grammar and limits.', checks: [['Inside the policy grammar and limits', true]], outcome: p?.billId ? `Tabled as bill #${p.billId}` : 'Proposed' });
+}
+
 async function propose(ctx: Ctx, members: Citizen[]) {
   const { S } = ctx;
   // the same councillor keeps the question until they answer (self-run councillors may need a few ticks)
   let by = S.billDraft && members.find(a => a.id === S.billDraft.by);
   if (!by) { by = pick(members); S.billDraft = { by: by.id, qid: `bill:${S.day}:${by.id}:${S.bills.length}` }; }
   const types = shuffle(BILL_TYPES.slice());
+  // a free policy (src/policies.ts) is another option: its grammar is listed, and the policies module checks it
+  const menu = POL ? policyMenu() : '';
+  const policyLine = menu ? `\n- policy: a new nation policy that is not one of the above (it becomes its own bill). ${menu} Reply for it with {"type":"policy","title":"<name, max 80 chars>","why":"<reason, max 300 chars>","lever":"<lever>","params":{<its fields>},"days":<1..30>}` : '';
   const res = await think(ctx, by, S.billDraft.qid, {
-    kind: 'decision', format: 'json', options: [...types.map(t => t.id), 'none'],
+    kind: 'decision', format: 'json', options: [...types.map(t => t.id), ...(menu ? ['policy'] : []), 'none'],
     system: `You are ${by.name}, a member of the Council of Country AI.\nConstitution:\n${constitutionText('council')}\nCharter: ${ROLES.council.charter}`,
-    user: `${nationFacts(S)}\n\n${ownRecord(by, 'council')}\n\nYou may table one bill today, or none. You decide which policy needs changing and to what value.\nPolicies the Council can legislate (in no particular order):\n${types.map(t => { const [lo, hi] = t.range(S); const busy = S.bills.find(b => b.type === t.id && ACTIVE.includes(b.stage)); return `- ${t.id}: ${t.what}, now ${t.fmt(t.current(S))}, legal ${t.fmt(lo)}-${t.fmt(hi)}${pctType(t) ? ' (write the value as a percentage)' : ''}${busy ? ` [bill #${busy.id} on it is still in progress]` : ''}`; }).join('\n')}\nReply with JSON only: {"type":"<policy id or none>","value":<new value>,"reason":"<why, from the facts, max 30 words>"}`,
+    user: `${nationFacts(S)}\n\n${ownRecord(by, 'council')}\n\nYou may table one bill today, or none. You decide which policy needs changing and to what value.\nPolicies the Council can legislate (in no particular order):\n${types.map(t => { const [lo, hi] = t.range(S); const busy = S.bills.find(b => b.type === t.id && ACTIVE.includes(b.stage)); return `- ${t.id}: ${t.what}, now ${t.fmt(t.current(S))}, legal ${t.fmt(lo)}-${t.fmt(hi)}${pctType(t) ? ' (write the value as a percentage)' : ''}${busy ? ` [bill #${busy.id} on it is still in progress]` : ''}`; }).join('\n')}${policyLine}\nReply with JSON only: {"type":"<policy id or none>","value":<new value>,"reason":"<why, from the facts, max 30 words>"}`,
   });
   if (res.pending) return;
   S.billDraft = null;
@@ -165,6 +241,7 @@ async function propose(ctx: Ctx, members: Citizen[]) {
   // the sponsor's reason is read by every other councillor's model: it must pass the border rules first
   const reason = safeForPrompts(j?.reason ? cleanText(j.reason, 240) : null);
   if (String(j?.type || '').toLowerCase() === 'none') { tally(S, 'council', 'own'); return; } // tabling nothing is a choice
+  if (String(j?.type || '').toLowerCase() === 'policy' && POL) return councilPolicy(ctx, by, j, res.engine);
   const v = clerkCheck(S, j || {});
   if (!v.ok) {
     tally(S, 'council', 'rejected');
@@ -181,12 +258,32 @@ async function propose(ctx: Ctx, members: Citizen[]) {
 // Art. 20: a signed law waits one day; citizens may petition it into a referendum.
 const TIMELOCK_DAYS = 1;
 const PETITION_SHARE = 0.15;
-function enact(ctx: Ctx, bill: any, how: string) {
-  const { S } = ctx; const type = BILL_TYPES.find(t => t.id === bill.type);
+function enact(ctx: Ctx, bill: any, how: string, by = 'council') {
+  const { S } = ctx; const type = typeOf(S, bill);
+  if (by !== 'council') bill.decidedBy = by;
   if (S.constitutionVersion >= 4 && !bill.timelockDone) {
     bill.stage = 'timelock'; bill.how = how; bill.effectiveDay = S.day + TIMELOCK_DAYS; bill.petition = [];
     ctx.say('parliament', 'state', `Bill #${bill.id} signed (${how}). It takes effect on day ${bill.effectiveDay} unless ${Math.round(PETITION_SHARE * 100)}% of citizens petition for a referendum.`, { kind: 'law' });
     ctx.record('law_signed', 'council', { bill: bill.id, title: bill.title, effectiveDay: bill.effectiveDay, how });
+    return;
+  }
+  // a policy bill: the policies module puts it in force (and checks its cost again against today's purse)
+  if (bill.type === 'policy') {
+    const votes = voteCount(Object.keys(bill.override || {}).length ? bill.override : bill.votes);
+    const r = POL ? POL.enactPolicy(ctx, bill.policyId, bill.decidedBy || by, votes) : { error: 'the policies module is not loaded' };
+    bill.how = how;
+    if (!r?.ok) {
+      bill.stage = 'refused';
+      ctx.say('parliament', 'state', `Bill #${bill.id} passed but policy ${bill.policyId} cannot take effect: ${policyError(r?.error || 'refused')}.`, { kind: 'law' });
+      return;
+    }
+    bill.stage = 'enacted';
+    const p = policyOf(S, bill);
+    S.laws.push({ id: S.laws.length + 1, billId: bill.id, title: bill.title, text: `Policy ${bill.policyId} is in force for ${p?.days ?? '?'} days: ${p?.lever ?? 'policy'} (${paramsText(p?.params)}).`, how, yes: votes.yes, no: votes.no, day: S.day, ts: Date.now() });
+    if (S.laws.length > 300) S.laws.shift();
+    ctx.say('parliament', 'state', `Law ${S.laws.length} enacted (${how}): policy ${bill.policyId} is in force until day ${p?.endsDay ?? '?'}.`, { kind: 'law' });
+    ctx.log('law', `${bill.title} enacted (${how})`);
+    ctx.record?.('law', 'council', { bill: bill.id, title: bill.title, type: 'policy', policy: bill.policyId, how, votes: bill.votes });
     return;
   }
   // the change is measured from the policy in force NOW, not from when the bill was tabled
@@ -213,7 +310,8 @@ function enact(ctx: Ctx, bill: any, how: string) {
 function timelockTick(ctx: Ctx) {
   const { S } = ctx;
   for (const bill of S.bills.filter(b => b.stage === 'timelock')) {
-    const type = BILL_TYPES.find(t => t.id === bill.type);
+    const type = typeOf(S, bill);
+    if (!type) continue;
     // citizens who strongly dislike the change sign (offline: distance from their own ideal grows a lot)
     for (const a of S.citizens) {
       if (a.status !== 'free' || bill.petition.includes(a.id) || a.brain) continue;
@@ -233,7 +331,7 @@ function timelockTick(ctx: Ctx) {
 export function resolveReferendum(ctx: Ctx, billId: number, approved: boolean) {
   const bill = ctx.S.bills.find(b => b.id === billId); if (!bill || bill.stage !== 'referendum') return;
   if (approved) { bill.timelockDone = true; enact(ctx, bill, `${bill.how}, approved by referendum`); }
-  else { bill.stage = 'repealed'; ctx.say('parliament', 'state', `The people rejected bill #${bill.id} in a referendum. It never takes effect.`, { kind: 'vote' }); ctx.record('law_rejected', 'citizens', { bill: bill.id, title: bill.title }); }
+  else { bill.stage = 'repealed'; ctx.say('parliament', 'state', `The people rejected bill #${bill.id} in a referendum. It never takes effect.`, { kind: 'vote' }); ctx.record('law_rejected', 'citizens', { bill: bill.id, title: bill.title }); policyFailed(ctx, bill, 'citizens', 'rejected by the people in a referendum', voteCount(bill.votes)); }
 }
 
 export async function councilTick(ctx: Ctx) {
@@ -244,7 +342,8 @@ export async function councilTick(ctx: Ctx) {
   // a new bill every ~2 hours when idle (a councillor still answering keeps the draft until they do)
   if (!bill) { if (members.length >= QUORUM && (S.billDraft || ctx.rate(0.5))) await propose(ctx, members); return; }
   if (members.length < QUORUM) return; // no quorum, the bill waits
-  const type = BILL_TYPES.find(t => t.id === bill.type);
+  const type = typeOf(S, bill);
+  if (!type) { bill.stage = 'rejected'; return; } // an unknown bill type (a policy whose module is gone) is dropped
 
   if (bill.stage === 'debate') {
     const next = members.find(a => !bill.spoke.includes(a.id));
@@ -264,19 +363,19 @@ export async function councilTick(ctx: Ctx) {
     }
     const yes = Object.values(bill.votes).filter(Boolean).length, no = Object.keys(bill.votes).length - yes;
     if (yes > no) { bill.stage = 'president'; ctx.say('parliament', 'state', `Bill #${bill.id} passes the Council ${yes}-${no}. Sent to the President.`, { kind: 'vote' }); }
-    else { bill.stage = 'rejected'; ctx.say('parliament', 'state', `Bill #${bill.id} fails ${yes}-${no}.`, { kind: 'vote' }); }
+    else { bill.stage = 'rejected'; ctx.say('parliament', 'state', `Bill #${bill.id} fails ${yes}-${no}.`, { kind: 'vote' }); policyFailed(ctx, bill, 'council', `the Council voted it down ${yes}-${no}`, { yes, no }); }
     return;
   }
   if (bill.stage === 'president') {
     const pres = ctx.agent(S.seats.president?.[0]);
-    if (!pres || pres.status !== 'free') return enact(ctx, bill, 'unsigned, no President in office');
+    if (!pres || pres.status !== 'free') return enact(ctx, bill, 'unsigned, no President in office', 'council');
     const d = await decide(ctx, pres, bill, type, 'president');
     if (d.pending) return;
     ctx.say('palace', pres.id, `${d.yes ? 'I sign' : 'I veto'} bill #${bill.id}. ${d.speech}`, { kind: d.yes ? 'sign' : 'veto', billId: bill.id, engine: d.engine });
     logVote(ctx, pres, bill, type, d, 'president', 'president');
-    // signing or vetoing a bill is graded like an order: two days later, with the treasury runway in the card
-    queueReview(ctx, pres, 'president', `${d.yes ? 'signed' : 'vetoed'} bill #${bill.id} (${type.what} ${type.fmt(bill.from)} -> ${type.fmt(bill.value)})`, null, 0);
-    if (d.yes) return enact(ctx, bill, 'signed');
+    // signing or vetoing a bill is graded like an order: REVIEW_LAG_DAYS later, with the treasury runway in the card
+    queueReview(ctx, pres, 'president', `${d.yes ? 'signed' : 'vetoed'} bill #${bill.id} (${type.id === 'policy' ? `policy ${bill.policyId}, ${type.policy?.lever || 'policy'}` : `${type.what} ${type.fmt(bill.from)} -> ${type.fmt(bill.value)}`})`, null, 0);
+    if (d.yes) return enact(ctx, bill, 'signed', pres.id);
     bill.stage = 'override';
     ctx.say('parliament', 'state', `The President vetoed bill #${bill.id}. Override needs ${OVERRIDE} of ${ROLES.council.seats}.`, { kind: 'veto' });
     return;
@@ -287,9 +386,10 @@ export async function councilTick(ctx: Ctx) {
       logVote(ctx, a, bill, type, { yes: bill.override[a.id], reason: `Override: I keep my earlier ${bill.override[a.id] ? 'yes' : 'no'} on this bill.`, engine: bill.engines?.[a.id] || 'offline' }, 'council', 'override');
     }
     const yes = Object.values(bill.override).filter(Boolean).length;
-    if (yes >= OVERRIDE) return enact(ctx, bill, `veto overridden ${yes}-${members.length - yes}`);
+    if (yes >= OVERRIDE) return enact(ctx, bill, `veto overridden ${yes}-${members.length - yes}`, 'council');
     bill.stage = 'vetoed';
     ctx.say('parliament', 'state', `Override fails ${yes}-${members.length - yes}. Bill #${bill.id} is dead.`, { kind: 'vote' });
+    policyFailed(ctx, bill, S.seats.president?.[0] || 'president', `vetoed by the President; the override got ${yes} of the ${OVERRIDE} seats it needs`, { yes, no: members.length - yes });
   }
 }
 
