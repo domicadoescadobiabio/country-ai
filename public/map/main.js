@@ -13,7 +13,7 @@ import { Scenes, SCENE_COLOR } from './scenes.js';
 import { TYPES, CATS, ACT_COLOR, REP, MOODS, BOND_COLOR } from './catalog.js';
 import { setClock, fmtTime, hourOf, clockDetail } from '../clock.js'; // every time on the map is the republic's (ET)
 import { jobLine, workingLine, actLabel } from '../jobs.js?v=3'; // everyone's job (citizen.job), act labels
-import { newsTicker, TEST_NEWS } from '../news.js?v=1'; // Republic News, running in the people HUD
+import { newsTicker, TEST_NEWS, testBreaking } from '../news.js?v=3'; // Republic News, running in the people HUD; breaking news on TV
 
 const $ = s => document.querySelector(s);
 function h(tag, attrs = {}, ...kids) {
@@ -823,7 +823,7 @@ $('#infoClose').addEventListener('click', () => { $('#info').hidden = true; st.s
 // that column (the citizens HUD, the legend, the zoom bar, a tip) is measured, and the panel starts below what is at
 // the top and stops above what is at the bottom, scrolling inside itself. Re-measured whenever one of them changes
 // size (the HUD wraps to 2-3 lines on narrow screens) and on resize. On a phone the panel is a bottom sheet (CSS).
-const FLOATS = ['#peopleHud', '#legend', '#zoom', '#zoomTip', '#leaders', '#feedBox'];
+const FLOATS = ['#peopleHud', '#legend', '#zoom', '#zoomTip', '#leaders', '#feedBox', '#newsTv'];
 function layoutInfo() {
   const info = $('#info'); const W = innerWidth, H = innerHeight; const root = document.documentElement.style;
   if (W <= 760) { root.removeProperty('--info-top'); root.removeProperty('--info-bottom'); return; }
@@ -1078,9 +1078,15 @@ async function cityFor(id) {
   cityCache.set(id, c); return c;
 }
 // Republic News in the people HUD: the newest 20, then each new headline as it comes
-const news = newsTicker($('#newsTicker'), { cityName: id => data?.cities?.[id]?.name || id });
+// and breaking news on a small TV in the top-right corner, under the day and citizens clock, clear of the bar, the
+// citizens HUD and the zoom column; the info panel moves down below it while it is on (#newsTv is one of FLOATS)
+const news = newsTicker($('#newsTicker'), { cityName: id => data?.cities?.[id]?.name || id, tv: { anchor: '#clock', avoid: ['.bar', '#peopleHud', '#zoom', '#leaders'] } });
+if (news.tv) new MutationObserver(() => layoutInfo()).observe(news.tv.el, { attributes: true, attributeFilter: ['hidden'] });
 function stream() {
-  news.load(); if (new URLSearchParams(location.search).get('selftest') === 'news') news.add(TEST_NEWS);
+  news.load();
+  const nt = new URLSearchParams(location.search).get('selftest');
+  if (nt === 'news' || nt === 'breaking') news.add(TEST_NEWS);
+  if (nt === 'breaking') setTimeout(() => news.add(testBreaking(), { live: true }), 800); // as if it came in on the stream
   let es; try { es = new EventSource('/api/stream'); } catch { return; }
   news.listen(es);
   es.addEventListener('message', ev => {

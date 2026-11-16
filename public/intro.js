@@ -32,7 +32,8 @@ function leave(instant) {
 let running = false, renderer = null, cleanup = null;
 
 // a shared deep link (/#treasury, /#academy) opens the tab directly instead of playing the opening first
-const deepLink = location.hash.length > 1;
+// (a self-test, /?selftest=breaking, opens on the page itself too)
+const deepLink = location.hash.length > 1 || params.has('selftest');
 if (intro && (force || (!store.get() && !deepLink))) start();
 else if (intro) leave(true);
 

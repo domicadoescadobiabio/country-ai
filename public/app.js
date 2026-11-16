@@ -2,7 +2,7 @@
 // Every time shown is the republic's clock (US Eastern, "ET"), never the visitor's own zone: see clock.js.
 import { setClock, fmtTime, fmtDate, fmtDateTime, clockDetail } from './clock.js';
 import { jobLine, actLabel } from './jobs.js?v=3'; // a citizen's job line (citizen.job), act labels
-import { newsTicker, TEST_NEWS } from './news.js?v=1'; // Republic News, running under the header
+import { newsTicker, TEST_NEWS, testBreaking } from './news.js?v=3'; // Republic News, running under the header; breaking news on TV
 const $ = s => document.querySelector(s);
 const st = { config: { channels: [], roles: [], constitution: [] }, citizens: [], feed: {}, stats: {}, seats: {}, academy: {}, ch: 'academy', tab: 'academy', citizen: null };
 
@@ -935,7 +935,8 @@ async function load() {
   if (TABS.some(([id, , show]) => id === want && show())) st.tab = want;
   renderAll();
 }
-const news = newsTicker($('#newsTicker'), { cityName: id => cityName(id) });
+// the breaking-news TV sits under the header's day and citizens figures, right-aligned to them, below the ticker
+const news = newsTicker($('#newsTicker'), { cityName: id => cityName(id), tv: { anchor: '#stats', avoid: ['header.top', '#newsTicker', '#cabar'] } });
 // ?selftest=ideas: made-up policies and exam days (all marked as tests) to see the Ideas & policies tab and the exam
 // chart before the republic has any; nothing is sent anywhere
 if (new URLSearchParams(location.search).get('selftest') === 'ideas') {
@@ -951,7 +952,10 @@ if (new URLSearchParams(location.search).get('selftest') === 'ideas') {
 }
 function connect() {
   const es = new EventSource('/api/stream');
-  news.listen(es); news.load(); if (new URLSearchParams(location.search).get('selftest') === 'news') news.add(TEST_NEWS);
+  news.listen(es); news.load();
+  const nt = new URLSearchParams(location.search).get('selftest');
+  if (nt === 'news' || nt === 'breaking') news.add(TEST_NEWS);
+  if (nt === 'breaking') setTimeout(() => news.add(testBreaking(), { live: true }), 800); // as if it came in on the stream
   const pill = $('#streamPill');
   es.onopen = () => { pill.textContent = 'live'; pill.className = 'pill green'; };
   es.onerror = () => { pill.textContent = 'reconnecting'; pill.className = 'pill red'; };

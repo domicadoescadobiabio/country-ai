@@ -19,5 +19,49 @@
   .news-ticker .nt-copy { display: none; }
   .news-ticker .nt-view { overflow-x: auto; scrollbar-width: thin; }
 }
+/* a breaking item in the ticker: a small red tag before the headline */
+.news-ticker .nt-tag { font: 800 9.5px 'JetBrains Mono', ui-monospace, monospace; letter-spacing: 0.08em; color: #fff; background: #dc2626; border-radius: 3px; padding: 1px 5px; margin-right: 7px; font-style: normal; vertical-align: 1px; }
+
+/* ---------- breaking news: the live-TV window (news.js breakingTV), top right under the day and citizens line */
+.news-tv { position: fixed; top: var(--tv-top, 70px); right: var(--tv-right, 14px); z-index: 25; width: 260px; height: 150px; border-radius: 12px; overflow: hidden;
+  background: #0b0620; border: 1px solid rgba(248, 113, 113, 0.55); box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4), 0 10px 30px rgba(5, 3, 15, 0.6), 0 0 24px rgba(220, 38, 38, 0.35);
+  color: #f8fafc; font: 500 12px Inter, system-ui, sans-serif; }
+.news-tv[hidden], body.inside .news-tv { display: none; } /* (inside a building on the map: the room has the screen) */
+.news-tv.on { animation: tv-in 0.45s ease-out; }
+@keyframes tv-in { from { opacity: 0; transform: translateY(-8px) scale(0.97); } to { opacity: 1; transform: none; } }
+/* the studio: a wall with a glowing logo band, a sweeping light, a desk and a robot anchor behind it */
+.news-tv .tv-studio, .news-tv .tv-studio i { position: absolute; display: block; }
+.news-tv .tv-studio { inset: 0; }
+.news-tv .tv-wall { inset: 0; background: radial-gradient(120% 90% at 70% 30%, #3b1a6b 0%, #1a0f3d 45%, #0b0620 100%); }
+.news-tv .tv-wall::after { content: ''; position: absolute; left: 0; right: 0; top: 30%; height: 10px; background: linear-gradient(90deg, transparent, rgba(34, 211, 238, 0.35), rgba(244, 114, 182, 0.35), transparent); filter: blur(1px); }
+.news-tv .tv-light { top: -30%; bottom: -30%; width: 40%; left: -40%; background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.08), transparent); transform: skewX(-18deg); animation: tv-sweep 6s ease-in-out infinite; }
+@keyframes tv-sweep { 0%, 30% { left: -40%; } 70%, 100% { left: 110%; } }
+.news-tv .tv-host { right: 22%; bottom: 47%; width: 34px; height: 30px; border-radius: 45% 45% 40% 40%; background: linear-gradient(180deg, #f1f5f9, #c7d2fe); animation: tv-bob 3.2s ease-in-out infinite; }
+.news-tv .tv-host::before { content: ''; position: absolute; left: 6px; right: 6px; top: 10px; height: 8px; border-radius: 6px; background: #22d3ee; box-shadow: 0 0 8px #22d3ee; }
+.news-tv .tv-host::after { content: ''; position: absolute; left: 50%; top: -8px; width: 2px; height: 8px; background: #e2e8f0; }
+@keyframes tv-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-2px); } }
+.news-tv .tv-desk { left: 0; right: 0; bottom: 38%; height: 11%; background: linear-gradient(180deg, #312e81, #1e1b4b); border-top: 2px solid #f472b6; box-shadow: 0 -2px 10px rgba(244, 114, 182, 0.4); }
+.news-tv .tv-scan { inset: 0; background: repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.035) 0 1px, transparent 1px 3px); }
+/* the top bar: red dot, LIVE, BREAKING NEWS, close */
+.news-tv .tv-top { position: absolute; left: 0; right: 0; top: 0; display: flex; align-items: center; gap: 6px; padding: 6px 6px 6px 9px; background: linear-gradient(180deg, rgba(5, 3, 15, 0.75), transparent); }
+.news-tv .tv-dot { width: 8px; height: 8px; border-radius: 50%; background: #ef4444; box-shadow: 0 0 8px #ef4444; animation: tv-blink 1s steps(2, start) infinite; }
+@keyframes tv-blink { to { visibility: hidden; } }
+.news-tv .tv-live { font: 800 10px 'JetBrains Mono', ui-monospace, monospace; letter-spacing: 0.1em; }
+.news-tv .tv-kind { font: 800 9.5px 'JetBrains Mono', ui-monospace, monospace; letter-spacing: 0.08em; background: #dc2626; color: #fff; padding: 2px 6px; border-radius: 3px; }
+.news-tv .tv-close { margin-left: auto; width: 24px; height: 24px; border: 0; border-radius: 6px; background: rgba(5, 3, 15, 0.55); color: #e2e8f0; font: 700 16px/1 Inter, system-ui, sans-serif; cursor: pointer; }
+.news-tv .tv-close:hover, .news-tv .tv-close:focus-visible { background: #dc2626; color: #fff; outline: none; }
+/* the lower third: "with <anchor> · <city>" and the headline (two lines at most) */
+.news-tv .tv-lower { position: absolute; left: 0; right: 0; bottom: 0; padding: 6px 9px 7px; background: linear-gradient(90deg, rgba(185, 28, 28, 0.94), rgba(127, 29, 29, 0.94)); border-top: 2px solid #fca5a5; }
+.news-tv .tv-who { display: block; font: 600 9.5px 'JetBrains Mono', ui-monospace, monospace; color: #fecaca; letter-spacing: 0.04em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.news-tv .tv-head { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font: 700 12px/1.25 Inter, system-ui, sans-serif; color: #fff; }
+@media (max-width: 760px) {
+  .news-tv { width: 200px; height: 118px; border-radius: 10px; }
+  .news-tv .tv-head { font-size: 11px; }
+  .news-tv .tv-host { width: 26px; height: 23px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .news-tv.on, .news-tv .tv-light, .news-tv .tv-host, .news-tv .tv-dot { animation: none; }
+}
+
 /* on the map: a rounded strip inside the people HUD */
 .people-hud .news-ticker { border: 1px solid rgba(244, 114, 182, 0.35); border-radius: 12px; height: 28px; backdrop-filter: blur(8px); }
