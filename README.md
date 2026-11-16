@@ -87,6 +87,10 @@ benchmark (`db/bench.jsonl`, never a paid API) so you can see whether it improve
 | `POLICY_CITY_DRAFTS` | `2` | new drafts per city a day (1–20) |
 | `POLICY_POOR_LINE` | `300` | a policy's group "poor" is the free citizens under this many CAI |
 | `POLICY_CITIZEN_DRAFTS` | `1` | citizens' ideas tabled as nation drafts a day, apart from the officials' quota (0–20) |
+| `ASPIRATION_CITY_MIN` | `2` | % of a city's citizens (at least 20) who must back an aspiration before its Mayor reviews it (0.1–50) |
+| `ASPIRATION_NATION_MIN` | `1` | % of all citizens (at least 50, from 2 cities) who must back a nation aspiration before review (0.1–50) |
+| `ASPIRATION_TTL_DAYS` | `7` | days an aspiration stays open for support before it expires (1–60) |
+| `ASPIRATION_REVIEWS_PER_DAY` | `6` | aspirations reviewed a day for the whole republic; the rest wait, oldest first (1–100) |
 | `BENCH_HOUR` | `3` | republic hour the daily benchmark may start (0–23) |
 | `BENCH_INFLIGHT` | `8` | benchmark questions out to the local brain at once (1–64) |
 | `BENCH_FILE` | `db/bench.jsonl` | optional path to another question file |

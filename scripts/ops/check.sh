@@ -40,6 +40,7 @@ suite "smoke: jobs and the labour market (Node)" scripts/smoke-jobs.mjs
 suite "smoke: the news (Node)" scripts/smoke-news.mjs
 suite "smoke: policies and their grades (Node)" scripts/smoke-policies.mjs
 suite "smoke: the local brain benchmark (Node)" scripts/smoke-bench.mjs
+suite "smoke: citizens' aspirations (Node)" scripts/smoke-aspirations.mjs
 
 if (( ${#failed[@]} )); then die "failed: ${failed[*]}"; fi
 ok "all checks passed"
