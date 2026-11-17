@@ -74,6 +74,23 @@ try {
   for (let i = 0; i < 2; i++) await run({ act: 'volunteer' });
   for (let i = 0; i < 4; i++) await run({ act: 'study', office: 'police' });
   check('help, volunteer and study keep their daily limits', S.daily.byAct.help === 2 && S.daily.byAct.volunteer === 1 && S.daily.byAct.study === 3, JSON.stringify(S.daily.byAct));
+  // owner, 18 Nov: the short voice line starts a new window for daily.offered; the long line's window is kept as
+  // offeredV1, and chosenSinceOffered counts only what was chosen since, so the two rates compare cleanly
+  {
+    const { institution: dailyInst } = await import('../src/daily.ts');
+    const old = { id: 'olda', name: 'Old A', city: 'neura', status: 'free', wallet: 1000, traits, diary: [], practice: {}, quals: {}, record: [], joinedDay: 0, training: [] };
+    const OS = { day: 9, foundedAt: Date.now(), policy: { wage: 100, taxRate: 0.1, ubi: 20 }, cities: { neura: { health: 50, budget: 0 } }, treasury: 0, citizens: [old], applications: {}, seats: {}, elections: { list: [] }, feed: {},
+      daily: { v: 4, notesScreened: true, byAct: { voice: 18, help: 502, rest: 40 }, offered: { voice: 3064, help: 12080 }, offeredSince: 7, recent: [] } };
+    const octx = { ...ctx, S: OS, agent: id => OS.citizens.find(x => x.id === id) };
+    await doAct(octx, old, { act: 'rest' }, 'test'); await doAct(octx, old, { act: 'volunteer' }, 'test');
+    const p1 = dailyInst.publicState(OS).daily;
+    check('offered v2: the long line\'s window is kept as offeredV1 (3,064 offered, 18 chosen, day 7-9) and a new window starts on the release day',
+      p1.offeredV1?.offered?.voice === 3064 && p1.offeredV1.since === 7 && p1.offeredV1.until === 9 && p1.offeredV1.byAct.voice === 18 && p1.offeredSince === 9 && !Object.keys(p1.offered).length
+      && p1.chosenSinceOffered.rest === 1 && p1.chosenSinceOffered.volunteer === 1 && !('voice' in p1.chosenSinceOffered) && !('help' in p1.chosenSinceOffered), JSON.stringify(p1 && { V1: p1.offeredV1, since: p1.offeredSince, chosen: p1.chosenSinceOffered }));
+    OS.day = 10; await doAct(octx, old, { act: 'rest' }, 'test');
+    const p2 = dailyInst.publicState(OS).daily;
+    check('offered v2: the window is reset once, not again on later days', p2.offeredV1.offered.voice === 3064 && p2.offeredSince === 9 && p2.chosenSinceOffered.rest === 2, JSON.stringify({ since: p2.offeredSince, chosen: p2.chosenSinceOffered }));
+  }
   S.day = 2; await run({ act: 'shop', amount: 10 });
   check('the counters start again on a new day', S.daily.byAct.shop === 3 && me.lifeCount.shop === 1, JSON.stringify(me.lifeCount));
 
