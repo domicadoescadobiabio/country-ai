@@ -235,6 +235,21 @@ class OpenRouterPausedTest(unittest.TestCase):
         st["llmUsage"]["openrouterPaused"]["status"] = 401
         self.assertIn("key rejected", watch.openrouter_paused(st)["text"])
 
+    def test_403_is_moderation_not_the_account(self):
+        st = {"llmUsage": {"errorsByModel": {"openrouter:m": {"errors": 3, "lastKind": "http", "lastStatus": 403}}}}
+        self.assertIsNone(watch.openrouter_paused(st))
+
+    def test_403_filed_as_auth_is_not_a_dead_model(self):
+        memo = {}
+        st = lambda n: {"llmUsage": {"errorsByModel": {"openrouter:m": {"errors": n, "lastKind": "auth", "lastStatus": 403}}}}  # noqa: E731
+        self.assertEqual(watch.llm_errors(st(1), memo), [])
+        for n in range(2, 5):
+            out = watch.llm_errors(st(n), memo)
+        self.assertEqual([a["key"] for a in out], ["negara:llm-rising:openrouter:m"])  # only a steady rise alarms
+        # a real auth failure elsewhere still counts as dead
+        self.assertEqual(watch.llm_errors({"llmUsage": {"errorsByModel": {"claude:x": {"errors": 1, "lastKind": "auth", "lastStatus": 401}}}}, {})[0]["key"],
+                         "negara:llm-dead:claude:x")
+
     def test_not_paused(self):
         st = {"llmUsage": {"openrouterPaused": None,
                            "errorsByModel": {"openrouter:m": {"errors": 9, "lastStatus": 402}}}}

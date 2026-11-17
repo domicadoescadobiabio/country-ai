@@ -296,9 +296,11 @@ def llm_errors(state: dict, memo: dict) -> list[dict]:
         h = hist.setdefault(model, {"last": n, "rising": 0})
         h["rising"] = h["rising"] + 1 if n > h["last"] else 0
         h["last"] = n
-        if model.startswith("openrouter:") and e.get("lastStatus") in (401, 402, 403):
+        if model.startswith("openrouter:") and e.get("lastStatus") in OPENROUTER_DOWN:
             continue  # an account-wide cause, reported once by openrouter_paused, not per model
-        if e.get("lastKind") == "auth" or e.get("lastStatus") == 404:
+        # an OpenRouter 403 is moderation flagging one input (llm.ts files it as "auth"): only a rising count matters
+        moderated = model.startswith("openrouter:") and e.get("lastStatus") == 403
+        if not moderated and (e.get("lastKind") == "auth" or e.get("lastStatus") == 404):
             out.append(_alarm(f"negara:llm-dead:{model}", "negara",
                               f"model {model}: last error {e.get('lastKind')} {e.get('lastStatus') or ''} at {e.get('lastAt')} (dead or retired?)"))
         elif h["rising"] >= LLM_RISING_OBS:
@@ -307,16 +309,19 @@ def llm_errors(state: dict, memo: dict) -> list[dict]:
     return out
 
 
+OPENROUTER_DOWN = (401, 402)  # account-wide: key rejected, credits exhausted (403 is moderation of one input)
+
+
 def _provider_cause(status) -> str:
-    return {402: "credits exhausted (top up OpenRouter)", 401: "API key rejected", 403: "API key rejected"}.get(
-        status, f"HTTP {status}")
+    return {402: "credits exhausted (top up OpenRouter)", 401: "API key rejected"}.get(status, f"HTTP {status}")
 
 
 def openrouter_paused(state: dict) -> dict | None:
     """One alarm naming the cause when OpenRouter is down for the whole republic.
 
     Reads `llmUsage.openrouterPaused` ({status, reason, until, skipped}); before that field ships, a last error
-    of 402/401/403 on any OpenRouter model means the same (the errors/calls ratio stays high while paused,
+    of 402/401 on any OpenRouter model means the same; a 403 is moderation flagging one input, not the account
+    (the errors/calls ratio stays high while paused,
     because skipped calls are no longer counted, so the ratio alone says nothing about the cause)."""
     usage = state.get("llmUsage") or {}
     p = usage.get("openrouterPaused")
@@ -329,7 +334,7 @@ def openrouter_paused(state: dict) -> dict | None:
     if "openrouterPaused" in usage:
         return None  # the server says it is not paused
     for model, e in ((usage.get("errorsByModel") or {}).items()):
-        if model.startswith("openrouter:") and e.get("lastStatus") in (401, 402, 403):
+        if model.startswith("openrouter:") and e.get("lastStatus") in OPENROUTER_DOWN:
             return _alarm("negara:openrouter-paused", "negara",
                           f"OpenRouter failing: {_provider_cause(e.get('lastStatus'))} ({model}, {e.get('errors')} errors, "
                           f"last at {e.get('lastAt')})")
