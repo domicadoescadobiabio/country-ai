@@ -427,7 +427,7 @@ const PANELS = {
       const sk = h('div', { class: 'card' }, h('h4', { text: 'Office skill (grows with training)' }));
       for (const [r, v] of Object.entries(a.skill || {})) sk.append(h('div', { class: 'trait' }, h('span', { text: role(r)?.title || r }), h('div', { class: 'bar' }, h('i', { style: `width:${Math.round(v * 100)}%` })), h('span', { text: Math.round(v * 100) })));
       const rv = (a.reviews || []).slice().reverse();
-      if (rv.length) sk.append(h('h4', { class: 'sub', text: 'Report card' }), ...rv.map(r => h('div', { class: 'list-row' }, h('small', { text: `day ${r.day} · ${role(r.roleId)?.title}` }), h('div', {}, h('b', { class: 'grade g' + r.grade, text: r.grade }), ` ${r.kpi} · failed checks ${r.failedChecks} · skill ${Math.round(r.skill * 100)}`))));
+      if (rv.length) sk.append(h('h4', { class: 'sub', text: 'Report card' }), ...rv.map(r => h('div', { class: 'list-row' }, h('small', { text: `day ${r.day} · ${role(r.roleId)?.title}` }), h('div', {}, gradeBadge(r.grade), ` ${r.grade == null ? 'not measured · ' : ''}${r.kpi} · failed checks ${r.failedChecks} · skill ${Math.round(r.skill * 100)}`))));
       const s = a.stats || {};
       const counts = Object.entries(s).filter(([, v]) => v).map(([k, v]) => `${k} ${v}`).join(' · ');
       if (counts) sk.append(h('h4', { class: 'sub', text: 'Decisions made' }), h('p', { text: counts }));
@@ -569,6 +569,8 @@ const PANELS = {
         card.append(h('div', { class: 'list-row' },
           h('div', {}, h('b', { text: (won ? '★ ' : '') + (cit(c.id)?.name || c.id) }), ` · tax ${m.tax}% · UBI ${m.ubi} · police ${m.police}`),
           h('small', { text: `exam ${r.exam} · practice ${r.practice} · review ${r.lastReview} · failed checks ${r.failedChecks} · citizen ${r.daysCitizen}d · jail ${r.jailRecords}` }),
+          // offices really held vs exams passed (ticket #945): two different things on the voter card
+          r.pastOffices != null || r.qualifiedFor != null ? h('small', { class: 'cand-offices', text: `Offices held: ${String(r.pastOffices ?? '-').slice(0, 160) || '-'} · Qualified for: ${String(r.qualifiedFor ?? '-').slice(0, 160) || '-'}` }) : null,
           m.statement ? h('div', { class: 'q', text: `"${m.statement}"` }) : null));
       }
       if (e.result) {
@@ -683,12 +685,17 @@ const PANELS = {
 // rules, or had a proposal rejected by the checks; report cards graded by the state from what happened next;
 // and the leaders' latest work plans from #palace.
 const GRADE_LETTER = ['D', 'C', 'B', 'A'];
+// a report card's grade as a badge; grade null = not measured yet (ticket #967), never shown as a low grade
+function gradeBadge(grade) {
+  const g = typeof grade === 'string' && /^[A-F]$/.test(grade) ? grade : null;
+  return g ? h('b', { class: `grade g${g}`, text: g }) : h('b', { class: 'grade gna', title: 'not measured yet', text: '—' });
+}
 function govCard() {
   const g = st.gov; if (!g?.autonomy) return null;
   const a = g.autonomy; const n = v => Number(v) || 0;
   const avg = typeof g.avgGrade === 'number' ? `${GRADE_LETTER[Math.min(3, Math.max(0, Math.round(g.avgGrade) - 1))]} (${g.avgGrade.toFixed(2)} of 4)` : '—';
   const card = h('div', { class: 'card' }, h('h4', { text: 'Government autonomy' }),
-    h('p', { text: 'Every official decision either comes from the official\'s own model, falls back to the offline rules, or is rejected by the constitutional checks. Two days later the state grades it from what actually happened (poverty, crime, mood).' }),
+    h('p', { text: 'Every official decision either comes from the official\'s own model, falls back to the offline rules, or is rejected by the constitutional checks. The next day the state grades it from what actually happened (poverty, crime, mood); a card with nothing to measure yet says "not measured".' }),
     kv([['Own decisions', `${n(a.own)} (${pct(g.ownShare)})`], ['Offline rules', n(a.offline)], ['Rejected by checks', `${n(a.rejected)} (${pct(g.rejectedShare)} of own proposals)`], ['Average grade', avg], ['Graded / waiting', `${n(g.graded)} / ${n(g.pendingReviews)}`]]));
   const roles = Object.entries(a.byRole || {}).map(([r, v]) => [r, n(v.own), n(v.offline), n(v.rejected)]).filter(([, o, f, x]) => o + f + x > 0).sort((x, y) => (y[1] + y[2] + y[3]) - (x[1] + x[2] + x[3]));
   if (roles.length) {
@@ -701,7 +708,7 @@ function govCard() {
   const cards = (g.cards || []).slice(-5).reverse();
   if (cards.length) card.append(h('h4', { class: 'sub', text: 'Latest report cards' }), ...cards.map(c => h('div', { class: 'list-row' },
     h('small', { text: `decided day ${c.of} · graded day ${c.day} · ${role(c.role)?.title || c.role}${c.city ? ` · ${cityName(c.city)}` : ''}` }),
-    h('div', {}, h('b', { class: 'grade g' + (GRADE_LETTER.includes(c.grade) ? c.grade : 'C'), text: String(c.grade || '?') }), ` ${cit(c.agentId)?.name || c.agentId}: ${c.what || ''}`))));
+    h('div', {}, gradeBadge(c.grade), ` ${cit(c.agentId)?.name || c.agentId}: ${c.what || ''}${c.grade == null ? ' (not measured)' : ''}`))));
   const plans = (st.feed.palace || []).filter(m => m.kind === 'plan').slice(-3).reverse();
   if (plans.length) card.append(h('h4', { class: 'sub', text: 'Leaders\' work plans (#palace)' }), ...plans.map(m => h('div', { class: 'list-row' }, h('small', { text: `${cit(m.agentId)?.name || m.agentId} · day ${m.day}` }), h('div', { class: 'q', text: m.text }))));
   return card;
