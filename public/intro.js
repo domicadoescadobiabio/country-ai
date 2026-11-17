@@ -33,7 +33,8 @@ let running = false, renderer = null, cleanup = null;
 
 // a shared deep link (/#treasury, /#academy) opens the tab directly instead of playing the opening first
 // (a self-test, /?selftest=breaking, opens on the page itself too)
-const deepLink = location.hash.length > 1 || params.has('selftest');
+// (but ?selftest=overflow measures the page with the opening on top: that is where the hero was clipped, #1004)
+const deepLink = location.hash.length > 1 || (params.has('selftest') && params.get('selftest') !== 'overflow');
 if (intro && (force || (!store.get() && !deepLink))) start();
 else if (intro) leave(true);
 

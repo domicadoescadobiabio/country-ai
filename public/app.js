@@ -1034,6 +1034,22 @@ async function load() {
 }
 // the breaking-news TV sits under the header's day and citizens figures, right-aligned to them, below the ticker
 const news = newsTicker($('#newsTicker'), { cityName: id => cityName(id), tv: { anchor: '#stats', avoid: ['header.top', '#newsTicker', '#cabar'] } });
+// ?selftest=overflow (#985): is anything wider than the screen? The page width against the window, and the elements
+// that reach past the right edge (the outermost ones, not each of their children). Reported in a box, text only.
+// (&long=1: the header's engine pill gets a label as long as production's, which a local copy does not have)
+if (new URLSearchParams(location.search).get('selftest') === 'overflow') setTimeout(() => {
+  if (new URLSearchParams(location.search).has('long')) $('#enginePill').textContent = '(test) mix: Claude · OpenRouter · llama.cpp + 6 LoRAs (general, math, …)';
+  const W = document.documentElement.clientWidth; const wide = [];
+  for (const el of document.querySelectorAll('body *')) {
+    if (el.closest('.selftest-box')) continue; const r = el.getBoundingClientRect();
+    if (r.width && r.right > W + 1 && !wide.some(p => p.contains(el))) wide.push(el);
+  }
+  const name = el => `${el.tagName.toLowerCase()}${el.id ? '#' + el.id : ''}${typeof el.className === 'string' && el.className ? '.' + el.className.trim().split(/\s+/).slice(0, 2).join('.') : ''} ${Math.round(el.getBoundingClientRect().width)}px`;
+  const hero = document.querySelector('#intro:not([hidden]) .beat.hero'); const hr = hero?.getBoundingClientRect();
+  const box = h('div', { class: 'toast show selftest-box', text: `overflow test${hr ? ` (over the intro: hero ${Math.round(hr.left)}-${Math.round(hr.right)}px)` : ''} · page ${document.documentElement.scrollWidth}px, window ${W}px (inner ${innerWidth}px) · past the right edge: ${wide.length ? wide.slice(0, 6).map(name).join(', ') : 'nothing'}` });
+  box.style.setProperty('z-index', '60'); box.style.setProperty('top', '12px'); box.style.setProperty('bottom', 'auto'); // above the opening (z 50)
+  document.body.append(box);
+}, 3000);
 // ?selftest=ideas: made-up policies and exam days (all marked as tests) to see the Ideas & policies tab and the exam
 // chart before the republic has any; nothing is sent anywhere
 if (new URLSearchParams(location.search).get('selftest') === 'ideas') {

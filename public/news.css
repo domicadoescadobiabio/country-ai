@@ -2,6 +2,9 @@
 .news-ticker { display: flex; align-items: center; gap: 10px; min-width: 0; height: 30px; padding: 0 10px 0 0; overflow: hidden;
   background: rgba(9, 6, 28, 0.82); border-bottom: 1px solid rgba(244, 114, 182, 0.35); color: #e2e8f0; font: 500 12.5px Inter, system-ui, sans-serif; }
 .news-ticker[hidden] { display: none; }
+/* never wider than its place, whatever the headlines (the running track stays inside .nt-view, #1004) */
+.news-ticker { box-sizing: border-box; max-width: 100%; }
+.news-ticker .nt-view { max-width: 100%; }
 .news-ticker .nt-label { flex: none; align-self: stretch; display: flex; align-items: center; padding: 0 10px; background: #dc2626; color: #fff;
   font: 800 10.5px 'JetBrains Mono', ui-monospace, monospace; letter-spacing: 0.1em; box-shadow: 0 0 14px rgba(220, 38, 38, 0.55); }
 .news-ticker .nt-view { flex: 1; min-width: 0; overflow: hidden; }
