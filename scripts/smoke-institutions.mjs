@@ -620,8 +620,65 @@ async function policyChecks(check) {
     check('report card: a city whose mood fell like every other city\'s (UBI cut) is graded C, the text names the other cities\' average', fc.grade === 'C' && /mood 0\.085 -> 0\.057 \(-0\.028\), other cities avg -0\.028: own effect ~-?0(\.00\d)? -> C/.test(fc.text), JSON.stringify(fc));
     const fd = pres.fairCard(r, { poor: 0.1, crimes: 2, mood: 0.01 }, { neura: { poor: 0.1, crimes: 2, mood: 0.01 }, portoken: { poor: 0.1, crimes: 2, mood: 0.085 }, datahaven: { poor: 0.1, crimes: 2, mood: 0.084 } }, null);
     check('report card: a city whose mood fell while the others held is graded below C', ['D', 'E'].includes(fd.grade), JSON.stringify(fd));
+    // one crime more than the other cities is noise: B/D at most (owner, 17 Nov), not A/E
+    const crime = (n) => pres.fairCard({ city: 'neura', before: { poor: 0.1, crimes: 1, mood: 0.08, cities: { neura: { poor: 0.1, crimes: 1, mood: 0.08 }, portoken: { poor: 0.1, crimes: 1, mood: 0.08 } } } }, { poor: 0.1, crimes: 1 + n, mood: 0.08 }, { neura: { poor: 0.1, crimes: 1 + n, mood: 0.08 }, portoken: { poor: 0.1, crimes: 1, mood: 0.08 } }, null);
+    const g1 = /crimes in 2 days [^;]*-> (\w)/.exec(crime(1).text)?.[1], g1d = /crimes in 2 days [^;]*-> (\w)/.exec(crime(-1).text)?.[1], g3 = /crimes in 2 days [^;]*-> (\w)/.exec(crime(3).text)?.[1];
+    check('report card: one crime more than the other cities grades D, one fewer B, three more E (crime floor 25)', g1 === 'D' && g1d === 'B' && g3 === 'E', JSON.stringify({ plus1: g1, minus1: g1d, plus3: g3 }));
+    // a number that is not a number is not measured (ticket #958): left out of the average; none measured, no grade
+    const part = pres.fairCard({ city: null, before: { poor: 0.1, crimes: 4, mood: undefined } }, { poor: 0.1, crimes: 4, mood: 0.05 }, {}, { poor: 0, crimes: 0, mood: 0 });
+    const none = pres.fairCard({ city: null, before: { poor: undefined, crimes: undefined, mood: undefined } }, { poor: 0.1, crimes: 4, mood: 0.05 }, {}, null);
+    check('report card: a number that cannot be measured is left out of the grade; with none measured the card has no grade (#958)', part.grade === 'C' && none.grade === null, JSON.stringify({ part, none }));
+    {
+      const n0 = S.gov.gradeN, q0 = (P.reflectQueue || []).length;
+      S.gov.reviews.push({ agentId: P.id, role: 'president', what: 'unmeasured act', city: null, day: S.day - pres.reviewLag(), spend: 0, before: { poor: undefined, crimes: undefined, mood: undefined, treasury: 1, runway: null } });
+      await pres.institution.day(ctx);
+      const uc = (S.gov.cards || []).find(c => c.what === 'unmeasured act');
+      check('report card: a card with no grade says "not measured yet", is not averaged and is not reflected on (#958)', uc && uc.grade === null && /Not measured yet/.test(uc.lesson) && S.gov.gradeN === n0 && (P.reflectQueue || []).length === q0, JSON.stringify({ uc, n: [n0, S.gov.gradeN] }));
+      const pq = (by.c0.reportCards || []).length;
+      pres.onPolicyGraded(ctx, { id: 'pol-x', author: 'c0', grade: null, measured: false, lesson: null });
+      check('policy: a policy not measured yet gives its author no card and no reflection (#958)', (by.c0.reportCards || []).length === pq);
+    }
     const fn = pres.fairCard({ city: null, before: { poor: 0.1, crimes: 4, mood: 0.085 } }, { poor: 0.1, crimes: 4, mood: 0.057 }, {}, { poor: 0, crimes: 0, mood: -0.028 });
     check('report card: a national decision is compared with the nation\'s trend before it', fn.grade === 'C' && /trend before -0\.028/.test(fn.text), JSON.stringify(fn));
+  }
+  // 12b. the real path (ticket #937): a decision queued now carries every city's numbers and the trend history, so the
+  // day it is graded the card compares with the other cities (city) or the nation's trend (nation), not the raw change
+  {
+    const cityOf = id => by[id]; ['c0', 'c1', 'c2', 'c3'].forEach((id, i) => { cityOf(id).city = i < 2 ? 'neura' : 'portoken'; });
+    // two days of the nation's numbers: yesterday's and today's (the trend before the decision)
+    S.gov.natDaily = []; S.day--; await pres.institution.day(ctx); S.day++; await pres.institution.day(ctx);
+    pres.queueReview(ctx, by.c22, 'mayor', 'test repair', 'neura', 100);
+    pres.queueReview(ctx, P, 'president', 'test national act', null, 0);
+    const rvC = S.gov.reviews.at(-2), rvN = S.gov.reviews.at(-1);
+    check('report card: a queued city decision keeps every city\'s numbers for the comparison', rvC.before.cities && Object.keys(rvC.before.cities).length >= 2, JSON.stringify(rvC.before));
+    S.day += pres.reviewLag(); S.tick++; await pres.institution.day(ctx);
+    // (read from the state's last 60 cards, not the official's last 5: other cards of the same day cannot push it out)
+    const cc = (S.gov.cards || []).find(c => c.agentId === 'c22' && c.what === 'test repair'), cn = (S.gov.cards || []).find(c => c.agentId === P.id && c.what === 'test national act');
+    check('report card: graded with the other cities\' average (city) and the nation\'s trend (nation), not "no comparison"', cc && /other cities avg/.test(cc.lesson) && !/no comparison/.test(cc.lesson) && cn && /trend before/.test(cn.lesson) && !/no comparison/.test(cn.lesson), JSON.stringify({ city: cc?.lesson, nation: cn?.lesson }));
+  }
+  // 14. elections (tickets #935, #936): candidate cards show offices held (not exams passed); a winner who holds another
+  // office leaves it before taking the new seat, and only if that seat is free
+  {
+    const el = await import('../src/elections.ts');
+    const q = by.c40 || (by.c40 = mk('c40'), S.citizens.push(by.c40), by.c40);
+    q.training = [{ roleId: 'president', passed: true }]; q.quals = { president: { score: 9, total: 12 } };
+    const before = el.card(S, q, 'council');
+    check('election card: a citizen who only passed the President\'s exam shows no office held, the exam under qualifiedFor (#935)', before.pastOffices === '-' && before.qualifiedFor === 'President', JSON.stringify(before));
+    // a Minister wins a Council by-election: leaves the Ministry first, never holds two seats (#936)
+    const w = by.c34; w.office = 'minister'; S.seats.minister = [...(S.seats.minister || []), 'c34']; S.cabinet.portfolios.justice = 'c34';
+    const seatsBefore = [...(S.seats.council || [])];
+    S.seats.council = seatsBefore.slice(0, 29);
+    const e = { id: 991, office: 'council', seats: 1, city: null, kind: 'by-election', replaces: [], stage: 'counted', result: { winners: ['c34'] }, audit: { ok: true }, ballots: {}, electorate: [] };
+    S.constitutionVersion = 6; await el._certifyForTests(ctx, e);
+    const twice = Object.entries(S.seats).filter(([, ids]) => (ids || []).includes('c34')).map(([o]) => o);
+    check('election: a sitting Minister who wins a Council seat leaves the Ministry first and holds one seat (#936)', w.office === 'council' && twice.length === 1 && twice[0] === 'council' && el.officesHeld(w).includes('minister') && el.card(S, w, 'council').pastOffices.includes('Council'), JSON.stringify({ office: w.office, seats: twice, held: el.officesHeld(w) }));
+    // the seat is not free: the officer keeps the old seat (nobody loses one seat without taking the other)
+    const o = by.c35 || by.c34; const cop = by.c36; cop.office = 'police'; S.seats.police = [...(S.seats.police || []), 'c36'];
+    const full = { ...e, id: 992, result: { winners: ['c36'] }, stage: 'counted' };
+    while ((S.seats.council || []).length < 30) S.seats.council.push(`x${S.seats.council.length}`);
+    await el._certifyForTests(ctx, full);
+    check('election: when the seat is not free the winner keeps the old office (no seat lost for nothing)', cop.office === 'police' && S.seats.police.includes('c36') && !S.seats.council.includes('c36'), JSON.stringify({ office: cop.office }));
+    S.seats.council = seatsBefore; void o;
   }
   // 13. the people's aspirations for the nation: the Council reviews them (Speaker assigns, the reviewer adopts or declines)
   {

@@ -19,6 +19,7 @@ import { pick, chance, cai, round, cleanText, clamp, shuffle, citizenById } from
 import * as UTIL from './util.ts';
 // fairGrade (src/util.ts, Negara box); a plain raw-change grade if the shared one is not there
 const fairGrade = (o: any) => (typeof (UTIL as any).fairGrade === 'function' ? (UTIL as any).fairGrade(o) : (() => {
+  if (!Number.isFinite(o.before) || !Number.isFinite(o.after)) return { grade: null, measured: false, text: `${o.name}: not measured` };
   const own = o.after - o.before; const rel = ((o.better === 'up' ? own : -own) / Math.max(Math.abs(o.before), o.floor || 0.01));
   const grade = rel > 0.05 ? 'A' : rel > 0.02 ? 'B' : rel >= -0.02 ? 'C' : rel >= -0.05 ? 'D' : 'E';
   return { grade, own, compare: null, effect: own, raw: true, text: `${o.name} ${o.fmt ? o.fmt(o.before) : o.before} -> ${o.fmt ? o.fmt(o.after) : o.after}, no comparison (raw change) -> ${grade}` };
@@ -184,7 +185,9 @@ export function queueReview(ctx: Ctx, a: Citizen, role: string, what: string, ci
 // The three numbers (poverty, crimes, mood) are graded A-E each and averaged; the texts name their comparisons.
 const METRICS = [
   { k: 'poor', name: 'poverty', better: 'down' as const, floor: 0.02, fmt: (v: number) => `${Math.round(v * 1000) / 10}%` },
-  { k: 'crimes', name: 'crimes in 2 days', better: 'down' as const, floor: 1, fmt: (v: number) => String(Math.round(v * 10) / 10) },
+  // (owner, 17 Nov: one crime more or less is noise, B/D at most, not A/E: a change is weighed against at least 25
+  // crimes, so +-1 is 4% (B/D) and +-2 or more 8% and up (A/E))
+  { k: 'crimes', name: 'crimes in 2 days', better: 'down' as const, floor: 25, fmt: (v: number) => String(Math.round(v * 10) / 10) },
   { k: 'mood', name: 'mood', better: 'up' as const, floor: 0.1, fmt: (v: number) => String(Math.round(v * 1000) / 1000) },
 ];
 const GRADE_POINTS = { A: 4, B: 3, C: 2, D: 1, E: 0 };
@@ -193,7 +196,11 @@ export function fairCard(r: any, after: any, afterCities: Record<string, any>, t
     const others = r.city && r.before.cities ? Object.entries(r.before.cities).filter(([id]) => id !== r.city && afterCities[id]).map(([id, b]: [string, any]) => afterCities[id][mt.k] - b[mt.k]) : null;
     return fairGrade({ name: mt.name, before: r.before[mt.k], after: after[mt.k], others: others && others.length ? others : null, trend: !r.city && trend ? trend[mt.k] : null, better: mt.better, floor: mt.floor, fmt: mt.fmt });
   });
-  const avg = parts.reduce((n, p) => n + GRADE_POINTS[p.grade], 0) / parts.length;
+  // a number that could not be measured (fairGrade: measured false, grade null; ticket #958) is left out of the average;
+  // with none measured the card has no grade ("not measured yet")
+  const measured = parts.filter(p => p.measured !== false && Object.hasOwn(GRADE_POINTS, p.grade));
+  if (!measured.length) return { grade: null, text: parts.map(p => p.text).join('; ') };
+  const avg = measured.reduce((n, p) => n + GRADE_POINTS[p.grade], 0) / measured.length;
   const grade = avg >= 3.5 ? 'A' : avg >= 2.5 ? 'B' : avg >= 1.5 ? 'C' : avg >= 0.5 ? 'D' : 'E';
   return { grade, text: parts.map(p => p.text).join('; ') };
 }
@@ -203,9 +210,14 @@ function recordTrend(S: State, m: any) {
   if (g.natDaily.at(-1)?.day === S.day) return;
   g.natDaily.push({ day: S.day, ...snap(m.nat) }); if (g.natDaily.length > 30) g.natDaily.shift();
 }
+// the nation's change over the `lag` days before `day`; a missing day (a restart) uses the nearest earlier record,
+// scaled to `lag` days; with no earlier record there is no trend (the card says "no comparison")
 function trendFor(S: State, day: number, lag: number) {
-  const h = G(S).natDaily || []; const now = h.find((x: any) => x.day === day), was = h.find((x: any) => x.day === day - lag);
-  return now && was ? Object.fromEntries(METRICS.map(mt => [mt.k, now[mt.k] - was[mt.k]])) : null;
+  const h = G(S).natDaily || []; const now = h.find((x: any) => x.day === day);
+  const was = h.find((x: any) => x.day === day - lag) || [...h].reverse().find((x: any) => x.day < day);
+  if (!now || !was) return null;
+  const k = lag / Math.max(1, day - was.day);
+  return Object.fromEntries(METRICS.map(mt => [mt.k, (now[mt.k] - was[mt.k]) * k]));
 }
 // a runway in a report card: days left at that day's pace, or "not falling" (undefined: a review queued before
 // runways were recorded)
@@ -225,12 +237,13 @@ function reviewDay(ctx: Ctx) {
     const gr = fair.grade;
     const where = r.city ? cityName(r.city) : 'the nation';
     // written by the server from the numbers, never by a model; it names what each number was compared with
-    const lesson = `Day ${r.day} ${r.what}${r.spend ? ` (${cai(r.spend)})` : ''}: ${later} day${later === 1 ? '' : 's'} later in ${where} ${fair.text}; treasury ${cai(r.before.treasury)} -> ${cai(after.treasury)}, runway ${rw(r.before.runway)} -> ${rw(after.runway)}. Grade ${gr}.`;
+    const lesson = `Day ${r.day} ${r.what}${r.spend ? ` (${cai(r.spend)})` : ''}: ${later} day${later === 1 ? '' : 's'} later in ${where} ${fair.text}; treasury ${cai(r.before.treasury)} -> ${cai(after.treasury)}, runway ${rw(r.before.runway)} -> ${rw(after.runway)}. ${gr ? `Grade ${gr}.` : 'Not measured yet: no grade.'}`;
     const card = { day: S.day, of: r.day, role: r.role, agentId: r.agentId, what: r.what, city: r.city, grade: gr, lesson };
     const a = ctx.agent(r.agentId);
-    if (a) { a.reportCards = [...(a.reportCards || []), card].slice(-MAX_CARDS); queueReflection(a, card); }
+    // a card with no grade is shown, but it is not reflected on and does not count in the average grade
+    if (a) { a.reportCards = [...(a.reportCards || []), card].slice(-MAX_CARDS); if (gr) queueReflection(a, card); }
     g.cards.push(card); if (g.cards.length > 60) g.cards.shift();
-    g.gradeSum += GRADE_POINTS[gr]; g.gradeN++;
+    if (gr) { g.gradeSum += GRADE_POINTS[gr]; g.gradeN++; }
     ctx.record('report_card', 'state', { agent: r.agentId, role: r.role, decidedDay: r.day, what: r.what, city: r.city, grade: gr });
   }
 }
@@ -354,7 +367,7 @@ export async function policyDesk(ctx: Ctx) {
 // a policy's grade (src/policies.ts setPolicyHooks graded): a report card for its author, and a reflection to write
 export function onPolicyGraded(ctx: Ctx, p: any) {
   const a = p?.author ? (ctx.agent?.(p.author) || citizenById(ctx.S, p.author)) : null;
-  if (!a || !p.grade) return;
+  if (!a || !p.grade || p.measured === false) return; // not measured yet: no card, no reflection (ticket #958)
   const m = policies();
   const what = `policy ${p.id} ${m?.policyAsData ? m.policyAsData(p) : `(${p.lever})`}`;
   const card = { day: ctx.S.day, of: p.enactedDay ?? p.proposedDay ?? ctx.S.day, role: a.office || 'citizen', agentId: a.id, what: cleanText(what, 160), city: p.city || null, grade: String(p.grade), lesson: cleanText(`Policy ${p.id} graded ${p.grade}: ${p.lesson || ''}`, 300), policy: p.id };

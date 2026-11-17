@@ -38,6 +38,8 @@ export function vacate(ctx: Ctx, agentId: string, reason: string) {
   if (!a || !a.office) return;
   const roleId = a.office;
   ctx.S.seats[roleId] = (ctx.S.seats[roleId] || []).filter(id => id !== agentId);
+  // the offices a citizen has held stay on their card (candidate cards show offices held, not exams passed; #935)
+  a.officeHistory = [...new Set([...(a.officeHistory || []), roleId])].slice(-12);
   a.office = null; a.rank = null; a.termEnds = null;
   const next = ROLES[roleId].appointed ? 'The chain of command will fill the seat.' : 'The Academy will train a replacement.';
   ctx.say(ROLES[roleId].channel, 'state', `${a.name} leaves the office of ${ROLES[roleId].title}: ${reason}. ${next}`);
