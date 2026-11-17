@@ -296,6 +296,8 @@ def llm_errors(state: dict, memo: dict) -> list[dict]:
         h = hist.setdefault(model, {"last": n, "rising": 0})
         h["rising"] = h["rising"] + 1 if n > h["last"] else 0
         h["last"] = n
+        if model.startswith("openrouter:") and e.get("lastStatus") in (401, 402, 403):
+            continue  # an account-wide cause, reported once by openrouter_paused, not per model
         if e.get("lastKind") == "auth" or e.get("lastStatus") == 404:
             out.append(_alarm(f"negara:llm-dead:{model}", "negara",
                               f"model {model}: last error {e.get('lastKind')} {e.get('lastStatus') or ''} at {e.get('lastAt')} (dead or retired?)"))
@@ -303,6 +305,35 @@ def llm_errors(state: dict, memo: dict) -> list[dict]:
             out.append(_alarm(f"negara:llm-rising:{model}", "negara",
                               f"model {model}: errors rose {h['rising']} observations in a row (now {n}, last {e.get('lastKind')})"))
     return out
+
+
+def _provider_cause(status) -> str:
+    return {402: "credits exhausted (top up OpenRouter)", 401: "API key rejected", 403: "API key rejected"}.get(
+        status, f"HTTP {status}")
+
+
+def openrouter_paused(state: dict) -> dict | None:
+    """One alarm naming the cause when OpenRouter is down for the whole republic.
+
+    Reads `llmUsage.openrouterPaused` ({status, reason, until, skipped}); before that field ships, a last error
+    of 402/401/403 on any OpenRouter model means the same (the errors/calls ratio stays high while paused,
+    because skipped calls are no longer counted, so the ratio alone says nothing about the cause)."""
+    usage = state.get("llmUsage") or {}
+    p = usage.get("openrouterPaused")
+    if isinstance(p, dict) and p.get("status"):
+        return _alarm("negara:openrouter-paused", "negara",
+                      f"OpenRouter paused: {_provider_cause(p.get('status'))}"
+                      + (f", {p.get('reason')}" if p.get("reason") else "")
+                      + (f"; retry after {p.get('until')}" if p.get("until") else "")
+                      + (f"; {p.get('skipped')} calls skipped" if p.get("skipped") else ""))
+    if "openrouterPaused" in usage:
+        return None  # the server says it is not paused
+    for model, e in ((usage.get("errorsByModel") or {}).items()):
+        if model.startswith("openrouter:") and e.get("lastStatus") in (401, 402, 403):
+            return _alarm("negara:openrouter-paused", "negara",
+                          f"OpenRouter failing: {_provider_cause(e.get('lastStatus'))} ({model}, {e.get('errors')} errors, "
+                          f"last at {e.get('lastAt')})")
+    return None
 
 
 def build_restart(health: dict | None, memo: dict) -> dict | None:
@@ -353,7 +384,8 @@ def evaluate(state: dict, health: dict | None, ledger_by_kind: dict | None, memo
                              f"{rep['repeats']}/{rep['window']} of the latest street lines are repeats"))
     for a in (monotone(state, memo, now), local_brain(state), cabinet_pending(state, memo, now),
               council_quorum(state), seats_stuck(state, memo, now), build_restart(health, memo),
-              treasury_runway(state, ubi_entries, memo, now), rejected_share(state, memo, now)):
+              treasury_runway(state, ubi_entries, memo, now), rejected_share(state, memo, now),
+              openrouter_paused(state)):
         if a:
             alarms.append(a)
     alarms += academy_training(state, memo)

@@ -225,6 +225,29 @@ class LlmTest(unittest.TestCase):
         self.assertEqual(watch.llm_errors({"llmUsage": {"errorsByModel": {"m": {"errors": 4, "lastKind": "timeout"}}}}, memo), [])
 
 
+class OpenRouterPausedTest(unittest.TestCase):
+    def test_paused_field_names_the_cause(self):
+        st = {"llmUsage": {"openrouterPaused": {"status": 402, "reason": "insufficient credits", "until": "15:00", "skipped": 40}}}
+        a = watch.openrouter_paused(st)
+        self.assertEqual(a["key"], "negara:openrouter-paused")
+        self.assertIn("credits exhausted", a["text"])
+        self.assertIn("40 calls skipped", a["text"])
+        st["llmUsage"]["openrouterPaused"]["status"] = 401
+        self.assertIn("key rejected", watch.openrouter_paused(st)["text"])
+
+    def test_not_paused(self):
+        st = {"llmUsage": {"openrouterPaused": None,
+                           "errorsByModel": {"openrouter:m": {"errors": 9, "lastStatus": 402}}}}
+        self.assertIsNone(watch.openrouter_paused(st))  # the server's own field wins
+
+    def test_fallback_from_errors_and_no_duplicate_per_model(self):
+        st = {"llmUsage": {"errorsByModel": {"openrouter:m": {"errors": 434, "lastKind": "http", "lastStatus": 402}}}}
+        self.assertIn("credits exhausted", watch.openrouter_paused(st)["text"])
+        self.assertEqual(watch.llm_errors(st, {}), [])
+        keys = {a["key"] for a in watch.evaluate(st, None, None, {})["alarms"]}
+        self.assertIn("negara:openrouter-paused", keys)
+
+
 class BuildTest(unittest.TestCase):
     def test_restart_without_deploy(self):
         memo = {}
