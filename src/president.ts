@@ -155,7 +155,13 @@ export function nationFacts(S: State) {
 const G = (S: State) => {
   S.gov ||= {};
   S.gov.autonomy ||= { own: 0, offline: 0, rejected: 0, byRole: {} };
-  S.gov.reviews ||= []; S.gov.cards ||= []; S.gov.gradeSum ||= 0; S.gov.gradeN ||= 0;
+  S.gov.reviews ||= []; S.gov.cards ||= [];
+  // the average grade counts only graded cards (A-E); a sum spoiled by an ungraded card (NaN, before ticket #958) is
+  // counted again from the cards kept, so the public average is never NaN (ticket #971)
+  if (!Number.isFinite(S.gov.gradeSum) || !Number.isFinite(S.gov.gradeN)) {
+    const graded = S.gov.cards.filter((c: any) => c && typeof c.grade === 'string' && 'ABCDE'.includes(c.grade) && c.grade.length === 1);
+    S.gov.gradeSum = graded.reduce((n: number, c: any) => n + ({ A: 4, B: 3, C: 2, D: 1, E: 0 } as any)[c.grade], 0); S.gov.gradeN = graded.length;
+  }
   return S.gov;
 };
 export function tally(S: State, role: string, kind: 'own' | 'offline' | 'rejected') {

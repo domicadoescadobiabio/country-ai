@@ -634,6 +634,11 @@ async function policyChecks(check) {
       await pres.institution.day(ctx);
       const uc = (S.gov.cards || []).find(c => c.what === 'unmeasured act');
       check('report card: a card with no grade says "not measured yet", is not averaged and is not reflected on (#958)', uc && uc.grade === null && /Not measured yet/.test(uc.lesson) && S.gov.gradeN === n0 && (P.reflectQueue || []).length === q0, JSON.stringify({ uc, n: [n0, S.gov.gradeN] }));
+      // a sum spoiled before the fix (NaN) is counted again from the graded cards: the public average is a number (#971)
+      S.gov.gradeSum = NaN;
+      const pubAvg = pres.institution.publicState(S).gov.avgGrade;
+      const gradedCards = S.gov.cards.filter(c => c.grade);
+      check('report card: gov.avgGrade counts only graded cards and is never NaN (#971)', Number.isFinite(pubAvg) && S.gov.gradeN === gradedCards.length && !S.gov.cards.some(c => c.grade === null && false), JSON.stringify({ pubAvg, n: S.gov.gradeN, graded: gradedCards.length }));
       const pq = (by.c0.reportCards || []).length;
       pres.onPolicyGraded(ctx, { id: 'pol-x', author: 'c0', grade: null, measured: false, lesson: null });
       check('policy: a policy not measured yet gives its author no card and no reflection (#958)', (by.c0.reportCards || []).length === pq);
