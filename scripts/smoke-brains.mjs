@@ -25,6 +25,10 @@ const mock = http.createServer((req, res) => {
     bucket[body.model] = (bucket[body.model] || 0) + 1;
     if (isClaude && body.fallbacks) seen.fallbacksParam = body.fallbacks;
     if (isClaude) (seen.claudeFallbacks ||= {})[body.model] = body.fallbacks ?? null;
+    // an OpenRouter account with no credit left answers 402 to every call (17 Nov)
+    if (!isClaude && req.headers.authorization === 'Bearer test-or-broke') { res.writeHead(402, { 'content-type': 'application/json' }); return res.end('{"error":{"message":"Insufficient credits"}}'); }
+    // ...and 403 when one input is flagged by moderation (a visitor's words): that must not pause OpenRouter (#981)
+    if (!isClaude && req.headers.authorization === 'Bearer test-or-mod') { res.writeHead(403, { 'content-type': 'application/json' }); return res.end('{"error":{"message":"Input flagged by moderation"}}'); }
     res.writeHead(!isClaude && body.model === BROKEN ? 404 : 200, { 'content-type': 'application/json' });
     if (!isClaude && body.model === BROKEN) return res.end('{"error":{"message":"model not found"}}');
     const text = smartAnswer(String(prompt || ''));
@@ -102,6 +106,30 @@ try {
     const be = llmT.usage.errorsByModel[`openrouter:${BROKEN}`];
     check('a failing OpenRouter model costs no Claude call: that official thinks offline', rb.text == null && (seen.openrouter[BROKEN] || 0) === orB + 1 && Object.values(seen.claude).reduce((t, n) => t + n, 0) === clB && llmT.usage.fallbacks === 0, JSON.stringify({ rb, or: (seen.openrouter[BROKEN] || 0) - orB }));
     check('errors are counted per model with the kind of failure', be?.errors === 1 && be.lastKind === 'http' && be.lastStatus === 404 && typeof be.lastAt === 'string', JSON.stringify(llmT.usage.errorsByModel));
+  }
+  // OpenRouter with no credit (402): paused after the first failure, instead of 198 of 198 calls failing (17 Nov)
+  {
+    const llmP = makeLLM({ anthropicKey: 'test-claude', orKey: 'test-or-broke', orBase: MOCK, llmPerMin: 5000, claudeModel: 'claude-opus-5-5' }, () => {});
+    const hits = () => Object.values(seen.openrouter).reduce((t, n) => t + n, 0);
+    const h0 = hits();
+    const r1 = await llmP.askDetailed({ model: OR_T, system: 's', user: 'Pick A or B.', route: 'openrouter' });
+    const r2 = await llmP.askDetailed({ model: OR_T, system: 's', user: 'Pick A or B.', route: 'openrouter' });
+    const r3 = await llmP.askDetailed({ model: OR_T, system: 's', user: 'Pick A or B.', route: 'openrouter' });
+    const pz = llmP.usage.openrouterPaused;
+    check('OpenRouter 402 (no credit): the first call fails, then OpenRouter is paused: later calls are not sent, not counted as errors, and the pause says why and until when',
+      r1.text == null && r2.text == null && r3.via === 'offline (openrouter paused)' && hits() - h0 === 1 && llmP.usage.errors === 1 && pz?.status === 402 && /credit/.test(pz.reason) && pz.skipped === 2 && new Date(pz.until) > new Date() && llmP.orPaused() === true,
+      JSON.stringify({ sent: hits() - h0, errors: llmP.usage.errors, paused: pz, vias: [r1.via, r2.via, r3.via] }));
+    // a 403 (moderation flagged one input, e.g. a visitor's words) is an error for that call only: never a pause
+    const llmM = makeLLM({ anthropicKey: 'test-claude', orKey: 'test-or-mod', orBase: MOCK, llmPerMin: 5000, claudeModel: 'claude-opus-5-5' }, () => {});
+    const m0 = hits();
+    const m1 = await llmM.askDetailed({ model: OR_T, system: 's', user: 'flagged words', route: 'openrouter' });
+    const m2 = await llmM.askDetailed({ model: OR_T, system: 's', user: 'flagged words', route: 'openrouter' });
+    check('OpenRouter 403 (moderation flagged an input) does not pause OpenRouter: each call is still sent and counted as an error (Security #981)',
+      m1.text == null && m2.text == null && hits() - m0 === 2 && llmM.usage.errors === 2 && llmM.usage.openrouterPaused === null && llmM.orPaused() === false && m2.via !== 'offline (openrouter paused)',
+      JSON.stringify({ sent: hits() - m0, errors: llmM.usage.errors, paused: llmM.usage.openrouterPaused }));
+    const pctx = { S: { day: 1, foundedAt: Date.now() - 3600000 }, cfg: { dayMs: 86400000, dailyBudgetUsd: 25, trainBudgetUsd: 3, trainOrModel: OR_T, trainClaudeModel: CL_T, trainPerMin: 1e6 }, llm: llmP };
+    const h1 = hits(); const lesson = await teach(pctx, { system: 'Teach.', user: 'Question: 2+2? A) 3 B) 4 C) 5 D) 6' });
+    check('while OpenRouter is paused the school never picks it as a teacher (Claude within its share, or none)', hits() === h1 && (!lesson || lesson.teacher === 'claude'), JSON.stringify({ sent: hits() - h1, teacher: lesson?.teacher || null }));
   }
   // trainPerMin is lifted here (these checks run hundreds of lessons in a minute); its own check is further down
   const tctx = (cfg = {}, S = {}) => ({ S: { day: 1, foundedAt: Date.now() - 3600000, ...S }, cfg: { dayMs: 86400000, dailyBudgetUsd: 25, trainBudgetUsd: 3, trainOrModel: OR_T, trainClaudeModel: CL_T, trainPerMin: 1e6, ...cfg }, llm: llmT });

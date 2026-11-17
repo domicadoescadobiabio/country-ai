@@ -17,11 +17,23 @@ export function makeLLM(cfg: Record<string, any>, log: (kind: string, text: stri
   const claude = hasClaude ? new Anthropic({ apiKey: cfg.anthropicKey, maxRetries: 1, timeout: 120000 }) : null;
   const orBase = (cfg.orBase || 'https://openrouter.ai/api/v1').replace(/\/$/, '');
   const usage = { calls: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, errors: 0, claude: 0, openrouter: 0, fallbacks: 0, costUsd: 0,
-    errorsByModel: {} as Record<string, { errors: number; lastKind: string; lastStatus: number | null; lastAt: string }> };
+    errorsByModel: {} as Record<string, { errors: number; lastKind: string; lastStatus: number | null; lastAt: string }>,
+    openrouterPaused: null as null | { status: number; reason: string; until: string; skipped: number } };
   // Per-model failure counts so a broken model can be spotted on /api/state. Only the kind, the HTTP status
   // and the time are kept (never the provider's message, which can echo request details). The key set is
   // bounded: model ids come from config and the founders' list, but cap it anyway.
   // kind: http (non-2xx), timeout, bad-json (reply was not valid JSON), network (unreachable), auth, rate-limit
+  // OpenRouter answering 402 (no credit left) or 401 (key refused) fails every call the same way: OpenRouter is then
+  // paused for OPENROUTER_PAUSE_MIN minutes (default 15) instead of being asked again and again (17 Nov: 198 of 198
+  // calls failed with 402). Paused calls are not sent, not counted as errors and use no LLM_PER_MIN place; usage
+  // .openrouterPaused says why and until when (the monitor reads it). After the pause one call tries again.
+  const OR_PAUSE_MS = Math.min(1440, Math.max(1, Number(process.env.OPENROUTER_PAUSE_MIN) || 15)) * 60000;
+  let orPausedUntil = 0;
+  const orPaused = () => {
+    if (Date.now() < orPausedUntil) return true;
+    if (usage.openrouterPaused) usage.openrouterPaused = null;
+    return false;
+  };
   function noteError(key: string, kind: string, status: number | null = null) {
     usage.errors++;
     const m = usage.errorsByModel;
@@ -101,6 +113,14 @@ export function makeLLM(cfg: Record<string, any>, log: (kind: string, text: stri
       // abort = our 90 s timer fired (it also aborts a body still streaming in r.json())
       const kind = e?.kind || (e?.name === 'AbortError' || ac.signal.aborted ? 'timeout' : 'network');
       noteError(`openrouter:${model}`, kind, e?.status ?? null);
+      // only 402 (no credit) and 401 (key refused) pause it: OpenRouter also answers 403 when one INPUT is flagged by
+      // moderation, and a visitor's words (/api/say) must never be able to switch OpenRouter off for everyone (#981)
+      if ([401, 402].includes(e?.status)) {
+        orPausedUntil = Date.now() + OR_PAUSE_MS;
+        usage.openrouterPaused = { status: e.status, reason: e.status === 402 ? 'payment required: the OpenRouter account has no credit left' : 'the OpenRouter key was refused',
+          until: new Date(orPausedUntil).toISOString(), skipped: usage.openrouterPaused?.skipped || 0 };
+        log('engine', `OpenRouter ${e.status}: paused for ${Math.round(OR_PAUSE_MS / 60000)} min (${usage.openrouterPaused.reason})`);
+      }
       log('engine', `OpenRouter: ${kind === 'timeout' ? `timeout (${model})` : String(e.message).slice(0, 70)}`);
       return null;
     } finally { clearTimeout(t); }
@@ -114,20 +134,25 @@ export function makeLLM(cfg: Record<string, any>, log: (kind: string, text: stri
   // fallback: false keeps the call on the model asked for (no Claude server-side fallback); maxText caps the
   // returned text (900 for agents' answers; a teacher's worked explanation may be longer)
   async function askDetailed({ model = '', system, user, maxTokens = 160, claudeModel = null, effort = 'low', route = null, fallback = true, maxText = 900 }) {
-    if (!provider || !budgetOk()) return { text: null, via: 'offline', cost: 0 };
-    usage.calls++;
+    if (!provider) return { text: null, via: 'offline', cost: 0 };
     let cost = 0;
     const claudeId = claudeModel || (/^claude-/.test(model) ? model : cfg.claudeModel);
     const wantsClaude = hasClaude && (claudeModel || !hasOR || (route !== 'openrouter' && (/^anthropic\//.test(model) || /^claude-/.test(model) || !model)));
+    // OpenRouter paused (no credit, key refused): a call that can only go there is not sent at all
+    const paused = !wantsClaude && orPaused();
+    if (paused && !(hasClaude && route !== 'openrouter')) { usage.openrouterPaused!.skipped++; return { text: null, via: 'offline (openrouter paused)', cost: 0 }; }
+    if (!budgetOk()) return { text: null, via: 'offline', cost: 0 };
+    usage.calls++;
     if (wantsClaude) {
       lastCost = 0;
       const text = cleanText(await askClaude({ system, user, model: claudeId, effort, fallback, maxTokens: fallback ? 4000 : Math.max(1500, Math.min(4000, maxTokens * 2)) }), maxText); // room for adaptive thinking
       return { text: text || null, via: `claude:${claudeId}`, cost: lastCost };
     }
     lastCost = 0;
-    let text = cleanText(await askOpenRouter({ model: model || 'meta-llama/llama-4-maverick', system, user, maxTokens, effort }), maxText);
+    let text = paused ? null : cleanText(await askOpenRouter({ model: model || 'meta-llama/llama-4-maverick', system, user, maxTokens, effort }), maxText);
     cost += lastCost;
     if (text) return { text, via: `openrouter:${model}`, cost };
+    if (paused) usage.openrouterPaused!.skipped++;
     if (hasClaude && route !== 'openrouter') { // OpenRouter failed: the agent still thinks, with Claude
       usage.fallbacks++; lastCost = 0;
       text = cleanText(await askClaude({ system, user, model: cfg.claudeModel, effort }), 900);
@@ -151,5 +176,5 @@ export function makeLLM(cfg: Record<string, any>, log: (kind: string, text: stri
     try { return JSON.parse(m[0]); } catch { return null; }
   }
   const label = provider === 'mixed' ? `mixed: claude (${cfg.claudeModel}) + openrouter` : provider === 'anthropic' ? `claude (${cfg.claudeModel})` : provider === 'openrouter' ? 'openrouter (per-agent models)' : 'offline';
-  return { enabled: !!provider, provider, label, ask, askDetailed, routeOf, json, usage, hasClaude, hasOR };
+  return { enabled: !!provider, provider, label, ask, askDetailed, routeOf, json, usage, hasClaude, hasOR, orPaused };
 }

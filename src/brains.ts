@@ -390,7 +390,8 @@ function trainAllows(ctx, who) {
 }
 function pickTeacher(ctx, llm, gifted) {
   const T = trainBudgetState(ctx); const g = trainTargets(ctx);
-  const has = { openrouter: !!llm.hasOR, claude: !!llm.hasClaude };
+  // (OpenRouter paused after a 402 or 401, src/llm.ts: not a teacher until the pause ends)
+  const has = { openrouter: !!llm.hasOR && !llm.orPaused?.(), claude: !!llm.hasClaude };
   const ok = who => has[who] && trainAllows(ctx, who);
   // the talent programme: gifted citizens get the OpenRouter teacher whenever it can take them
   if (gifted && ok('openrouter')) return 'openrouter';
