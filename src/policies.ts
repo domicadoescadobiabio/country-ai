@@ -330,7 +330,8 @@ export function applyPolicies(ctx: Ctx) {
   }
   s.stats.paid = Math.round((s.stats.paid + paidToday) * 100) / 100;
   s.stats.shortfall = Math.round(s.list.reduce((n: number, p: any) => n + (p.shortfall || 0), 0) * 100) / 100;
-  for (const p of s.list) if (p.grade == null && p.enactedDay != null && S.day >= p.enactedDay + REVIEW_LAG_DAYS) gradePolicy(ctx, p);
+  repairPolicyGrades(ctx);
+  for (const p of s.list) if (p.grade == null && !p.gradeDone && p.enactedDay != null && S.day >= p.enactedDay + REVIEW_LAG_DAYS) gradePolicy(ctx, p);
   return { paid: paidToday };
 }
 
@@ -358,23 +359,57 @@ function snapshot(S: State, p: any) {
 // Fair grades (owner, 16 Nov): a city's policy (and a project) is its city's change minus the other cities' average
 // change over the same days; a nation's policy is its change minus the trend between its proposal and its start. The
 // lesson names the comparison (fairGrade in util.ts, also for the Government box's report cards).
+// The baseline kept when it started. Policies enacted before 16 Nov kept the older shape { name, value, better } with
+// no nation/byCity (that is why their grades read NaN, owner 17 Nov): read it where its meaning is clear (a project's
+// value was its city's mood; a nation policy's value was the nation's number); otherwise there is no baseline.
+function baseOf(p: any, now: any) {
+  const b = p.base;
+  if (!b) return null;
+  if (b.byCity && typeof b.byCity === 'object') return b;
+  if (!Number.isFinite(b.value)) return null;
+  const shape = { name: now.name, better: now.better, floor: now.floor, share: now.share, line: b.line ?? now.line };
+  if (p.lever === 'project' && p.city) return { ...shape, nation: NaN, byCity: { [p.city]: b.value } };
+  if (p.scope === 'nation') return { ...shape, nation: b.value, byCity: {} };
+  return null; // a city policy measured nation-wide before: not its city's number
+}
 function gradePolicy(ctx: Ctx, p: any) {
-  const S = ctx.S; const now = snapshot(S, p); const was = p.base || now;
+  const S = ctx.S; const now = snapshot(S, p); const was = baseOf(p, now) || { ...now, nation: NaN, byCity: {} };
+  p.gradeDone = true; // graded once, measured or not
   const fmt = (v: number) => (was.share ? pct(v) : String(Math.round(v * 1000) / 1000));
   const city = p.scope === 'city' || p.lever === 'project' ? p.city : null;
   let g;
-  if (city && was.byCity?.[city] != null && now.byCity[city] != null) {
-    const others = Object.keys(was.byCity).filter(c => c !== city && now.byCity[c] != null).map(c => now.byCity[c] - was.byCity[c]);
-    g = fairGrade({ name: `${was.name} in ${CITIES.find(c => c.id === city)?.name || city}`, before: was.byCity[city], after: now.byCity[city], others, better: was.better, floor: was.floor, fmt });
+  if (city) {
+    // (no number for its city before it started: not measured)
+    const before = Number(was.byCity?.[city]), after = Number(now.byCity[city]);
+    const others = Object.keys(was.byCity || {}).filter(c => c !== city && Number.isFinite(was.byCity[c]) && Number.isFinite(now.byCity[c])).map(c => now.byCity[c] - was.byCity[c]);
+    g = fairGrade({ name: `${now.name} in ${CITIES.find(c => c.id === city)?.name || city}`, before: Number.isFinite(before) ? before : NaN, after, others, better: now.better, floor: now.floor, fmt });
   } else {
     const pre = p.pre; const span = (p.enactedDay ?? S.day) - (pre?.day ?? p.enactedDay ?? S.day);
-    const trend = pre && span > 0 ? ((was.nation - pre.nation) / span) * Math.max(0, S.day - (p.enactedDay ?? S.day)) : null;
-    g = fairGrade({ name: was.name, before: was.nation, after: now.nation, trend, better: was.better, floor: was.floor, fmt });
+    const trend = pre && Number.isFinite(pre.nation) && Number.isFinite(was.nation) && span > 0 ? ((was.nation - pre.nation) / span) * Math.max(0, S.day - (p.enactedDay ?? S.day)) : null;
+    g = fairGrade({ name: now.name, before: Number.isFinite(was.nation) ? was.nation : NaN, after: now.nation, trend, better: now.better, floor: now.floor, fmt });
   }
-  p.grade = g.grade; p.fair = { own: g.own, compare: g.compare, effect: g.effect, raw: g.raw };
+  p.grade = g.grade; p.measured = g.measured; p.fair = { own: g.own, compare: g.compare, effect: g.effect, raw: g.raw };
   p.lesson = cleanText(`${g.text}${p.shortfall > 0 ? `; ${Math.round(p.shortfall)} CAI could not be paid` : ''}`, 240);
-  ctx.record?.('policy_graded', 'state', { id: p.id, grade: p.grade, lesson: p.lesson, raw: g.raw });
-  try { hooks.graded?.(ctx, p); } catch { /* the Government box's reflection */ }
+  ctx.record?.('policy_graded', 'state', { id: p.id, grade: p.grade, measured: g.measured, lesson: p.lesson, raw: g.raw });
+  // only a measured grade reaches the author's reflection (an unmeasured one teaches nothing)
+  if (g.measured) { try { hooks.graded?.(ctx, p); } catch { /* the Government box's reflection */ } }
+}
+// One-off (17 Nov): grades written with a NaN baseline (an E for a number nobody recorded) become "not measured", so
+// no official's next reflection learns from a false E. Once (flag in the state), each change on the ledger.
+export function repairPolicyGrades(ctx: Ctx) {
+  const s = P(ctx.S);
+  if (s.fixes?.nanGrades) return 0;
+  let n = 0;
+  for (const p of s.list) {
+    const bad = p.grade != null && (/NaN/.test(String(p.lesson || '')) || (p.fair && ['own', 'effect'].some(k => p.fair[k] != null && !Number.isFinite(p.fair[k]))));
+    if (!bad) continue;
+    const was = p.grade;
+    Object.assign(p, { grade: null, measured: false, gradeDone: true, fair: null, lesson: 'Not measured: the number from before it started was not recorded (an older record), so no grade.' });
+    ctx.record?.('policy_regraded', 'state', { id: p.id, was, now: null, reason: 'NaN baseline: not measured' });
+    n++;
+  }
+  s.fixes = { ...(s.fixes || {}), nanGrades: true };
+  return n;
 }
 
 // ---------------------------------------------------------------- public view

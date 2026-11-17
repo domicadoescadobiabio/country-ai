@@ -252,6 +252,45 @@ const money = S => S.treasury + S.citizens.reduce((n, a) => n + a.wallet, 0) + O
   check('fairGrade: without a comparison it grades the raw change and says so; a before of 0 never divides by zero', raw.raw && /no comparison/.test(raw.text) && raw.grade === 'A' && zero.grade === 'C' && Number.isFinite(zero.effect), JSON.stringify({ raw, zero }));
 }
 
+// --- no baseline is "not measured", never an E (owner, 17 Nov: NaN baselines were graded E)
+{
+  const { fairGrade } = await import('../src/util.ts');
+  const nb = fairGrade({ name: 'mood', before: NaN, after: 0.08, better: 'up', floor: 0.1 }), nu = fairGrade({ name: 'mood', before: undefined, after: 0.08, better: 'up', floor: 0.1 });
+  check('fairGrade with no number before (NaN or undefined): grade null, measured false, an honest text without NaN', nb.grade === null && nb.measured === false && nu.grade === null && !/NaN/.test(nb.text + nu.text) && /not measured/.test(nb.text), JSON.stringify([nb, nu]));
+  // policies enacted before 16 Nov kept the older baseline { name, value, better }
+  const { S, ctx } = republic();
+  const graded = []; pol.setPolicyHooks({ graded: (c, p) => graded.push(p.id) });
+  for (const a of S.citizens) a.mood = { v: 0.05 };
+  const park = pol.proposePolicy(ctx, base({ scope: 'city', city: 'kernelfalls', lever: 'project', params: { kind: 'park', cost: 600 }, days: 2 })); pol.enactPolicy(ctx, park.id, 'mayor');
+  const grant = pol.proposePolicy(ctx, base({ params: { group: 'poor', amount: 5 } })); pol.enactPolicy(ctx, grant.id, 'pres');
+  const cityGrant = pol.proposePolicy(ctx, base({ scope: 'city', city: 'neura', params: { group: 'poor', amount: 5 } })); pol.enactPolicy(ctx, cityGrant.id, 'mayor');
+  const school = pol.proposePolicy(ctx, base({ lever: 'school_focus', params: { field: FIELD_IDS[0], weight: 2 } })); pol.enactPolicy(ctx, school.id, 'pres');
+  const L = pol.P(S).list; const get = id => L.find(x => x.id === id);
+  get(park.id).base = { name: 'mood in Kernel Falls', value: 0.05, better: 'up' };           // old shape, the city's value: still usable
+  get(grant.id).base = { name: 'citizens under the poor line', value: 0.2, better: 'down', line: 300 }; // old shape, nation: usable
+  get(cityGrant.id).base = { name: 'citizens under the poor line', value: 0.2, better: 'down', line: 300 }; // old shape, a city policy measured nation-wide: not usable
+  delete get(school.id).base;                                                                  // nothing recorded at all
+  S.day = 2; pol.applyPolicies(ctx);
+  const [gp, gg, gc, gs] = [park, grant, cityGrant, school].map(x => get(x.id));
+  check('an older baseline is read where its meaning is clear (a project\'s city mood, a nation policy\'s number): graded, no NaN', /^[A-E]$/.test(gp.grade) && /^[A-E]$/.test(gg.grade) && !/NaN/.test(gp.lesson + gg.lesson), JSON.stringify([gp.grade, gp.lesson, gg.grade, gg.lesson]));
+  check('no usable baseline (a city policy measured nation-wide, or none at all): grade null and "not measured", never E, never NaN, not sent to the reflection hook',
+    gc.grade === null && gs.grade === null && gc.measured === false && /not measured/.test(gc.lesson) && /not measured/.test(gs.lesson) && !/NaN/.test(gc.lesson + gs.lesson) && !graded.includes(gc.id) && !graded.includes(gs.id) && graded.includes(gp.id),
+    JSON.stringify([gc.grade, gc.lesson, gs.grade, gs.lesson, graded]));
+  S.day = 3; pol.applyPolicies(ctx);
+  check('a policy graded "not measured" is not graded again every day', gc.grade === null && gc.gradeDone === true);
+  pol._resetPolicyHooks();
+  // the one-off: grades already stored with NaN become "not measured", once, on the ledger
+  const { S: R, ctx: rc, ledger: rl } = republic();
+  const r1 = pol.proposePolicy(rc, base()); pol.enactPolicy(rc, r1.id, 'pres');
+  const r2 = pol.proposePolicy(rc, base({ params: { group: 'poor', amount: 3 } })); pol.enactPolicy(rc, r2.id, 'pres');
+  Object.assign(pol.P(R).list[0], { grade: 'E', lesson: 'mood in Kernel Falls NaN -> 0.081 (NaN), no comparison (raw change): own effect ~NaN -> E', fair: { own: NaN, effect: NaN } });
+  Object.assign(pol.P(R).list[1], { grade: 'B', lesson: 'citizens under the poor line 20% -> 18% (-2%)', fair: { own: -0.02, effect: -0.02 } });
+  const fixed = pol.repairPolicyGrades(rc), again = pol.repairPolicyGrades(rc);
+  check('one-off repair: a stored NaN grade becomes "not measured" (grade null), a real grade stays; once, on the ledger (policy_regraded)',
+    fixed === 1 && again === 0 && pol.P(R).list[0].grade === null && /Not measured/.test(pol.P(R).list[0].lesson) && pol.P(R).list[1].grade === 'B' && rl.filter(l => l.kind === 'policy_regraded').length === 1 && pol.policyView(R, pol.P(R).list[0]).grade === null,
+    JSON.stringify({ fixed, again, l: pol.P(R).list.map(p => [p.grade, p.lesson]) }));
+}
+
 // --- the public view
 {
   const { S, ctx } = republic();

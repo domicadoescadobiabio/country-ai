@@ -19,7 +19,7 @@ import { borderCheck } from './src/military.ts';
 import { placeView as governmentPlace } from './src/president.ts'; // government buildings (Government box)
 import { placeView as peoplePlace, nowDoing, staffOnDuty } from './src/daily.ts'; // the people's buildings, the robot card and who is on duty (People box)
 import { jobOf, jobCounts, ALL_JOB_IDS, newsFeed } from './src/daily.ts'; // jobs and Republic News (People box, src/jobs.ts and src/news.ts)
-import { applyPolicies, policyList, policySummary } from './src/policies.ts'; // free policies (Nation box)
+import { applyPolicies, policyList, policySummary, repairPolicyGrades } from './src/policies.ts'; // free policies (Nation box)
 import { benchTick, benchView, benchSummary } from './src/bench.ts';           // the daily fixed exam of the local brain (Nation box)
 import { aspirationsTick, aspirationList, aspirationSummary, citizenAspirations, TOPICS as ASPIRATION_TOPICS } from './src/aspirations.ts'; // the people's aspirations (Nation box)
 import { freshAcademy, academyTick, totalSeats } from './src/academy.ts';
@@ -1204,6 +1204,8 @@ const server = http.createServer(async (req, res) => {
 
 if (!store.head().count) ctx.record('genesis', 'founders', { nation: NATION, constitutionVersion: S.constitutionVersion, citizens: S.citizens.length, offices: Object.fromEntries(Object.entries(S.seats).map(([r, ids]) => [r, ids])) });
 applyAmendments(ctx);
+// one-off (17 Nov): policy grades written with a NaN baseline become "not measured" (src/policies.ts, ledger policy_regraded)
+{ try { const n = repairPolicyGrades(ctx); if (n) { logActivity('state', `Correction: ${n} policy grade(s) without a baseline are now "not measured"`); dirty = true; } } catch (e) { logActivity('state', `policies: ${String(e?.message || e).slice(0, 80)}`); } }
 { const n = voidEmptyMandates(ctx); if (n) logActivity('state', `Correction: ${n} seat(s) without a valid mandate vacated; new elections follow`); }
 // founders keep the model family written in src/citizens.mjs (updated when the catalog changes)
 for (const f of FOUNDERS) { const a = S.citizens.find(x => x.id === f.id && !x.brain); if (a && a.model !== f.model) a.model = f.model; }

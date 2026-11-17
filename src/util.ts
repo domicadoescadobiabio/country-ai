@@ -130,8 +130,12 @@ export function capWhereabouts(view: any, maxBytes = 150000) {
 // was already on. Without a comparison the raw change is used and the text says so. The grade compares that own effect
 // with max(|before|, floor), floor being the size of a change that matters for this number (mood 0.1, a share 0.02).
 //   fairGrade({ name, before, after, others?: number[] (other cities' changes), trend?: number (expected change),
-//               better: 'up'|'down', floor, fmt? }) -> { grade A-E, own, compare, effect, raw, text }
+//               better: 'up'|'down', floor, fmt? }) -> { grade A-E, own, compare, effect, raw, measured: true, text }
+// Without a number before (or now) nothing can be measured: grade null, measured false and an honest text, never an
+// E for a number nobody recorded (owner, 17 Nov: NaN baselines graded E taught officials the wrong lesson).
 export function fairGrade(o: { name: string; before: number; after: number; others?: number[] | null; trend?: number | null; better: 'up' | 'down'; floor: number; fmt?: (v: number) => string }) {
+  if (!Number.isFinite(o.before) || !Number.isFinite(o.after))
+    return { grade: null, own: null, compare: null, effect: null, raw: true, measured: false, text: `${o.name}: not measured (${Number.isFinite(o.before) ? 'no number now' : 'no number from before it started'}), no grade` };
   const fmt = o.fmt || ((v: number) => String(Math.round(v * 1000) / 1000));
   const sgn = (v: number) => `${v > 0 ? '+' : v < 0 ? '-' : ''}${fmt(Math.abs(v))}`;
   const own = o.after - o.before;
@@ -143,7 +147,7 @@ export function fairGrade(o: { name: string; before: number; after: number; othe
   const grade = rel > 0.05 ? 'A' : rel > 0.02 ? 'B' : rel >= -0.02 ? 'C' : rel >= -0.05 ? 'D' : 'E';
   const vs = others.length ? `, other cities avg ${sgn(compare!)}` : compare != null ? `, trend before ${sgn(compare)}` : ', no comparison (raw change)';
   const text = `${o.name} ${fmt(o.before)} -> ${fmt(o.after)} (${sgn(own)})${vs}: own effect ~${sgn(effect)} -> ${grade}`;
-  return { grade, own, compare, effect, raw: compare == null, text };
+  return { grade, own, compare, effect, raw: compare == null, measured: true, text };
 }
 
 export const clamp = (v, a, b) => Math.max(a, Math.min(b, v));

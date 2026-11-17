@@ -162,7 +162,7 @@ export interface State {
   policy: { taxRate: number; ubi: number; wage: number; wageCap: number; finePct?: number; borderLevel?: number };
   decisions: Decision[];
   /** free policies (src/policies.ts): the last 200, the daily draft count, finished projects, totals */
-  policies?: { list: any[]; seq: number; drafts: { day: number; nation: number; citizen?: number; byCity: Record<string, number> }; projectsDone: { id: string; city: string; kind: string; day: number }[]; stats: Record<string, number>; appliedDay?: number };
+  policies?: { list: any[]; seq: number; drafts: { day: number; nation: number; citizen?: number; byCity: Record<string, number> }; projectsDone: { id: string; city: string; kind: string; day: number }[]; stats: Record<string, number>; appliedDay?: number; fixes?: Record<string, boolean> };
   /** the people's aspirations (src/aspirations.ts): the last 300, the day's review count, totals */
   aspirations?: { list: any[]; seq: number; reviews: { day: number; n: number }; stats: Record<string, number>; tickDay?: number };
   /** the daily fixed exam (src/bench.ts): the last 120 runs and the run in progress */
