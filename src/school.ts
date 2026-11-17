@@ -1068,6 +1068,11 @@ const stemOf = (q: string) => String(q || '').toLowerCase().replace(/\s+/g, ' ')
 let askedStems = new Set<string>();
 const rememberStem = (s: string) => { if (askedStems.size >= 50000) askedStems = new Set([...askedStems].slice(-25000)); askedStems.add(s); };
 const saturated = { day: -1 as number, fields: new Set<string>() };
+// the question of a lesson exactly as applyTeacher hands it to saveExample (the dataset's qhash is taken from it)
+const savedQuestion = (L: any) => (L.kind === 'free' && L.card ? `${L.card.title}\n${L.card.text}\n${L.card.question}` : String(L.user || ''));
+const questionKey = (q: string) => { const f = (brains as any).questionHash; try { return typeof f === 'function' ? String(f(q)) : stemOf(q); } catch { return stemOf(q); } };
+let sentQuestions = new Set<string>(); // handed to a teacher in this run (the dataset may not have saved them yet)
+const rememberSent = (h: string) => { if (sentQuestions.size >= 50000) sentQuestions = new Set([...sentQuestions].slice(-25000)); sentQuestions.add(h); };
 export const _teacherOnlyMemory = () => ({ asked: askedStems.size, saturated: [...saturated.fields] }); // tests
 // called every tick, local brain or not: while OpenRouter is behind its minimum, start teacher-only lessons in the
 // fields that need data most (one of the three thinnest each time), never over the paced allowance
@@ -1126,9 +1131,17 @@ function teacherAllowed(S: State, L: any) {
 const GIFTED_TEACHER = (field: string) => `You are a demanding ${fieldName(field)} mentor in the talent programme of Country AI, a simulated nation of AI citizens; this student shows real promise.`;
 function callTeacher(ctx: Ctx, L: any, studentText: string, score: number) {
   if (!ctx.llm?.enabled || teaching.has(L.id) || teaching.size >= maxTeaching() || !teacherAllowed(ctx.S, L)) return;
+  const st = SC(ctx.S).stats;
+  // never pay a teacher for a pair the dataset would refuse as a duplicate (ticket #938: 1,831 duplicates against 747
+  // kept): every lesson, a student's own included, is looked up first, with the question exactly as saveExample will
+  // store it, in the dataset (ctx.trainKnown) and among the questions already handed to a teacher and not saved yet.
+  // The student keeps the server's own grade and lesson; only the paid explanation is left out.
+  const q = savedQuestion(L); const qh = questionKey(q);
+  if (sentQuestions.has(qh) || (typeof (ctx as any).trainKnown === 'function' && (ctx as any).trainKnown(q))) { st.teacherSkippedKnown = (st.teacherSkippedKnown || 0) + 1; return; }
+  rememberSent(qh);
   const entry = { done: false, result: null as any, lesson: { ...L, studentText, score } };
   teaching.set(L.id, entry);
-  const st = SC(ctx.S).stats; st.teacherCalls++;
+  st.teacherCalls++;
   if (st.tday?.day !== ctx.S.day) st.tday = { day: ctx.S.day, gifted: 0, normal: 0, teacherOnly: 0 };
   if (L.gifted) { st.tday.gifted++; st.giftedTeacherCalls = (st.giftedTeacherCalls || 0) + 1; } else st.tday.normal++;
   const free = L.kind === 'free';
@@ -1143,7 +1156,7 @@ function callTeacher(ctx: Ctx, L: any, studentText: string, score: number) {
   // gifted: true gets them the OpenRouter teacher when it can take them, counted apart (brains.ts, budget.train.gifted)
   // (teacher-only lessons are counted by the school itself, stats.tday.teacherOnly; brains.ts reads teacherPace())
   Promise.resolve().then(() => teach(ctx, L.gifted ? { system, user, maxTokens: free ? 700 : 500, purpose: `gifted:${L.field}`, gifted: true } : { system, user, maxTokens: free ? 500 : 300, purpose: `school:${L.field || L.subject}` }))
-    .then(r => { entry.result = r; entry.done = true; }, () => { entry.done = true; });
+    .then(r => { entry.result = r; entry.done = true; if (!r?.text) sentQuestions.delete(qh); }, () => { entry.done = true; sentQuestions.delete(qh); }); // no answer, nothing paid: the question may be asked again
 }
 // the faculty a training pair belongs to, for a LoRA per faculty later: the field, else the core subject
 // (letters, digits and _ only, as brains.ts cleanDomain() accepts)
@@ -1404,7 +1417,7 @@ export function schoolNow() {
 }
 // for tests: forget module state (a test may build several republics in one process)
 export const teacherPace = () => ({ ...pace, concurrency: maxTeaching() }); // budget.train and tests
-export function _resetSchool() { pending.clear(); teaching.clear(); soon.length = 0; askedStems = new Set(); saturated.day = -1; saturated.fields.clear(); Object.assign(pace, { behind: false, short: 0, minNow: 0, share: TEACHER_SHARE, teacherOnly: 0, allowedNow: 0, pacedAt: null }); recentLessons.length = 0; lastLessonBy.clear(); plan = { key: null, ids: [], i: 0 }; summary = { at: 0, n: -1, view: null }; giftedCache = { ref: null, map: new Map() }; }
+export function _resetSchool() { pending.clear(); teaching.clear(); soon.length = 0; askedStems = new Set(); sentQuestions = new Set(); saturated.day = -1; saturated.fields.clear(); Object.assign(pace, { behind: false, short: 0, minNow: 0, share: TEACHER_SHARE, teacherOnly: 0, allowedNow: 0, pacedAt: null }); recentLessons.length = 0; lastLessonBy.clear(); plan = { key: null, ids: [], i: 0 }; summary = { at: 0, n: -1, view: null }; giftedCache = { ref: null, map: new Map() }; }
 export const _teacherPending = () => [...teaching.values()].filter(e => !e.done).length;
 export const _pending = () => [...pending.values()];
 export const promptFor = lessonPrompt; // the lesson's system prompt (tests: notes and worked examples in it)

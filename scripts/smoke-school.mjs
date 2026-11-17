@@ -142,6 +142,23 @@ check('teacher answers are counted in the public state', school.schoolState(S).t
 const ex = S.school.examples;
 check('a teacher\'s explanation that matches the server\'s key becomes a worked example', Object.values(ex).some(l => l.length > 0), JSON.stringify(ex));
 check('worked examples are capped per subject', Object.values(ex).every(l => l.length <= 3));
+// ticket #938: an ordinary student's lesson is looked up too before its paid teacher (not only teacher-only lessons)
+{
+  const { questionHash } = await import('../src/brains.ts');
+  const round = async () => { school._resetSchool(); for (const k of kids) k.schoolSession = null; give(12, 40); await tick(); await tick(); answerAll(jobs()); await tick(); await new Promise(res => setTimeout(res, 5)); await tick(); };
+  const n0 = paidCalls.length, k0 = S.school.stats.teacherSkippedKnown || 0; const looked = [];
+  ctx.trainKnown = q => { looked.push(String(q)); return true; }; // the dataset holds every question
+  for (let r = 0; r < 3; r++) await round();
+  check('a student\'s own lesson is looked up in the dataset first: a question it holds never goes to a paid teacher (ticket #938)',
+    looked.length > 0 && paidCalls.length === n0 && (S.school.stats.teacherSkippedKnown || 0) > k0, JSON.stringify({ looked: looked.length, paid: paidCalls.length - n0, skipped: (S.school.stats.teacherSkippedKnown || 0) - k0 }));
+  // nothing known: teachers are paid again, each question at most once in a session, and the text looked up is the text saved
+  const s0 = saved.length; looked.length = 0; ctx.trainKnown = q => { looked.push(String(q)); return false; };
+  await round(); await new Promise(res => setTimeout(res, 5)); await tick();
+  const fresh = saved.slice(s0); const hs = fresh.map(e => e.qhash); const lookedH = new Set(looked.map(questionHash));
+  check('with new questions teachers are paid again, never twice for one question, and the lookup hashes like the saved pair (ticket #938)',
+    paidCalls.length > n0 && fresh.length > 0 && new Set(hs).size === hs.length && hs.every(h => lookedH.has(h)), JSON.stringify({ paid: paidCalls.length - n0, saved: fresh.length, distinct: new Set(hs).size, unlooked: hs.filter(h => !lookedH.has(h)).length }));
+  delete ctx.trainKnown;
+}
 {
   const key = Object.keys(ex).find(k => ex[k].length) || '';
   const f = key.startsWith('f:') ? key.slice(2) : null;
