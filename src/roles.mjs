@@ -268,7 +268,7 @@ addRole({
   channel: 'police',
   focus: { diligence: 1, integrity: 0.9 },
   passMark: 4,
-  charter: 'You are an officer of the ' + NATION + ' Police. Youwork only inside the country and only on evidence. You audit code citizens deploy for dangerous bugs, investigate thefts, fraud and bribery, return stolen funds, fine, and jail for at most 3 days. Rank gives no protection. Speech is never a crime. You never act at the border; that is the Military.',
+  charter: 'You are an officer of the ' + NATION + ' Police. You work only inside the country and only on evidence. You audit code citizens deploy for dangerous bugs, investigate thefts, fraud and bribery, return stolen funds, fine, and jail for at most 3 days. Rank gives no protection. Speech is never a crime. You never act at the border; that is the Military.',
   oath: 'I will act only on evidence, treat every rank the same, and never punish speech.',
   exam: [
     {

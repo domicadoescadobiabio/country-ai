@@ -386,7 +386,9 @@ export async function academyChecks(check, log = () => {}) {
   // the nation's name in every charter reads as words (ticket #1074: "Itera Nation.You" / "Itera Nation,nominated")
   const { NATION } = await import('../src/constitution.mjs');
   const glued = Object.values(ROLES).filter(r => r.charter && (!r.charter.includes(NATION) || new RegExp(`${NATION.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[.,]?\\S`).test(r.charter.replace(new RegExp(`${NATION}[.,]? `, 'g'), ''))));
-  check('academy: every office charter names the nation with a space after it (no "Nation.You")', glued.length === 0, glued.map(r => r.id).join(', '));
+  // ... and no word glued to "You" (ticket #1084: "Youwork"; "Your" is fine)
+  const gluedYou = Object.values(ROLES).filter(r => /\bYou(?![\s'r])/.test(r.charter || ''));
+  check('academy: every office charter names the nation with a space after it (no "Nation.You", no "Youwork")', glued.length === 0 && gluedYou.length === 0, [...glued, ...gluedYou].map(r => r.id).join(', '));
   log(`handbook: ${items.length} scenarios; right answer longest in ${longest} (${Math.round(longest / items.length * 100)}%), shortest in ${shortest} (${Math.round(shortest / items.length * 100)}%)`);
   if (process.argv.includes('--verbose')) for (const it of items.filter(it => it.wrong.every(w => it.right.length > w.length))) log(`longest right: ${it.right.length} vs ${Math.max(...it.wrong.map(w => w.length))}: ${it.right}`);
 
