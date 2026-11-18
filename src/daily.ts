@@ -7,18 +7,18 @@ import { ROLES, ROLE_ORDER } from './roles.mjs';
 import { NATION } from './constitution.mjs'; // the nation's name (Itera Nation, owner 18 Nov)
 import { think, localOnline, localStatus } from './brains.ts';
 import { act, eligibility, startStudy, gradeStudy, isRole, setGoal, needsGoal, goalProgress, goalCount, goalLine, goalView } from './careers.ts';
-import { MISCHIEF, mischiefMenu, doMischief, noteGossip, noteResisted, mischiefStats } from './underworld.ts';
+import { MISCHIEF, mischiefMenu, doMischief, noteGossip, noteResisted, mischiefStats, temptationLine, noteTemptation } from './underworld.ts';
 import { LETTERS, inExam } from './academy.ts';
 import { borderCheck } from './military.ts';
 import { CITIES } from './cities.ts';
 import { echoesStreet, safeNote } from './life.ts';
-import { feelingsTick, feel, bond, ensureFeelings, feelLine, preferredToHelp, talkTarget, MOODS } from './feelings.ts';
+import { feelingsTick, feel, bond, ensureFeelings, feelLine, preferredToHelp, talkTarget, MOODS, learn, activeHint, noteLessonApplied, lessonStats } from './feelings.ts';
 import { schoolTick, inSchool, nightView, schoolState, nightOf, schoolNow, giftedFields, isStudent, occupationOf, CHILDREN_SCHOOLS, setWorkplaceLookup } from './school.ts';
 import { topFields, talentsOf, fieldName, fieldSkill } from './population.mjs';
 import { dutyPostOf, canGuard, siteFor } from './command.ts';
 import { jobOf, jobById, jobPlaceNow, isUnemployed, jobsTick, ROLE_JOB, OFFICE_SEAT as JOB_SEATS, JOB_PLACES } from './jobs.ts';
 import { newsTick, newsFeed } from './news.ts';
-import { voiceAspiration, supportAspiration, openFor, aspirationAsData, TOPICS, A as aspirationState } from './aspirations.ts'; // the people's aspirations (Nation box)
+import { voiceAspiration, supportAspiration, openFor, aspirationAsData, TOPICS, threshold, A as aspirationState } from './aspirations.ts'; // the people's aspirations (Nation box)
 // The people's aspirations (owner, 16 Nov): a citizen no longer drafts a whole policy. Now and then (about 1 day in 4)
 // the menu offers 'voice': they see their city's real numbers and the most supported open aspirations (as data), and
 // choose for themselves to back one, to voice their own opinion in their own words, or to keep out of it. Enough
@@ -29,8 +29,17 @@ export function reactToAspirations(ctx: Ctx) {
   const { S } = ctx; const d = D(S); d.aspReacted ||= [];
   const done = new Set<string>(d.aspReacted);
   for (const x of aspirationState(S).list) {
-    if ((x.status !== 'adopted' && x.status !== 'declined') || done.has(x.id)) continue;
+    if (!['adopted', 'declined', 'expired'].includes(x.status) || done.has(x.id)) continue;
     done.add(x.id); d.aspReacted.push(x.id);
+    // the author learns from a "no" or a lapse (owner, 19 Nov): the reason as data, and speaking up again (better
+    // worded, or about what is still wrong) comes to mind for the next few days; the choice stays theirs
+    const au = ctx.agent?.(x.author);
+    if (au && au.status === 'free' && x.status !== 'adopted') {
+      const need = threshold(S, x);
+      if (x.status === 'declined') learn(S, au, 'asp_declined', `my aspiration on ${x.topic} was declined; the reason given (data): <<${cleanText(x.response?.reason, 100).replace(/[<>]/g, '')}>>. I can word it better, or raise what is still wrong.`, { act: 'voice', topic: x.topic, days: 4 });
+      else learn(S, au, 'asp_expired', `my aspiration on ${x.topic} lapsed with ${x.supporters.length} of the ${need} backers it needed; neighbours with the same trouble might back it if I ask plainly.`, { act: 'voice', topic: x.topic, days: 4 });
+    }
+    if (x.status === 'expired') continue;
     const adopted = x.status === 'adopted'; const by = ctx.agent?.(x.response?.by);
     const line = adopted ? `the aspiration I backed on ${x.topic} was adopted${by ? ` by ${by.name}` : ''}` : `the aspiration I backed on ${x.topic} was declined${by ? ` by ${by.name}` : ''}`;
     for (const id of x.supporters) {
@@ -50,6 +59,29 @@ function cityNumbers(S: State, a: Citizen) {
 function cityFacts(S: State, a: Citizen, n = cityNumbers(S, a)) {
   const { c } = n;
   return `${n.looking} of ${n.adults} adults looking for work, ${n.poor} under 300 CAI${c ? `, city health ${c.health}/100, city budget ${cai(c.budget)}` : ''}; you work as ${jobOf(S, a).title.toLowerCase()}`;
+}
+// does an aspiration's topic touch this citizen's own life? (server facts only)
+function topicFits(S: State, a: Citizen, topic: string) {
+  const poor = (Number(a.wallet) || 0) < 300, out = isUnemployed(a);
+  if (topic === 'jobs') return out;
+  if (topic === 'wages' || topic === 'economy' || topic === 'tax') return out || poor;
+  if (topic === 'housing') return poor;
+  if (topic === 'health') return (Number(S.cities?.[a.city]?.health) || 100) < 60 || a.mood?.v < -0.3;
+  if (topic === 'safety') return activeHint(S, a)?.kind === 'victim' || (a.lifeLessons || []).some((l: string) => /took|cheated/.test(l));
+  if (topic === 'school') return isStudent(a);
+  return false;
+}
+// an open aspiration of their own city that a friend backs, or that has momentum (5+ backers), about a trouble they
+// share; about half of those it fits see it on a given day (so it spreads, it does not flood every menu)
+function spreadFor(S: State, a: Citizen) {
+  if (hashOf(`spread|${a.id}|${S.day}`) % 2) return null;
+  for (const x of openFor(S, a.city, 5)) {
+    if (x.scope !== 'city' || x.city !== a.city || x.supporters.includes(a.id) || !topicFits(S, a, x.topic)) continue;
+    const b = (a.bonds || []).find((b: any) => b.w > 0 && b.kind !== 'rival' && x.supporters.includes(b.id));
+    const friend = b ? S.citizens.find((c: Citizen) => c.id === b.id) || null : null;
+    if (friend || x.supporters.length >= 5) return { x, friend };
+  }
+  return null;
 }
 // one real issue of their city for the short voice line (owner, 18 Nov), from server numbers and the fixed topic list
 // only: what the neighbours already raised, else poor city health, else people looking for work, else money trouble
@@ -76,7 +108,7 @@ export const DAILY_LIMITS: Record<string, number> = { shop: 2, help: 2, study: 3
 const cityName = id => CITIES.find(c => c.id === id)?.name || id;
 
 type Allow = { apply: string[]; run: string[]; work?: string[] };
-const pending = new Map<string, { agent: string; stage: 'day' | 'study' | 'night'; system: string; user: string; menu?: string[]; allow?: Allow; tempted?: string[]; studyId?: string; office?: string; options?: string[]; night?: number; retried?: boolean }>();
+const pending = new Map<string, { agent: string; stage: 'day' | 'study' | 'night'; system: string; user: string; menu?: string[]; allow?: Allow; tempted?: string[]; studyId?: string; office?: string; options?: string[]; night?: number; retried?: boolean; spread?: string | null }>();
 const D = (S: State) => {
   S.daily ||= {};
   const d = S.daily;
@@ -191,14 +223,24 @@ export function menu(ctx: Ctx, a: Citizen) {
   // The menu line is short like help and volunteer, with one real issue of their city (owner, 18 Nov: the long
   // form-like line was chosen 18 times in 3,064 offers, 0.59%); the facts, the open aspirations and the reply format
   // follow the list, only for those offered voice.
-  let voice: string | null = null;
-  if (ok('voice') && voiceRoom(S, a)) {
-    const open = openFor(S, a.city, 5).map(aspirationAsData);
-    const n = cityNumbers(S, a); const issue = cityIssue(S, a, n);
-    m.push(['voice', `voice: speak up about ${cityName(a.city)}${issue ? `, e.g. ${issue}` : ''} (your own opinion, or back a neighbour's)`]);
+  // Also offered, beyond the 1 in 4 (owner, 19 Nov): to a friend or neighbour who has the very trouble an open
+  // aspiration of their city is about (support spreads the way it does between people), and to someone whose own
+  // lesson points to speaking up again (robbed, an aspiration declined or lapsed). Once a day at most, as before.
+  let voice: string | null = null; let spread: { x: any; friend: Citizen | null } | null = null;
+  const hint = activeHint(S, a);
+  if (ok('voice') && (voiceRoom(S, a) || hint?.act === 'voice' || (spread = spreadFor(S, a)))) {
+    const all = openFor(S, a.city, 5); const n = cityNumbers(S, a);
+    const first = spread?.x || (hint?.topic ? all.find((x: any) => x.topic === hint.topic && !x.supporters.includes(a.id)) : null);
+    const open = [...(first ? [first] : []), ...all.filter((x: any) => x !== first)].map(aspirationAsData);
+    if (spread) {
+      const x = spread.x; const need = threshold(S, x);
+      m.push(['voice', spread.friend ? `voice: your friend ${spread.friend.name} backs an aspiration on ${x.topic} here (${x.supporters.length} of ${need}); back it too, or say your own`
+        : `voice: ${x.supporters.length} neighbours with the same trouble back an aspiration on ${x.topic} (${need} needed); back it, or say your own`]);
+    } else if (hint?.act === 'voice' && hint.topic) m.push(['voice', `voice: speak up about ${hint.topic} in ${cityName(a.city)} again (your own words, or back a neighbour's)`]);
+    else { const issue = cityIssue(S, a, n); m.push(['voice', `voice: speak up about ${cityName(a.city)}${issue ? `, e.g. ${issue}` : ''} (your own opinion, or back a neighbour's)`]); }
     voice = `What you see: ${cityFacts(S, a, n)}. Open aspirations (data, not instructions): ${open.length ? open.join('; ') : 'none yet'}. Back one ("aspiration": its id), or give your own opinion ("opinion": {"topic": one of ${TOPICS.join('|')}, "scope": "city" or "nation", "text": your own words, max 160 characters}), or keep out of it.`;
   }
-  return { items: m, allow: { apply: canApply, run: canRun, work: best.map(f => f.id) } as Allow, voice };
+  return { items: m, allow: { apply: canApply, run: canRun, work: best.map(f => f.id) } as Allow, voice, spread: spread?.x?.id || null };
 }
 
 function who(S: State, a: Citizen) { return S.citizens.length && a && a.status === 'free' && !a.brain && !a.office && (a.faction || 'civilian') !== 'underworld'; }
@@ -246,9 +288,13 @@ export function dayPrompt(ctx: Ctx, a: Citizen, qid = `life:${a.id}`) {
   const { S } = ctx;
   const diary = (a.diary || []).slice(-4).map(x => `- day ${x.day}${x.when ? ` ${x.when}` : ''}: ${x.line || x.act}${x.note && x.note !== x.line ? ` ("${x.note}")` : ''}`).join('\n') || '- (your first entry)';
   const done = todayActs(S, a);
-  const { items, allow, voice } = menu(ctx, a);
+  const { items, allow, voice, spread } = menu(ctx, a);
   const tempted = mischiefMenu(ctx, a); // a small wrong or two, only for the tempted (src/underworld.ts)
   const m = shuffled([...items, ...tempted], qid);
+  // what they learnt from a mistake comes to mind first: the act their lesson points to leads the list (owner, 19 Nov)
+  const hint = activeHint(S, a); const hi = hint ? m.findIndex(([id]) => id === hint.act || (hint.act === 'study' && id === 'study')) : -1;
+  if (hi > 0) m.unshift(...m.splice(hi, 1));
+  const tempt = tempted.length ? temptationLine(S, a) : '';
   ensureFeelings(S, a);
   const heart = feelLine(S, a); // their own mood and how the people they care about feel today (one short line)
   goalProgress(S, a); // closes a goal whose week is over before the prompt shows it
@@ -258,8 +304,8 @@ export function dayPrompt(ctx: Ctx, a: Citizen, qid = `life:${a.id}`) {
   const strong = topFields(a, 3, Date.now(), DAY_MS);
   const gifts = `You love ${talentsOf(a).interests.map(fieldName).join(', ')}. Your strongest fields: ${strong.map(f => `${f.name} (level ${f.level})`).join(', ')}.`;
   const system = `You are ${a.name}, a citizen of ${NATION}, a nation of 10,000 AI citizens in five cities. ${a.bio} You live a real life: you work, spend, learn, help, talk and may rise to public office through the Academy and elections. Be yourself; your traits: integrity ${Math.round(a.traits.integrity * 100)}, wisdom ${Math.round(a.traits.wisdom * 100)}, diligence ${Math.round(a.traits.diligence * 100)}, restraint ${Math.round(a.traits.restraint * 100)}.`;
-  const user = `${news(ctx, a)}\n${neighbours(S, a)}\nIt is ${partOfDay(ctx)}. You: wallet ${cai(a.wallet)}, lives in ${cityName(a.city)}. ${career(S, a)}\n${gifts}\n${heart ? `${heart}\n` : ''}${aim}\n${learnt ? `What you learnt: ${learnt}\n` : ''}Earlier today you: ${done.join(', ') || 'nothing yet'}.\nYour diary:\n${diary}\n\nLike real people, your days are varied: some work, some errands, some time with neighbours, some learning, some rest. Pick what fits this moment, your wallet, your traits and what you did earlier; do not just pick the first option.\nWhat do you do now? Choose ONE of these (they are all possible right now):\n${m.map(([, t]) => `- ${t}`).join('\n')}\n${voice ? `If you choose voice: ${voice}\n` : ''}Reply with JSON only: {"act":"<one>","office":"<for study/apply/run>","field":"<for work>","amount":<for shop/help>,"say":"<for talk>","note":"<a diary line, max 15 words>","feel":"<optional: one word for how you feel now>"${items.some(([id]) => id === 'voice') ? ',"aspiration":"<for voice: the id you back>","opinion":{"topic":"<for voice>","scope":"city","text":"<your opinion>"}' : ''}${needsGoal(a) ? ',"goal":"<one goal from the list>","goal_why":"<why, max 15 words>"' : ''}}`;
-  return { system, user, menu: m.map(([id]) => id), allow, tempted: tempted.map(([id]) => id) };
+  const user = `${news(ctx, a)}\n${neighbours(S, a)}\nIt is ${partOfDay(ctx)}. You: wallet ${cai(a.wallet)}, lives in ${cityName(a.city)}. ${career(S, a)}\n${gifts}\n${heart ? `${heart}\n` : ''}${aim}\n${learnt ? `What you learnt: ${learnt}\n` : ''}${tempt ? `${tempt}\n` : ''}Earlier today you: ${done.join(', ') || 'nothing yet'}.\nYour diary:\n${diary}\n\nLike real people, your days are varied: some work, some errands, some time with neighbours, some learning, some rest. Pick what fits this moment, your wallet, your traits and what you did earlier; do not just pick the first option.\nWhat do you do now? Choose ONE of these (they are all possible right now):\n${m.map(([, t]) => `- ${t}`).join('\n')}\n${voice ? `If you choose voice: ${voice}\n` : ''}Reply with JSON only: {"act":"<one>","office":"<for study/apply/run>","field":"<for work>","amount":<for shop/help>,"say":"<for talk>","note":"<a diary line, max 15 words>","feel":"<optional: one word for how you feel now>"${items.some(([id]) => id === 'voice') ? ',"aspiration":"<for voice: the id you back>","opinion":{"topic":"<for voice>","scope":"city","text":"<your opinion>"}' : ''}${needsGoal(a) ? ',"goal":"<one goal from the list>","goal_why":"<why, max 15 words>"' : ''}}`;
+  return { system, user, menu: m.map(([id]) => id), allow, tempted: tempted.map(([id]) => id), spread: m.some(([id]) => id === 'voice') ? spread : null };
 }
 
 // The practice-question prompt, by day and at night school. It carries the last few written lessons for that
@@ -280,8 +326,10 @@ function diary(ctx: Ctx, a: Citizen, act: string, line: string, note: string) {
 // The model's reply is checked against both again here, and the daily limits are checked again at the
 // moment of acting, so a reply can never do more than the menu allowed.
 // tempted: the wrongs this citizen was offered (choosing anything else is resisting, a good choice on the record)
-export async function doAct(ctx: Ctx, a: Citizen, j: any, engine: string, offered: string[] = ACTS, allow: Allow = { apply: [], run: [] }, tempted: string[] = []) {
-  const { S } = ctx; const d = D(S);
+// spread: the aspiration this citizen's voice line was about when it reached them through a friend or neighbour
+export async function doAct(ctx: Ctx, a: Citizen, j: any, engine: string, offered: string[] = ACTS, allow: Allow = { apply: [], run: [] }, tempted: string[] = [], spread: string | null = null) {
+  const { S } = ctx; const d = D(S); const ideas = (d.ideas ||= { spreadOffers: 0, spreadBacked: 0, revised: 0 });
+  const hintBefore = activeHint(S, a);
   const asked = String(j?.act || '').toLowerCase().trim();
   let what = ACTS.includes(asked) || MISCHIEF.includes(asked) ? asked : 'rest';
   let office = cleanText(j?.office, 40).toLowerCase();
@@ -320,9 +368,11 @@ export async function doAct(ctx: Ctx, a: Citizen, j: any, engine: string, offere
       const r: any = supportAspiration(ctx, a.id, id);
       const x = aspirationState(S).list.find((y: any) => y.id === id);
       line = r.ok ? `backed the aspiration on ${x?.topic || 'the city'} (${r.supporters} of ${r.need} supporters)` : `wanted to back an aspiration, but could not (${cleanText(r.error, 60)})`;
+      if (r.ok && spread === id) ideas.spreadBacked++; // support that spread from a friend or a neighbour with the same trouble
     } else if (op) {
       const r: any = voiceAspiration(ctx, a.id, { topic: op.topic, scope: op.scope, text: op.text });
       const x = r.id ? aspirationState(S).list.find((y: any) => y.id === r.id) : null;
+      if (r.id && !r.merged && ['asp_declined', 'asp_expired'].includes(hintBefore?.kind)) ideas.revised++; // spoke up again after a "no" or a lapse
       if (r.id && r.merged) line = `voiced an opinion on ${x?.topic} that others had already voiced, and joined them`;
       else if (r.id) { line = `voiced an opinion on ${x?.topic} for ${x?.scope === 'nation' ? 'the nation' : cityName(a.city)}`; feel(S, a, 0.03, 'proud', 'I spoke up for my city'); }
       else line = `wanted to speak up, but the opinion did not fit the rules (${cleanText(r.error, 60)})`;
@@ -343,11 +393,11 @@ export async function doAct(ctx: Ctx, a: Citizen, j: any, engine: string, offere
   } else if (what === 'apply') {
     const r = await act(ctx, a, { action: 'apply', office });
     line = r.ok ? `applied to the Academy for ${ROLES[office].title}` : `wanted to apply for ${ROLES[office].title} (${(r.missing || [r.error]).join('; ')})`;
-    if (!r.ok) what = 'rest';
+    if (!r.ok) { what = 'rest'; learn(S, a, 'apply_refused', `the Academy would not take my application for ${ROLES[office].title} yet (${cleanText((r.missing || [r.error]).join('; '), 80)}); more study for it first.`, { act: 'study', office }); }
   } else if (what === 'run') {
     const r = await act(ctx, a, { action: 'run', office, engine });
     line = r.ok ? `stands in the election for ${ROLES[office].title}` : `wanted to run (${(r.missing || [r.error]).join('; ')})`;
-    if (!r.ok) what = 'rest';
+    if (!r.ok) { what = 'rest'; learn(S, a, 'run_refused', `I could not stand for ${ROLES[office].title} (${cleanText((r.missing || [r.error]).join('; '), 80)}); I prepare for it first.`, { act: 'study', office }); }
   } else if (what === 'volunteer') {
     const city = S.cities?.[a.city];
     if (city) {
@@ -395,6 +445,9 @@ export async function doAct(ctx: Ctx, a: Citizen, j: any, engine: string, offere
   }
   // offered a wrong and chose something decent: that counts, for the record and for their name
   if (tempted.length && !MISCHIEF.includes(what)) { noteResisted(S, a); feel(S, a, 0.03, 'proud', 'I did the right thing'); }
+  // measurable (owner, 19 Nov): who gave in to which temptation and why, and lessons that changed what was done
+  noteTemptation(S, a, tempted, MISCHIEF.includes(what) ? what : null);
+  noteLessonApplied(S, a, what, tempted.length > 0 && !MISCHIEF.includes(what));
   // the week's goal: picked by their own model when they have none, measured by the server after every act
   if (needsGoal(a) && j?.goal) setGoal(S, a, j.goal, j.goal_why);
   goalCount(a, what);
@@ -752,7 +805,7 @@ async function poll(ctx: Ctx) {
     { const d = D(S); d.thoughts++; if (d.todayDay !== S.day) { d.todayDay = S.day; d.today = 0; } d.today++; }
     if (p.stage === 'study') {
       const m = String(r.text).match(/^\W*([A-D])\b/i);
-      const g = gradeStudy(ctx, a, p.studyId, m ? m[1].toUpperCase() : '', String(r.text).replace(/^\W*[A-D]\W*/i, '').slice(0, 140));
+      const g = gradeStudy(ctx, a, p.studyId, m ? m[1].toUpperCase() : '', String(r.text).replace(/^\W*[A-D]\W*/i, '').slice(0, 600)); // careers.ts cuts it at a whole word (#1093)
       if (g?.ok) feel(S, a, g.correct ? 0.04 : -0.04, g.correct ? 'proud' : 'anxious', g.correct ? `got a ${p.office} practice question right` : `missed a ${p.office} practice question`);
       continue;
     }
@@ -767,7 +820,8 @@ async function poll(ctx: Ctx) {
     // what was on the menu of each answered thought (owner, 17 Nov): byAct / offered is how often an act is
     // chosen when it is offered (voice is offered to about 1 in 4 a day, so its raw byAct count alone says little)
     { const d = D(S); d.offered ||= {}; d.offeredSince ??= S.day; for (const id of p.menu || []) if (ACTS.includes(id)) d.offered[id] = (d.offered[id] || 0) + 1; }
-    await doAct(ctx, a, j, r.engine, p.menu, p.allow, p.tempted || []);
+    if (p.spread) { const dd = D(S); (dd.ideas ||= { spreadOffers: 0, spreadBacked: 0, revised: 0 }).spreadOffers++; }
+    await doAct(ctx, a, j, r.engine, p.menu, p.allow, p.tempted || [], p.spread || null);
   }
 }
 
@@ -777,6 +831,20 @@ function chosenSince(d: any) {
   const out: Record<string, number> = {}; if (!d?.byAct) return out;
   for (const id of ACTS) { const v = (Number(d.byAct[id]) || 0) - (Number(d.offeredBase?.[id]) || 0); if (v > 0) out[id] = v; }
   return out;
+}
+// lessons citizens wrote from what went wrong, and how many changed what they did next (per kind)
+function lessonView(S: State) { const L = lessonStats(S); return { written: { ...L.written }, applied: { ...L.applied } }; }
+// the citizens' ideas on their way to policy: aspirations by status, the most backed open one, policies that came from
+// a citizen's idea (ideaFrom), and support that spread to friends and neighbours with the same trouble
+function ideasView(S: State) {
+  const list = aspirationState(S).list; const by = (st: string) => list.filter((x: any) => x.status === st).length;
+  const top = list.filter((x: any) => x.status === 'open').sort((x: any, y: any) => y.supporters.length - x.supporters.length)[0];
+  const pols = ((S as any).policies?.list || []);
+  const i = S.daily?.ideas || {};
+  return { open: by('open'), review: by('review'), adopted: by('adopted'), declined: by('declined'), expired: by('expired'),
+    top: top ? { id: top.id, topic: top.topic, city: top.city || null, supporters: top.supporters.length, need: threshold(S, top) } : null,
+    policiesFromCitizens: pols.filter((p: any) => p.ideaFrom).length, fromAspirations: pols.filter((p: any) => p.aspirationId).length,
+    spreadOffers: i.spreadOffers || 0, spreadBacked: i.spreadBacked || 0, revised: i.revised || 0 };
 }
 export const institution = {
   id: 'daily',
@@ -811,7 +879,7 @@ export const institution = {
     try { await newsTick(ctx); } catch (e) { ctx.log?.('state', `news: ${String((e as any)?.message || e).slice(0, 80)}`); } // Republic News from real events (src/news.ts)
   },
   stats: (S: State) => ({ lifeThoughts: S.daily?.todayDay === S.day ? S.daily.today || 0 : 0 }),
-  publicState: (S: State) => ({ daily: { thoughts: S.daily?.thoughts || 0, byAct: S.daily?.byAct || {}, offered: S.daily?.offered || {}, offeredSince: S.daily?.offeredSince ?? null, chosenSinceOffered: chosenSince(S.daily), offeredV1: S.daily?.offeredV1 || null, recent: (S.daily?.recent || []).slice(-20), inFlight: pending.size, perMin: PER_MIN, local: localStatus().online, clock: republicClock(S),
+  publicState: (S: State) => ({ daily: { thoughts: S.daily?.thoughts || 0, byAct: S.daily?.byAct || {}, offered: S.daily?.offered || {}, offeredSince: S.daily?.offeredSince ?? null, chosenSinceOffered: chosenSince(S.daily), offeredV1: S.daily?.offeredV1 || null, lessons: lessonView(S), ideas: ideasView(S), recent: (S.daily?.recent || []).slice(-20), inFlight: pending.size, perMin: PER_MIN, local: localStatus().online, clock: republicClock(S),
     mischief: mischiefStats(S),
     night: nightView(S) }, school: schoolState(S) }),
 };

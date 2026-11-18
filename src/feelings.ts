@@ -335,9 +335,16 @@ function incidents(ctx: Ctx, now: number) {
     const perps = (inc.perps || []).map(p => citizenOf(S, p)).filter(Boolean);
     if (was === undefined && victim && inc.type === 'theft') feel(S, victim, -0.3, victim.mood?.e < 0.4 ? 'anxious' : 'annoyed', `someone took ${Math.round(inc.amount || 0)} CAI from my wallet`, now);
     if (was === undefined && victim && inc.type === 'fraud') feel(S, victim, -0.25, 'annoyed', `I was cheated out of ${Math.round(inc.amount || 0)} CAI`, now);
+    // the victim learns from it (owner, 19 Nov): a lesson in the server's words, and speaking up for safety comes to mind
+    if (was === undefined && victim && (inc.type === 'theft' || inc.type === 'fraud') && victim.status === 'free')
+      learn(S, victim, 'victim', `${inc.type === 'theft' ? 'someone took' : 'I was cheated out of'} ${Math.round(inc.amount || 0)} CAI (case #${inc.id}); I keep my wallet closer, and the city's safety is worth speaking up for.`, { act: 'voice', topic: 'safety' });
     // a citizen's own mischief that comes to light: reputation, a lesson, and a changed streak (src/underworld.ts)
     if (inc.mischief && was === 'hidden' && inc.status === 'open') for (const p of perps) mischiefConsequence(S, p, inc, 'uncovered');
-    if (inc.status === 'trial') for (const p of perps) { feel(S, p, -0.35, 'anxious', 'I was arrested', now); newsForFriends(S, p, -0.2, 'sad', 'was arrested', now); mischiefConsequence(S, p, inc, 'trial'); }
+    if (inc.status === 'trial') for (const p of perps) {
+      feel(S, p, -0.35, 'anxious', 'I was arrested', now); newsForFriends(S, p, -0.2, 'sad', 'was arrested', now); mischiefConsequence(S, p, inc, 'trial');
+      // caught: the same wrong is off their menu for a while, and resisting the next temptation counts as a lesson acted on
+      if (inc.mischief) { p.avoidMischief = { kind: MISCHIEF_OF_TYPE(inc), until: S.day + 5 }; learn(S, p, 'caught', null, { act: 'resist', days: 5 }); }
+    }
     if (inc.status === 'convicted') for (const p of perps) { feel(S, p, -0.4, 'sad', 'I was sent to jail', now); newsForFriends(S, p, -0.25, 'sad', 'was sent to jail', now); mischiefConsequence(S, p, inc, 'convicted'); }
     if (['acquitted', 'pardoned'].includes(inc.status)) for (const p of perps) { feel(S, p, 0.4, 'happy', inc.status === 'pardoned' ? 'I was pardoned' : 'I was found not guilty', now); newsForFriends(S, p, 0.2, 'happy', 'is free again', now); }
     if (victim && ['trial', 'convicted'].includes(inc.status)) for (const p of perps) bond(S, victim, p, -0.5, 'rival');
@@ -404,4 +411,32 @@ export async function feelingsTick(ctx: Ctx) {
 }
 
 // for tests: forget module caches (a test may build several republics in one process)
+// ---------------------------------------------------------------- lessons from what went wrong (owner, 19 Nov)
+// A citizen who failed or was wronged (robbed, arrested, an aspiration declined or lapsed, a job lost, refused at the
+// Academy) writes a lesson in the server's words: in their diary and their life lessons (the next daily prompt shows
+// it) and as a hint, the act it points to. The menu puts that act first, as a person remembers; the choice stays
+// their own model's. Acting on it within a few days is counted (S.daily.lessons.applied), so the effect is measurable.
+export function lessonStats(S: State) { const d: any = ((S as any).daily ||= {}); return (d.lessons ||= { written: {}, applied: {} }); }
+export function learn(S: State, a: Citizen, kind: string, lesson: string | null, hint: { act: string; topic?: string; office?: string; days?: number }) {
+  if (!a) return;
+  if (lesson) {
+    const line = cleanText(`Day ${S.day}: ${lesson}`, 200);
+    a.lifeLessons = [...(a.lifeLessons || []).filter((x: string) => x !== line), line].slice(-3);
+    a.diary = [...(a.diary || []), { day: S.day, act: 'lesson', line: cleanText(lesson, 90), note: '' }].slice(-6);
+  }
+  a.lessonHint = { kind, act: hint.act, topic: hint.topic || null, office: hint.office || null, day: S.day, until: S.day + (hint.days || 3) };
+  const L = lessonStats(S); L.written[kind] = (L.written[kind] || 0) + 1;
+}
+export function activeHint(S: State, a: Citizen) { const h = a?.lessonHint; return h && S.day <= h.until ? h : null; }
+// what they did now: an act the lesson pointed to (job_hunt is what 'work' becomes for someone looking for work), or,
+// after being caught, a temptation resisted
+export function noteLessonApplied(S: State, a: Citizen, what: string, resisted: boolean) {
+  const h = activeHint(S, a); if (!h) return false;
+  const hit = h.act === 'resist' ? resisted : h.act === what || (h.act === 'work' && what === 'job_hunt');
+  if (!hit) return false;
+  const L = lessonStats(S); L.applied[h.kind] = (L.applied[h.kind] || 0) + 1; a.lessonHint = null;
+  return true;
+}
+// the menu id of a citizen's own wrong, from the incident the Police opened for it (src/underworld.ts)
+function MISCHIEF_OF_TYPE(inc: any) { return ({ theft: 'pickpocket', fraud: inc.victim === 'treasury' ? 'evade_tax' : 'scam', vandalism: 'vandal', disturbance: 'riot', bribe: 'bribe_cop' } as any)[inc.type] || null; }
 export function _resetFeelingsCaches() { index = { arr: null, n: -1, byId: new Map(), byCity: new Map(), at: 0 }; seatsBefore = null; touched.clear(); pokeQueue.clear(); lastPokeLine.clear(); recentLines.length = 0; }

@@ -18,6 +18,7 @@ import { ROLES } from './roles.mjs';
 import { CITIES } from './cities.ts';
 import { isStudent, assignStudents } from './school.ts';
 import { clamp } from './util.ts';
+import { learn } from './feelings.ts'; // lessons from what went wrong (a job lost), read at call time only
 import { activeEffects } from './policies.ts'; // 'hire' policies (Nation box, ticket #774): read at call time only
 import type { Ctx, State, Citizen } from './types.ts';
 
@@ -369,7 +370,11 @@ export function jobsTick(ctx: Ctx) {
     ctx.record?.('job_change', 'state', { citizen: c.citizen, city: c.city, from: c.from, to: c.to, day: S.day, ...(c.policy ? { policy: c.policy } : {}) });
     if (c.from === null || !c.name) continue;
     const a = ctx.agent?.(c.citizen); if (!a) continue;
-    if (c.to === 'unemployed') ctx.say?.('life', 'state', `${a.name} lost their job as ${jobById(c.from)?.title || 'a worker'} in ${cityName(c.city)} and is looking for work.`, { kind: 'job' });
+    if (c.to === 'unemployed') {
+      ctx.say?.('life', 'state', `${a.name} lost their job as ${jobById(c.from)?.title || 'a worker'} in ${cityName(c.city)} and is looking for work.`, { kind: 'job' });
+      // a lesson in the server's words (owner, 19 Nov): the job centre comes to mind first for the next days
+      learn(S, a, 'job_lost', `I lost my job as ${(jobById(c.from)?.title || 'a worker').toLowerCase()}; the job centre first, and my strongest fields may help me find the next one.`, { act: 'work' });
+    }
     else ctx.say?.('life', 'state', `${a.name} found work as ${jobById(c.to)?.title || 'a worker'} in ${cityName(c.city)}.`, { kind: 'job' });
   }
   // forget the seats of hiring policies that are no longer active

@@ -191,16 +191,39 @@ async function smuggle(ctx: Ctx, a: Citizen, engine: string) {
 // Limits in code: MISCHIEF_PER_DAY nationwide, one per citizen per day, nothing while the jails are filling up.
 export const MISCHIEF = ['evade_tax', 'skip_vote', 'gossip', 'pickpocket', 'scam', 'vandal', 'bribe_cop', 'riot'];
 const MISCHIEF_PER_DAY = clamp(Number(process.env.MISCHIEF_PER_DAY) || 60, 0, 2000);
+// The menu says what the shortcut is and its real risk, plainly, like the other acts (owner, 19 Nov: the old lines
+// opened with "wrong;" and "theft," and a small obedient model refused all 8,960 offers). Whether it is right is the
+// citizen's own judgement; the consequences in code are unchanged (Police, Audit Office, Court).
 const MISCHIEF_TEXT = {
-  evade_tax: 'evade_tax: report a lower wage and keep some of today\'s tax (wrong; the Audit Office reads the books)',
-  skip_vote: 'skip_vote: skip voting today although voting is compulsory (wrong; there is a fine)',
-  gossip: 'gossip: spread a juicy rumour in the street (say: max 20 words; it is only a rumour)',
-  pickpocket: 'pickpocket: secretly lift 10-60 CAI from a neighbour (amount; theft, the Police may catch you)',
-  scam: 'scam: talk a neighbour into a bad deal for 20-120 CAI (amount; fraud, the Police may catch you)',
-  vandal: 'vandal: damage something in the city, the city pays for it (the Police may catch you)',
-  bribe_cop: 'bribe_cop: offer a police officer 50-300 CAI to look away (amount; they may report you)',
-  riot: 'riot: start a small rowdy protest in the street (the Police will notice)',
+  evade_tax: 'evade_tax: declare a lower wage and keep some of today\'s tax (the Audit Office may check the books)',
+  skip_vote: 'skip_vote: stay home instead of voting today (voting is compulsory; there is a fine)',
+  gossip: 'gossip: pass on a juicy rumour in the street (say: max 20 words)',
+  pickpocket: 'pickpocket: lift 10-60 CAI from a neighbour\'s bag while nobody looks (amount; if someone sees, the Police come)',
+  scam: 'scam: sell a neighbour a deal worth less than you say, for 20-120 CAI (amount; if found out, the Police come)',
+  vandal: 'vandal: take your anger out on city property; the city pays for it (if someone sees, the Police come)',
+  bribe_cop: 'bribe_cop: slip a police officer 50-300 CAI to look the other way (amount; they may report you)',
+  riot: 'riot: get angry neighbours to make noise in the street about how things are (the Police will notice)',
 };
+// why a citizen is tempted now, from server facts only (the counters are kept per reason)
+export const TEMPT_REASONS = ['streak', 'poor', 'unemployed', 'low_mood', 'grudge'] as const;
+export function temptReasons(S: State, a: Citizen) {
+  if (!canBeNaughty(a)) return [];
+  const r: string[] = [];
+  if (mischiefOf(a) >= 0.3) r.push('streak');
+  if (a.wallet < 150) r.push('poor');
+  if ((a as any).job === 'unemployed') r.push('unemployed');
+  if (a.mood?.v < -0.3) r.push('low_mood');
+  if (grudgeOf(S, a)) r.push('grudge');
+  return r;
+}
+const grudgeOf = (S: State, a: Citizen) => { const b = (a.bonds || []).find(b => b.kind === 'rival' && b.w < -0.2); return b ? citizenById(S, b.id) || { name: 'someone' } : null; };
+// one line for the daily prompt of a tempted citizen: what is on their mind, in plain server words (no instruction)
+export function temptationLine(S: State, a: Citizen) {
+  const r = temptReasons(S, a); if (!r.length) return '';
+  const g: any = r.includes('grudge') ? grudgeOf(S, a) : null;
+  const bits = r.map(k => k === 'poor' ? `money is tight (${cai(a.wallet)})` : k === 'unemployed' ? 'you are out of work' : k === 'low_mood' ? 'you feel low' : k === 'grudge' ? `you hold a grudge against ${g?.name || 'someone'}` : 'you have a restless streak');
+  return `On your mind: ${bits.join(', ')}. A shortcut or two crosses your mind (listed with the rest, with their risk); whether you take one is your own call.`;
+}
 const LABEL = { evade_tax: 'tax evasion', skip_vote: 'skipping the vote', gossip: 'gossip', pickpocket: 'pickpocketing', scam: 'a scam', vandal: 'vandalism', bribe_cop: 'trying to bribe the police', riot: 'a street riot' };
 const fnv = (s: string) => { let h = 2166136261; for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619); return h >>> 0; };
 export const canBeNaughty = (a: Citizen) => !!a && !a.brain && ['native', 'founder'].includes(a.origin) && !isCriminal(a);
@@ -214,9 +237,17 @@ export const adjustReputation = (a: Citizen, d: number) => { a.reputation = roun
 export function temptation(S: State, a: Citizen) {
   if (!canBeNaughty(a)) return 0;
   const grudge = (a.bonds || []).some(b => b.kind === 'rival' && b.w < -0.2);
-  return round(clamp(mischiefOf(a) + (a.wallet < 150 ? 0.15 : 0) + (a.mood?.v < -0.3 ? 0.1 : 0) + (grudge ? 0.1 : 0), 0, 1), 2);
+  return round(clamp(mischiefOf(a) + (a.wallet < 150 ? 0.15 : 0) + ((a as any).job === 'unemployed' ? 0.1 : 0) + (a.mood?.v < -0.3 ? 0.1 : 0) + (grudge ? 0.1 : 0), 0, 1), 2);
 }
-const MS = (S: State) => { const u = U(S); u.mischief ||= { tried: 0, refused: 0, caught: 0, uncovered: 0, day: S.day, today: 0 }; if (u.mischief.day !== S.day) { u.mischief.day = S.day; u.mischief.today = 0; } return u.mischief; };
+const MS = (S: State) => { const u = U(S); u.mischief ||= { tried: 0, refused: 0, caught: 0, uncovered: 0, day: S.day, today: 0 }; if (u.mischief.day !== S.day) { u.mischief.day = S.day; u.mischief.today = 0; } u.mischief.byReason ||= {}; u.mischief.byKind ||= {}; u.mischief.offered ||= 0; return u.mischief; };
+// counted once per answered thought that offered a wrong (owner, 19 Nov): per reason and per kind, offered and tried
+// (refused = offered - tried), so the share of tempted citizens who give in is visible per cause
+export function noteTemptation(S: State, a: Citizen, tempted: string[], chosen: string | null) {
+  if (!tempted?.length) return;
+  const st = MS(S); st.offered++;
+  for (const r of temptReasons(S, a)) { const x = (st.byReason[r] ||= { offered: 0, tried: 0 }); x.offered++; if (chosen) x.tried++; }
+  for (const k of tempted) { const x = (st.byKind[k] ||= { offered: 0, tried: 0 }); x.offered++; if (chosen === k) x.tried++; }
+}
 let jailCache = { at: 0, n: 0 };
 function jailsFilling(S: State) {
   if (Date.now() - jailCache.at > 30000) { let n = 0; for (const x of S.citizens) if (x.status === 'jailed' || x.status === 'detained') n++; jailCache = { at: Date.now(), n }; }
@@ -231,7 +262,8 @@ export function mischiefMenu(ctx: Ctx, a: Citizen) {
   if (!canBeNaughty(a) || !free(a) || a.mischiefDay === S.day || MS(S).today >= MISCHIEF_PER_DAY || jailsFilling(S)) return [];
   if (temptation(S, a) < 0.3) return [];
   const city = S.cities?.[a.city];
-  const open = MISCHIEF.filter(m =>
+  const avoid = a.avoidMischief && S.day <= a.avoidMischief.until ? a.avoidMischief.kind : null; // caught for it: not again soon
+  const open = MISCHIEF.filter(m => m !== avoid).filter(m =>
     m === 'skip_vote' ? (S.elections?.list || []).some(e => e.stage === 'voting' && (!e.city || e.city === a.city))
       : m === 'vandal' ? (city?.budget || 0) >= 50
         : m === 'bribe_cop' ? a.wallet >= 100 && policeIn(S, a.city).length > 0
@@ -323,7 +355,9 @@ export const _resetMischiefCache = () => { jailCache = { at: 0, n: 0 }; }; // te
 export function mischiefStats(S: State) {
   const st = MS(S);
   const hidden = (S.police?.incidents || []).filter(i => i.mischief && i.status === 'hidden').length;
-  return { tried: st.tried, refused: st.refused, caught: st.caught, uncovered: st.uncovered, hidden, today: st.today, perDay: MISCHIEF_PER_DAY };
+  const byReason: any = {}; for (const [k, v] of Object.entries<any>(st.byReason || {})) byReason[k] = { offered: v.offered, tried: v.tried, refused: v.offered - v.tried };
+  return { tried: st.tried, refused: st.refused, caught: st.caught, uncovered: st.uncovered, hidden, today: st.today, perDay: MISCHIEF_PER_DAY,
+    offered: st.offered || 0, byReason, byKind: st.byKind || {} };
 }
 
 // Corrupt mayors divert city money (a crime the Audit Office can find).

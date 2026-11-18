@@ -291,7 +291,7 @@ check('a newcomer gets a job with room the next republic day', jobs.jobById(born
     check('voice: a citizen may back an open aspiration by its id, or keep out of it', x.supporters.includes(v3.id) && /backed the aspiration on housing/.test(v3.diary.at(-1).line) && !x.supporters.includes(v4.id) && /kept their opinion to themselves/.test(v4.diary.at(-1).line));
     const need = asp.threshold(S, x);
     for (const a of folks.slice(4, 4 + need)) if (x.status === 'open') asp.supportAspiration(mctx, a.id, x.id);
-    check(`voice: enough backers (${need}, 2% of the city) send it to the Mayor for review`, x.status === 'review' && x.reviewDue === S.day + 1, JSON.stringify({ status: x.status, n: x.supporters.length, need }));
+    check(`voice: enough backers (${need}: ${Math.round(asp.ASPIRATION_LIMITS.cityPct * 1000) / 10}% of the city, at least ${asp.ASPIRATION_LIMITS.cityMin}) send it to the Mayor for review`, x.status === 'review' && x.reviewDue === S.day + 1, JSON.stringify({ status: x.status, n: x.supporters.length, need }));
     // the Mayor reviews it by its due day (offline here: a plain policy for its topic, checked like any other)
     S.cities.datahaven.budget = 50000; // a fixed budget (ticket #899: the Mayor's own spending made it vary)
     await cities.tick(mctx);
@@ -315,6 +315,47 @@ check('a newcomer gets a job with room the next republic day', jobs.jobById(born
     S.cities.datahaven.budget = 100; S.cities.datahaven.lastDecisionDay = S.day; // the Mayor's own budget decision is done today
     await cities.tick(mctx);
     check('with no room in the city budget for a project, the Mayor declines it and says why (offline)', hx.status === 'declined' && /no room/.test(hx.response?.reason || ''), JSON.stringify({ status: hx.status, response: hx.response }));
+
+    // ---- citizens learn from a "no" and act on their own (owner, 19 Nov)
+    const { learn } = await import('../src/feelings.ts');
+    daily.reactToAspirations(mctx);
+    const gp = daily.dayPrompt(mctx, g);
+    check('an author whose aspiration was declined writes a lesson (the reason as data) and is offered, first, to speak up again',
+      g.lessonHint?.kind === 'asp_declined' && /What you learnt: Day \d+: my aspiration on government was declined; the reason given \(data\): <</.test(gp.user) && gp.menu[0] === 'voice' && /speak up about government in Datahaven again/.test(gp.user),
+      JSON.stringify({ hint: g.lessonHint, first: gp.menu[0], learnt: (gp.user.match(/^What you learnt.*$/m) || [''])[0] }));
+    await daily.doAct(mctx, g, { act: 'voice', opinion: { topic: 'government', scope: 'city', text: 'Publish the city budget online every week for all residents' } }, 'test', gp.menu, gp.allow, gp.tempted);
+    const ideas1 = daily.institution.publicState(S).daily.ideas;
+    check('speaking up again after a "no" counts as a revision and a lesson acted on; daily.ideas shows aspirations by status and the policies from citizens\' ideas',
+      ideas1.revised === 1 && S.daily.lessons.applied.asp_declined === 1 && ideas1.declined >= 2 && ideas1.adopted >= 1 && ideas1.policiesFromCitizens >= 1 && ideas1.fromAspirations >= 1 && ideas1.open >= 1, JSON.stringify(ideas1));
+    // support spreads to a friend of a backer who has the same trouble (short of money: housing), beyond the 1 in 4
+    const author = folks[30]; const ar = asp.voiceAspiration(mctx, author.id, { topic: 'housing', scope: 'city', text: 'Cheaper flats near the station for families on low pay' });
+    const hx2 = asp.A(S).list.find(y => y.id === ar.id);
+    const hasVoice = c => daily.menu(mctx, c).items.find(([id]) => id === 'voice')?.[1] || null;
+    let pal = null;
+    for (const c of folks.slice(40, 400)) { if (c.lessonHint) continue; c.wallet = 100; c.bonds = []; if (hasVoice(c)) continue; c.bonds = [{ id: author.id, kind: 'friend', w: 0.5 }]; if (hasVoice(c)) { pal = c; break; } c.bonds = []; }
+    const palLine = pal ? hasVoice(pal) : '';
+    const pp = pal && daily.dayPrompt(mctx, pal);
+    check('support spreads: a friend of a backer, short of money like them, is offered to back the housing aspiration (their own choice)',
+      !!pal && /^voice: your friend .+ backs an aspiration on housing here \(1 of \d+\); back it too, or say your own$/.test(palLine) && pp.spread === hx2.id && pp.user.indexOf(hx2.id) > 0, palLine);
+    await daily.doAct(mctx, pal, { act: 'voice', aspiration: hx2.id }, 'test', pp.menu, pp.allow, pp.tempted, pp.spread);
+    const rich = folks.slice(400).find(c => !c.lessonHint && !hasVoice(c) && (c.wallet = 2000) && (c.bonds = [{ id: author.id, kind: 'friend', w: 0.5 }]) && !hasVoice(c));
+    check('a backing that spread is counted (daily.ideas.spreadBacked); a friend without that trouble (2,000 CAI) is not offered it', hx2.supporters.includes(pal.id) && daily.institution.publicState(S).daily.ideas.spreadBacked === 1 && !!rich, JSON.stringify(daily.institution.publicState(S).daily.ideas));
+    // N vs N+1: robbed on day N+1, the lesson puts speaking up for safety first; the same citizen's menu without it did not
+    const vv = folks.slice(400).find(c => !c.lessonHint && c !== rich && !daily.dayPrompt(mctx, c).menu.includes('voice'));
+    const dayN = daily.dayPrompt(mctx, vv).menu[0];
+    await daily.doAct(mctx, vv, { act: dayN, office: 'police', amount: 15 }, 'test', daily.dayPrompt(mctx, vv).menu, daily.dayPrompt(mctx, vv).allow);
+    const actN = vv.diary.at(-1).act;
+    S.day += 1;
+    const ctrl = daily.dayPrompt(mctx, vv).menu[0];
+    learn(S, vv, 'victim', 'someone took 40 CAI (case #77); I keep my wallet closer, and the city\'s safety is worth speaking up for.', { act: 'voice', topic: 'safety' });
+    const pN1 = daily.dayPrompt(mctx, vv);
+    await daily.doAct(mctx, vv, { act: pN1.menu[0], opinion: { topic: 'safety', scope: 'city', text: 'More street lights near the market at night please' } }, 'test', pN1.menu, pN1.allow, pN1.tempted);
+    check('learning from a mistake changes the next act: day N the first choice was not voice; robbed, day N+1 speaking up for safety comes first and is done (applied.victim)',
+      dayN !== 'voice' && ctrl !== 'voice' && pN1.menu[0] === 'voice' && /What you learnt: Day \d+: someone took 40 CAI/.test(pN1.user) && actN !== 'voice' && vv.diary.at(-1).act === 'voice' && S.daily.lessons.applied.victim === 1,
+      JSON.stringify({ dayN, actN, ctrl, n1: pN1.menu[0], last: vv.diary.at(-1), lessons: S.daily.lessons }));
+    // a job lost in the daily job market leaves a lesson pointing to the job centre
+    const laidOff = S.citizens.find(c => c.lessonHint?.kind === 'job_lost');
+    check('a citizen who lost their job wrote a lesson (job centre first); daily.lessons counts what was written and acted on', (S.daily.lessons.written.job_lost || 0) > 0 && laidOff?.lessonHint.act === 'work' && /lost my job as/.test(laidOff.lifeLessons.at(-1)) && typeof daily.institution.publicState(S).daily.lessons.applied === 'object', JSON.stringify(S.daily.lessons));
     mayor.office = null; S.seats.mayor = []; S.cities.datahaven.mayor = null;
   }
   // a finished project lifts its city's mood, once

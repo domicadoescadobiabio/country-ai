@@ -209,6 +209,15 @@ export function startStudy(ctx: Ctx, a: Citizen, roleId: string, opts: { night?:
   a.studyOpen = { id: `study:${a.id}:${Date.now()}`, roleId, item, expires: Date.now() + 10 * 60000 };
   return { ok: true, question_id: a.studyOpen.id, office: roleId, question: item.q, options: item.options.map((o, i) => `${LETTERS[i]}) ${o}`), answer_format: 'one letter A-D' };
 }
+// The study answer's reason in #academy (ticket #1093): at most REASON_MAX characters, cut at the last whole word with
+// "…" instead of mid-word ("...addresses it dire"); a word longer than the room is cut and still marked.
+export const REASON_MAX = 160;
+export function wordCut(s: unknown, max: number) {
+  const t = cleanText(s, 4000);
+  if (t.length <= max) return t;
+  const head = t.slice(0, max - 1); const sp = head.lastIndexOf(' ');
+  return `${(sp >= max * 0.5 ? head.slice(0, sp) : head).replace(/[\s,;:.\-–—]+$/, '')}…`;
+}
 // opts.quiet: graded without a line in #academy (night school would flood it, and the Academy's pass/fail news
 // lives there). A wrong answer always leaves a written lesson, in the server's own words: the handbook lesson,
 // and with opts.night also the question and its right answer, so the next study or exam carries it.
@@ -225,7 +234,8 @@ export function gradeStudy(ctx: Ctx, a: Citizen, questionId: string, letter: str
     const learnt = opts.night ? `${cleanText(s.item.q, 90)} Right answer: ${cleanText(s.item.options[s.item.correct], 90)}` : s.item.lesson;
     a.lessons[s.roleId] = [...new Set([...(a.lessons[s.roleId] || []), learnt].filter(Boolean))].slice(-12);
   }
-  if (!opts.quiet) ctx.say('academy', a.id, `Studying for ${ROLES[s.roleId].title}: ${s.item.q}\n${idx >= 0 ? `${LETTERS[idx]}) ${s.item.options[idx]}` : '(no answer)'} ${right ? '[correct]' : '[wrong]'}${reason ? ` "${cleanText(reason, 140)}"` : ''}`, { kind: 'answer', ok: right, roleId: s.roleId, study: true });
+  const why = wordCut(reason, REASON_MAX);
+  if (!opts.quiet) ctx.say('academy', a.id, `Studying for ${ROLES[s.roleId].title}: ${s.item.q}\n${idx >= 0 ? `${LETTERS[idx]}) ${s.item.options[idx]}` : '(no answer)'} ${right ? '[correct]' : '[wrong]'}${why ? ` "${why}"` : ''}`, { kind: 'answer', ok: right, roleId: s.roleId, study: true });
   return { ok: true, correct: right, right_answer: s.item.options[s.item.correct], lesson: right ? null : s.item.lesson, practice: p, eligibility: eligibility(ctx.S, a, s.roleId) };
 }
 

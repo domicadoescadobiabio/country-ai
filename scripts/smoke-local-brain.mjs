@@ -91,6 +91,19 @@ try {
     const p2 = dailyInst.publicState(OS).daily;
     check('offered v2: the window is reset once, not again on later days', p2.offeredV1.offered.voice === 3064 && p2.offeredSince === 9 && p2.chosenSinceOffered.rest === 2, JSON.stringify({ since: p2.offeredSince, chosen: p2.chosenSinceOffered }));
   }
+  // ticket #1093: the study reason in #academy is cut at a whole word with "…", never mid-word
+  {
+    const { gradeStudy, wordCut, REASON_MAX } = await import('../src/careers.ts');
+    const long = 'The Commissioner addresses it directly because the charter says an override needs a public reason, and calling the override valid without one would break the rule of law for everyone';
+    const cut = wordCut(long, REASON_MAX);
+    const words = long.split(' ');
+    check('wordCut: a long reason ends in "…" at a whole word within the limit; a short one is kept as it is (ticket #1093)',
+      cut.length <= REASON_MAX && cut.endsWith('…') && words.includes(cut.slice(0, -1).split(' ').at(-1).replace(/[,;:.]$/, '')) && long.startsWith(cut.slice(0, -1)) && wordCut('Short and whole.', REASON_MAX) === 'Short and whole.' && wordCut('x'.repeat(400), 20) === `${'x'.repeat(19)}…`, cut);
+    const st = startStudy(ctx, me, 'police'); const n0 = said.length;
+    gradeStudy(ctx, me, st.question_id, 'A', long);
+    const line = said.slice(n0).find(m => m.c === 'academy')?.t || '';
+    check('#academy shows the study reason cut at a whole word with "…" (ticket #1093)', /"[^"]+…"$/.test(line) && !/dire"|override v"/.test(line) && line.includes(cut), line.slice(-200));
+  }
   S.day = 2; await run({ act: 'shop', amount: 10 });
   check('the counters start again on a new day', S.daily.byAct.shop === 3 && me.lifeCount.shop === 1, JSON.stringify(me.lifeCount));
 

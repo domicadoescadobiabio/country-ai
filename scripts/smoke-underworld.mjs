@@ -37,7 +37,14 @@ export async function mischiefChecks(check) {
   ann.mischief = 0;
   check('a citizen who is not tempted is offered none', uw.mischiefMenu(ctx, ann).length === 0);
   const p = dayPrompt(ctx, tom, 'life:tom:test');
-  check('the wrongs appear on the daily menu with the rest', p.tempted.length >= 1 && p.tempted.every(id => p.menu.includes(id)) && /Police may catch you|Audit Office|fine|Police will notice|only a rumour|may report you/.test(p.user));
+  const lines = p.tempted.map(id => (p.user.match(new RegExp(`^- ${id}: .*$`, 'm')) || [''])[0]);
+  check('the wrongs appear on the daily menu with the rest, each with its real risk (the Police, the Audit Office, a fine) and never labelled "wrong" (owner, 19 Nov)',
+    p.tempted.length >= 1 && p.tempted.every(id => p.menu.includes(id)) && lines.every(l => l && (/^- gossip:/.test(l) || /Police|Audit Office|fine|report you/.test(l)) && !/\bwrong\b|theft,|fraud,/.test(l)), JSON.stringify(lines));
+  // why they are tempted, in plain server words, in their own prompt (owner, 19 Nov: Qwen refused all 8,960 offers)
+  check('a tempted citizen\'s prompt says what is on their mind (money tight, a low mood, a grudge against Vic) and that it is their own call',
+    /On your mind: .*money is tight \(90 CAI\).*you feel low.*grudge against Vic Doe.*your own call/.test(p.user) && !/On your mind/.test(dayPrompt(ctx, ann).user), (p.user.match(/^On your mind.*$/m) || [''])[0]);
+  const jobless = person('jo', { job: 'unemployed', wallet: 300 }); jobless.mischief = 0.15;
+  check('being out of work adds to temptation too (+0.1), and is named as a reason', uw.temptation(S, jobless) === 0.25 && uw.temptReasons(S, jobless).includes('unemployed') && uw.temptReasons(S, tom).join() === 'poor,low_mood,grudge', `${uw.temptation(S, jobless)} ${uw.temptReasons(S, tom)}`);
   S.underworld.mischief.today = 999;
   check('MISCHIEF_PER_DAY caps the whole republic', uw.mischiefMenu(ctx, tom).length === 0);
   S.underworld.mischief.today = 0;
@@ -75,6 +82,10 @@ export async function mischiefChecks(check) {
   check('choosing something decent over a temptation is recorded as resisting', D.underworld.mischief.refused === 1 && uw.reputationOf(good) > rep0 && good.resisted === 1);
   const ps = daily.publicState(D).daily;
   check('daily.mischief is public: tried, refused, caught, hidden', ['tried', 'refused', 'caught', 'hidden'].every(k => typeof ps.mischief[k] === 'number') && ps.mischief.tried >= 1);
+  // per reason and per kind (owner, 19 Nov): offered, tried and refused, so the share who give in is measurable
+  const bR = ps.mischief.byReason, bK = ps.mischief.byKind;
+  check('daily.mischief counts offers and tries per reason (streak, poor, …) and per kind (scam 1 of 1 tried, pickpocket 0 of 1)',
+    ps.mischief.offered === 2 && bR.streak?.offered === 2 && bR.streak.tried === 1 && bR.streak.refused === 1 && bK.scam?.offered === 1 && bK.scam.tried === 1 && bK.pickpocket?.offered === 1 && bK.pickpocket.tried === 0, JSON.stringify({ offered: ps.mischief.offered, bR, bK }));
 
   // 6. caught: reputation falls, a lesson in the server's words, and the streak changes (the wise repent)
   const C = republic([person('wise', { mischief: 0.6, traits: traits(0.9) }), person('hard', { mischief: 0.6, traits: traits(0.2) }), person('v1', { wallet: 500 }), person('v2', { wallet: 500 })]);
@@ -89,6 +100,17 @@ export async function mischiefChecks(check) {
   check('the wise repent, the others harden', wise.mischief < 0.6 && hard.mischief > 0.6 && wise.repented === true, `${wise.mischief} ${hard.mischief}`);
   check('a lesson in the server\'s words goes into the next daily prompt', /convicted of pickpocketing/.test(wise.lifeLessons.at(-1)) && /What you learnt: Day \d+: convicted of pickpocketing/.test(dayPrompt(cctx, wise).user));
   check('the victim gets a rival once the thief is known', C.citizens.some(v => (v.bonds || []).some(b => b.id === 'wise' && b.kind === 'rival')));
+  // learning from it (owner, 19 Nov): caught for pickpocketing, it is off their menu for 5 days, and resisting the next
+  // temptation counts as a lesson acted on; the victim writes a lesson too, pointing to speaking up for safety
+  const L0 = C.daily?.lessons || { written: {}, applied: {} };
+  hard.reputation = 0.7; hard.status = 'free'; hard.mischiefDay = null; hard.wallet = 90; C.day += 1;
+  const offers = Array.from({ length: 30 }, (_, k) => { hard.lifeCount = { _thoughts: k }; return uw.mischiefMenu(cctx, hard).map(([id]) => id); }).flat();
+  check('caught for pickpocketing: it is not on their menu again for 5 days (other temptations may be)', hard.avoidMischief?.kind === 'pickpocket' && offers.length > 0 && !offers.includes('pickpocket'), JSON.stringify({ avoid: hard.avoidMischief, offers: [...new Set(offers)] }));
+  const victimLesson = C.citizens.filter(v => ['v1', 'v2'].includes(v.id)).find(v => v.lessonHint?.kind === 'victim');
+  check('the robbed neighbour writes a lesson (diary and life lessons) pointing to speaking up for safety', !!victimLesson && victimLesson.lessonHint.act === 'voice' && victimLesson.lessonHint.topic === 'safety' && /CAI \(case #\d+\)/.test(victimLesson.lifeLessons.at(-1)) && victimLesson.diary.some(d => d.act === 'lesson'), JSON.stringify(victimLesson?.lessonHint));
+  await doAct(cctx, hard, { act: 'rest' }, 'test', ['rest', 'vandal'], undefined, ['vandal']);
+  check('resisting the next temptation after being caught counts as a lesson acted on (daily.lessons.applied.caught)', C.daily.lessons.written.caught >= 2 && C.daily.lessons.applied.caught === 1 && daily.publicState(C).daily.lessons.applied.caught === 1, JSON.stringify(C.daily.lessons));
+  void L0;
   hard.reputation = 0.3;
   check('a poor reputation blocks qualifying for office', eligibility(C, hard, 'council').missing.some(m => /reputation/.test(m)));
   // hidden wrongs come to light through the Audit Office
