@@ -61,13 +61,13 @@ function republic() {
 // --- thresholds, review, decisions
 {
   const { S, ctx, ledger, said } = republic();
-  // a city's: 2% of 202 Neura citizens -> at least 20
+  // a city's: 1% of 202 Neura citizens -> at least 20
   const c = asp.voiceAspiration(ctx, 'neura-0', { topic: 'environment', scope: 'city', text: 'Plant trees along the main avenue' });
   for (let i = 1; i < 19; i++) asp.supportAspiration(ctx, `neura-${i}`, c.id);
   const cx = () => asp.A(S).list.find(y => y.id === c.id);
   const before = cx().status;
   asp.supportAspiration(ctx, 'neura-19', c.id);
-  check('a city\'s aspiration goes to review at 2% of its citizens (at least 20), announced in #cityhall and on the ledger', before === 'open' && cx().status === 'review' && cx().reviewDue === 2 && ledger.some(l => l.kind === 'aspiration_threshold')
+  check('a city\'s aspiration goes to review at 1% of its citizens (at least 20), announced in #cityhall and on the ledger', before === 'open' && cx().status === 'review' && cx().reviewDue === 2 && ledger.some(l => l.kind === 'aspiration_threshold')
     && said.some(m => m.ch === 'cityhall' && m.meta?.aspirationId === c.id), JSON.stringify({ before, after: cx().status, n: cx().supporters.length }));
   // a nation's: 1% of 1004 -> at least 50, and from 2 cities
   const n = asp.voiceAspiration(ctx, 'neura-100', { topic: 'tax', scope: 'nation', text: 'Lower the tax for the lowest wages' });
@@ -94,6 +94,22 @@ function republic() {
   check('declined with a public reason (none is refused), announced in #parliament', noReason.error && dec.ok && nx().status === 'declined' && said.some(m => m.ch === 'parliament' && /Declined/.test(m.text)));
   const late = asp.supportAspiration(ctx, 'neura-170', n.id);
   check('a decided aspiration takes no more supporters', late.error);
+}
+
+// --- the city threshold is 1% (owner, 19 Nov): a city of 2,000 needs 20 (not 40), 3,000 need 30, a small one still 20
+{
+  const big = n => ({ citizens: Array.from({ length: n }, (_, i) => ({ id: `c${i}`, city: 'neura', status: 'free' })) });
+  const t2000 = asp.threshold(big(2000), { scope: 'city', city: 'neura' }), t3000 = asp.threshold(big(3000), { scope: 'city', city: 'neura' }), t500 = asp.threshold(big(500), { scope: 'city', city: 'neura' });
+  check('the city threshold is 1% of its citizens with a minimum of 20 (2,000 -> 20, 3,000 -> 30, 500 -> 20)', asp.ASPIRATION_LIMITS.cityPct === 0.01 && t2000 === 20 && t3000 === 30 && t500 === 20, JSON.stringify({ t2000, t3000, t500 }));
+  // an open aspiration that already has enough supporters under today's threshold goes to review at the day's tick
+  const { S: Q, ctx: qc } = republic();
+  const x = asp.voiceAspiration(qc, 'neura-0', { topic: 'jobs', scope: 'city', text: 'More jobs for the unemployed in Neura' });
+  const rec = asp.A(Q).list.find(y => y.id === x.id);
+  for (let i = 1; i < 24; i++) rec.supporters.push(`neura-${i}`); // 24 backers gathered while the threshold was higher (no check ran)
+  const before = rec.status; Q.day = 2; asp.aspirationsTick(qc);
+  check('at the day\'s tick an open aspiration already past today\'s threshold goes to review (24 >= 20 after the lowering)', before === 'open' && rec.status === 'review' && rec.reviewDue === 3, JSON.stringify({ before, after: rec.status }));
+  const t10k = asp.threshold(big(10000), { scope: 'nation' });
+  check('the nation threshold is unchanged: 1% of all citizens, at least 50 (10,000 -> 100)', t10k === 100, String(t10k));
 }
 
 // --- reviews per day, expiry, views

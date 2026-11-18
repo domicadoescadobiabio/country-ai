@@ -22,7 +22,8 @@ import type { Ctx, State, Citizen } from './types.ts';
 const envNum = (k: string, d: number, lo: number, hi: number) => { const v = Number(process.env[k]); return process.env[k] != null && process.env[k] !== '' && Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : d; };
 export const TOPICS = ['economy', 'jobs', 'wages', 'tax', 'school', 'health', 'safety', 'housing', 'environment', 'culture', 'transport', 'government'];
 export const ASPIRATION_LIMITS = {
-  cityPct: envNum('ASPIRATION_CITY_MIN', 2, 0.1, 50) / 100, cityMin: 20,     // 2% of the city's citizens, at least 20
+  // 1% of the city's citizens, at least 20 (owner, 19 Nov: 2% asked 40 of a city of 2,000, far from the pace of support)
+  cityPct: envNum('ASPIRATION_CITY_MIN', 1, 0.1, 50) / 100, cityMin: 20,
   nationPct: envNum('ASPIRATION_NATION_MIN', 1, 0.1, 50) / 100, nationMin: 50, nationCities: 2, // 1% of all, at least 50, from 2 cities
   ttlDays: Math.round(envNum('ASPIRATION_TTL_DAYS', 7, 1, 60)), reviewsPerDay: Math.round(envNum('ASPIRATION_REVIEWS_PER_DAY', 6, 1, 100)),
   newEveryDays: 3, supportsPerDay: 3, keep: 300, textMax: 160,
@@ -163,6 +164,9 @@ export function aspirationsTick(ctx: Ctx) {
   const { S } = ctx; const s = A(S);
   if (s.tickDay === S.day) return null;
   s.tickDay = S.day; let n = 0;
+  // an open one that already has enough backing under today's threshold goes to review (e.g. after the threshold was
+  // lowered, 19 Nov: 2% -> 1%), before any expires
+  for (const x of s.list) if (x.status === 'open') check(ctx, x);
   for (const x of s.list) if (x.status === 'open' && S.day - x.day >= ASPIRATION_LIMITS.ttlDays) {
     x.status = 'expired'; s.stats.expired++; n++;
     ctx.record?.('aspiration_expired', 'state', { id: x.id, supporters: x.supporters.length, need: threshold(S, x) });
