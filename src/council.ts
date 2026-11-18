@@ -262,12 +262,15 @@ async function propose(ctx: Ctx, members: Citizen[]) {
 // Art. 20: a signed law waits one day; citizens may petition it into a referendum.
 const TIMELOCK_DAYS = 1;
 const PETITION_SHARE = 0.15;
+// how a bill got through, for the announcement (ticket #1092: never "signed (signed)"): the President's signature, or
+// the other paths in brackets (an override, no President in office, a referendum)
+export const passedText = (id: number, how: string) => (how === 'signed' ? `Bill #${id} signed by the President.` : `Bill #${id} passed (${how}).`);
 function enact(ctx: Ctx, bill: any, how: string, by = 'council') {
   const { S } = ctx; const type = typeOf(S, bill);
   if (by !== 'council') bill.decidedBy = by;
   if (S.constitutionVersion >= 4 && !bill.timelockDone) {
     bill.stage = 'timelock'; bill.how = how; bill.effectiveDay = S.day + TIMELOCK_DAYS; bill.petition = [];
-    ctx.say('parliament', 'state', `Bill #${bill.id} signed (${how}). It takes effect on day ${bill.effectiveDay} unless ${Math.round(PETITION_SHARE * 100)}% of citizens petition for a referendum.`, { kind: 'law' });
+    ctx.say('parliament', 'state', `${passedText(bill.id, how)} It takes effect on day ${bill.effectiveDay} unless ${Math.round(PETITION_SHARE * 100)}% of citizens petition for a referendum.`, { kind: 'law' });
     ctx.record('law_signed', 'council', { bill: bill.id, title: bill.title, effectiveDay: bill.effectiveDay, how });
     return;
   }
@@ -275,7 +278,7 @@ function enact(ctx: Ctx, bill: any, how: string, by = 'council') {
   // on the Council's next tick (policyCourtStep) and the ruling comes back through policyCourtRuling()
   if (bill.type === 'policy') {
     bill.stage = 'court'; bill.how = how;
-    ctx.say('parliament', 'state', `Bill #${bill.id} has passed (${how}). The Court reviews policy ${bill.policyId} before it takes effect.`, { kind: 'law' });
+    ctx.say('parliament', 'state', `${passedText(bill.id, how)} The Court reviews policy ${bill.policyId} before it takes effect.`, { kind: 'law' });
     return;
   }
   // the change is measured from the policy in force NOW, not from when the bill was tabled

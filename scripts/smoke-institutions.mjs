@@ -495,6 +495,7 @@ async function policyChecks(check) {
   check('policy: the voter reads the structured effect (lever, numbers, days, citizens reached) and the cost, not only text', /Effect: grant with group poor, amount 5 for 3 days, reaching \d+ citizens today/.test(q?.prompt || '') && /costs about [\d,.]+ CAI a day/.test(q?.prompt || ''), q?.prompt?.slice(0, 400));
   answer(P, { vote: 'sign', reason: 'it helps the poorest', speech: 'Signed.' });
   await council.councilTick(ctx);
+  check('council: a signed bill is announced "Bill #N signed by the President." (never "signed (signed)"), the other paths in brackets (#1092)', said.some(x => x.text.startsWith(`Bill #${bill.id} signed by the President. It takes effect on day`)) && !said.some(x => /signed \(signed\)/.test(x.text)) && council.passedText(7, 'veto overridden 21-9') === 'Bill #7 passed (veto overridden 21-9).', said.filter(x => x.text.startsWith(`Bill #${bill.id}`)).map(x => x.text).join(' | '));
   check('policy: signed, the bill waits out the one-day timelock', bill.stage === 'timelock' && pol.P(S).list.find(p => p.id === r.id).status === 'proposed');
   S.day = bill.effectiveDay;
   ctx.cfg = { courtModel: null };
