@@ -1,4 +1,4 @@
-// Building catalogue for the COUNTRY AI map.
+// Building catalogue for the Itera Nation map.
 // Each AI citizen stands for REP real residents, so a city of 2,000 agents is drawn as a town of ~50,000 people
 // and gets the facilities a real town of that size has (planning ratios from the research in
 // research_notes/Katalog bangunan negara nyata/). `per` = represented residents served by one facility.

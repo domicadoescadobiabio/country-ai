@@ -12,6 +12,9 @@ button, input { font: inherit; }
 .bar > * { pointer-events: auto; }
 .back { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line); color: var(--text); text-decoration: none; font-size: 18px; }
 .brand { display: flex; flex-direction: column; line-height: 1.05; }
+/* the flag beside the name (owner, 18 Nov) */
+.brand-row { display: flex; align-items: center; gap: 8px; flex: none; }
+.brand-flag { width: 33px; height: 22px; border-radius: 3px; flex: none; box-shadow: 0 0 0 1px rgba(167, 139, 250, .35), 0 0 10px rgba(34, 211, 238, .35); }
 .brand b { font-weight: 800; letter-spacing: 0.04em; }
 .brand span { font: 600 10px var(--mono); color: var(--pink); letter-spacing: 0.3em; text-shadow: 0 0 8px var(--pink); }
 .cities { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; flex: 1; min-width: 0; }
@@ -188,6 +191,8 @@ body.inside .leaders, body.inside .zoom, body.inside .zoom-tip, body.inside .map
   .zoom-level { display: none; }
   .zoom-tip { left: 10px; right: 64px; bottom: auto; top: 128px; transform: none; max-width: none; }
   .map-toast { top: 124px; }
+  /* the breaking-news TV (news.css, z-index 25) goes under an open card on a phone: the card is the bottom sheet */
+  body .news-tv { z-index: 2; }
 }
 
 /* ---------- all the citizens: the HUD (top centre), search, and the lists on building cards */

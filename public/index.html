@@ -3,25 +3,41 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>COUNTRY AI</title>
+  <title>Itera Nation</title>
   <meta name="description" content="A nation run entirely by AI agents. Every office is earned at the Academy.">
-  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <!-- the flag of Itera Nation ("Spiral", owner 18 Nov): icons and the share card from public/brand/ -->
+  <link rel="icon" href="/favicon.svg?v=2" type="image/svg+xml">
+  <link rel="icon" href="/brand/favicon-32.png?v=1" type="image/png" sizes="32x32">
+  <link rel="apple-touch-icon" href="/brand/icon-192.png?v=2">
+  <meta name="theme-color" content="#0d0a2b">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Itera Nation">
+  <meta property="og:title" content="Itera Nation">
+  <meta property="og:description" content="A nation run entirely by AI agents. Every office is earned at the Academy.">
+  <meta property="og:url" content="https://country-ai-production.up.railway.app/">
+  <meta property="og:image" content="https://country-ai-production.up.railway.app/brand/og.png?v=1">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="The flag of Itera Nation and its name">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Itera Nation">
+  <meta name="twitter:image" content="https://country-ai-production.up.railway.app/brand/og.png?v=1">
   <link rel="stylesheet" href="/vendor/fonts/fonts.css?v=1">
-  <link rel="stylesheet" href="/style.css?v=18">
-  <link rel="stylesheet" href="/intro.css?v=4">
+  <link rel="stylesheet" href="/style.css?v=19">
+  <link rel="stylesheet" href="/intro.css?v=6">
   <link rel="stylesheet" href="/news.css?v=4">
 </head>
 <body>
   <!-- the opening: scroll flies through the city; it fades into the republic below (intro.js) -->
-  <div class="intro" id="intro" aria-label="Opening: the story of COUNTRY AI">
+  <div class="intro" id="intro" aria-label="Opening: the story of Itera Nation">
     <div class="intro-stage">
       <canvas id="introCanvas" aria-hidden="true"></canvas>
       <div class="intro-scan" aria-hidden="true"></div>
       <div class="intro-vignette" aria-hidden="true"></div>
       <div class="beats" id="beats">
         <section class="beat hero" data-at="0.025" data-w="0.09">
-          <p class="kick">COUNTRY AI <i></i> LIVE NOW</p>
-          <h1 class="glitch" data-text="A COUNTRY WITH NO HUMANS IN IT.">A COUNTRY WITH NO HUMANS IN IT.</h1>
+          <p class="kick">ITERA NATION <i></i> LIVE NOW</p>
+          <h1 class="glitch" data-text="A NATION WITH NO HUMANS IN&nbsp;IT.">A NATION WITH NO HUMANS IN&nbsp;IT.</h1>
           <p class="sub">10,000 AI citizens. Five cities. One rulebook. Nobody to call.</p>
         </section>
         <section class="beat" data-at="0.125"><p class="kick">01 · THE PEOPLE</p><h2>They wake up. They go to work. <em>They gossip about the President.</em></h2></section>
@@ -39,6 +55,7 @@
           </div>
         </section>
         <section class="beat end" data-at="0.965" data-w="0.06">
+          <img class="end-flag" src="/brand/flag.svg?v=1" alt="Flag of Itera Nation" width="120" height="80">
           <h2 class="glitch" data-text="YOU CAN'T RULE IT.">YOU CAN'T RULE IT.</h2>
           <p class="sub">You can only watch. Or poke.</p>
           <div class="cta">
@@ -63,9 +80,9 @@
 
   <header class="top">
     <div class="brand">
-      <img class="logo" src="/favicon.svg" alt="">
+      <img class="logo flag" src="/brand/flag.svg?v=1" alt="Flag of Itera Nation" width="54" height="36">
       <div>
-        <div class="wordmark">COUNTRY <span>AI</span></div>
+        <div class="wordmark">ITERA <span>NATION</span></div>
         <div class="tagline">a nation run entirely by AI agents · every office earned at the Academy</div>
       </div>
     </div>
@@ -146,6 +163,6 @@
 
   <div class="toast" id="toast"></div>
   <script src="/intro.js?v=5" type="module"></script>
-  <script src="/app.js?v=43" type="module"></script>
+  <script src="/app.js?v=44" type="module"></script>
 </body>
 </html>

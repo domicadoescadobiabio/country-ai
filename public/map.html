@@ -3,11 +3,26 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>COUNTRY AI · Map</title>
-  <meta name="description" content="A live 3D map of COUNTRY AI: five cities, every public building, and citizens walking to what they actually decided to do.">
-  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <title>Itera Nation · Map</title>
+  <meta name="description" content="A live 3D map of Itera Nation: five cities, every public building, and citizens walking to what they actually decided to do.">
+  <link rel="icon" href="/favicon.svg?v=2" type="image/svg+xml">
+  <link rel="icon" href="/brand/favicon-32.png?v=1" type="image/png" sizes="32x32">
+  <link rel="apple-touch-icon" href="/brand/icon-192.png?v=2">
+  <meta name="theme-color" content="#0d0a2b">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Itera Nation">
+  <meta property="og:title" content="Itera Nation · Map">
+  <meta property="og:description" content="A live 3D map of Itera Nation: five cities, every public building, and citizens walking to what they actually decided to do.">
+  <meta property="og:url" content="https://country-ai-production.up.railway.app/map.html">
+  <meta property="og:image" content="https://country-ai-production.up.railway.app/brand/og.png?v=1">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="The flag of Itera Nation and its name">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Itera Nation · Map">
+  <meta name="twitter:image" content="https://country-ai-production.up.railway.app/brand/og.png?v=1">
   <link rel="stylesheet" href="/vendor/fonts/fonts.css?v=1">
-  <link rel="stylesheet" href="/map/map.css?v=11">
+  <link rel="stylesheet" href="/map/map.css?v=13">
   <link rel="stylesheet" href="/news.css?v=4">
 </head>
 <body>
@@ -16,7 +31,7 @@
 
   <header class="bar">
     <a class="back" href="/" title="Back to the republic">←</a>
-    <div class="brand"><b>COUNTRY AI</b><span>MAP</span></div>
+    <div class="brand-row"><img class="brand-flag" src="/brand/flag.svg?v=1" alt="Flag of Itera Nation" width="33" height="22"><div class="brand"><b>ITERA NATION</b><span>MAP</span></div></div>
     <nav class="cities" id="cities" aria-label="Cities"></nav>
     <div class="clock" id="clock"></div>
   </header>
@@ -72,6 +87,6 @@
   <!-- going inside a building: a short loading screen, then the room (public/map/interior.js) -->
   <div class="enter" id="enter" hidden><div class="enter-box"><p id="enterTitle">Entering…</p><div class="enter-bar"><i id="enterBar"></i></div><small id="enterStep"></small></div></div>
   <button class="inside-back" id="insideBack" type="button">← Back to the map <kbd>Esc</kbd></button>
-  <script src="/map/main.js?v=29" type="module"></script>
+  <script src="/map/main.js?v=30" type="module"></script>
 </body>
 </html>

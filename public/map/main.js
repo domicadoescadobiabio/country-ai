@@ -1,4 +1,4 @@
-// COUNTRY AI 3D map. All server text goes through textContent (never innerHTML with data).
+// Itera Nation 3D map. All server text goes through textContent (never innerHTML with data).
 import * as THREE from '../vendor/three/three.module.js';
 import { MapControls } from '../vendor/three/MapControls.js';
 import { EffectComposer } from '../vendor/three/EffectComposer.js';
