@@ -419,6 +419,12 @@ try {
   const exD = await fetch(BASE + '/api/admin/train/export?domain=math', { headers: { 'x-admin-token': TOKEN } });
   const exBad = await fetch(BASE + '/api/admin/train/export?domain=..%2Fetc', { headers: { 'x-admin-token': TOKEN } });
   check('train export filters by field of study (?domain=math) and refuses a malformed one', exD.status === 200 && (await exD.text()).split('\n').filter(Boolean).every(l => JSON.parse(l).domain === 'math') && exBad.status === 400, `${exD.status} ${exBad.status}`);
+  // behaviour examples (owner, 19 Nov) are exported by their own domain; the teachers' pacing shows both teachers and the Claude credit
+  const exB = await fetch(BASE + '/api/admin/train/export?domain=behavior', { headers: { 'x-admin-token': TOKEN } });
+  const stB = (await get('/api/state')).budget?.train;
+  check('train export takes ?domain=behavior; budget.train shows claudeShortUsd, shortUsd, the Claude credit (claudeTotalSpent, claudeTotalCap) and the behaviour examples',
+    exB.status === 200 && (await exB.text()).split('\n').filter(Boolean).every(l => JSON.parse(l).domain === 'behavior') && typeof stB?.claudeShortUsd === 'number' && typeof stB.shortUsd === 'number'
+    && typeof stB.claudeTotalSpent === 'number' && 'claudeTotalCap' in stB && stB.behavior && ['calls', 'spent', 'kept', 'invalid', 'skipped', 'share'].every(k => k in stB.behavior), JSON.stringify({ status: exB.status, keys: stB && Object.keys(stB) }));
   const stT = (await get('/api/state')).budget?.train;
   const sp0 = stT?.school;
   check('/api/state budget.train.school shows the school\'s teacher pacing (share now/base, behind, orShortUsd, concurrency, teacher-only counts, kept per field)', sp0 && typeof sp0.shareNow === 'number' && typeof sp0.shareBase === 'number' && typeof sp0.behind === 'boolean'

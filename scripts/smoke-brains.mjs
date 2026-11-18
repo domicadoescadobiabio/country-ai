@@ -31,7 +31,9 @@ const mock = http.createServer((req, res) => {
     if (!isClaude && req.headers.authorization === 'Bearer test-or-mod') { res.writeHead(403, { 'content-type': 'application/json' }); return res.end('{"error":{"message":"Input flagged by moderation"}}'); }
     res.writeHead(!isClaude && body.model === BROKEN ? 404 : 200, { 'content-type': 'application/json' });
     if (!isClaude && body.model === BROKEN) return res.end('{"error":{"message":"model not found"}}');
-    const text = smartAnswer(String(prompt || ''));
+    // behaviour examples (19 Nov): a well-formed daily choice, or a reply in the wrong shape
+    const text = /BEHAVIOR_JSON/.test(String(prompt)) ? '{"act":"study","why":"I want to understand the budget before I complain about it."}'
+      : /BEHAVIOR_BAD/.test(String(prompt)) ? 'I would rather not choose.' : smartAnswer(String(prompt || ''));
     res.end(JSON.stringify(isClaude
       ? { id: 'm', type: 'message', role: 'assistant', model: body.model, stop_reason: 'end_turn', usage: { input_tokens: 400, output_tokens: 20 }, content: [{ type: 'text', text }] }
       : { id: 'c', choices: [{ message: { role: 'assistant', content: text } }], usage: { prompt_tokens: 400, completion_tokens: 20 } }));
@@ -91,7 +93,7 @@ try {
   // --- the school's teachers: teach() mixes providers by TRAIN_TEACHER_MIX, has its own paced budget inside the day's total
   check('/api/state publishes budget.train (spent, calls per provider, denied)', s.budget?.train && typeof s.budget.train.spent === 'number' && 'claude' in (s.budget.train.calls || {}) && 'openrouter' in s.budget.train.calls && typeof s.budget.train.denied === 'number', JSON.stringify(s.budget?.train));
   process.env.ANTHROPIC_BASE_URL = MOCK; // the SDK in this process talks to the same mock
-  const { teach, trainBudgetState, budgetState, workerPull, localStatus, saveExample, parseTeacherMix, _resetLocal, trainPaceView, teachRoomNow, questionHash } = await import('../src/brains.ts');
+  const { teach, trainBudgetState, budgetState, workerPull, localStatus, saveExample, parseTeacherMix, _resetLocal, trainPaceView, teachRoomNow, questionHash, claudeTotal, behaviorWanted, distillBehavior } = await import('../src/brains.ts');
   const { makeLLM } = await import('../src/llm.ts');
   const llmT = makeLLM({ anthropicKey: 'test-claude', orKey: 'test-or', orBase: MOCK, llmPerMin: 5000, claudeModel: 'claude-opus-5-5' }, () => {});
   const OR_T = 'deepseek/deepseek-v4-pro-0813', CL_T = 'claude-sonnet-5-5';
@@ -148,7 +150,8 @@ try {
   check('teach: TRAIN_TEACHER_MIX splits dollars, not calls (90/10 -> ~10% of the dollars to Claude, ~5% of the calls)', dollarShare > 0.08 && dollarShare < 0.12 && callShare < 0.07 && Math.abs(by3.openrouter + by3.claude - T3.spent) < 1e-9, JSON.stringify({ by3, k3, dollarShare, callShare }));
   check('teach: spending stops at the paced allowance (TRAIN_BUDGET_USD x 0.5), OpenRouter over its floor', T3.spent <= 0.1 + 1e-9 && by3.openrouter >= 0.075 && T3.denied >= 1, JSON.stringify({ spent: T3.spent, by3, n3 }));
   check('teach: the leader / official / citizen shares never pay for the teachers', budgetState(c3).spent === 0 && budgetState(c3).leader === 0 && T3.spent > 0);
-  // the floor: even with a mix of claude:100, OpenRouter gets its minimum first; Claude then only the rest (cap 0.25 x 0.5)
+  // both teachers move through the day together (owner, 19 Nov: Claude no longer waits for OpenRouter's floor); the
+  // floor stays safe because Claude is capped at (budget - floor) x pace (0.05 x 0.5 = 0.025)
   const c3b = tctx({ trainMix: 'claude:100', trainBudgetUsd: 0.2, trainOrMinUsd: 0.15 }, half);
   const view0 = trainPaceView(c3b); const seqB = []; let orAtFirstClaude = null;
   for (let i = 0; i < 400; i++) {
@@ -156,9 +159,76 @@ try {
     if (r.teacher === 'claude' && orAtFirstClaude == null) orAtFirstClaude = trainBudgetState(c3b).spentBy.openrouter;
   }
   const by3b = trainBudgetState(c3b).spentBy;
-  check('teach: TRAIN_OR_MIN_USD comes first (OpenRouter until its paced minimum), Claude only within what is left', seqB[0] === 'openrouter' && orAtFirstClaude >= 0.075 - 1e-9
-    && by3b.claude <= 0.025 + 1e-9 && by3b.claude >= 0.02 && by3b.openrouter + by3b.claude <= 0.1 + 1e-9, JSON.stringify({ first: seqB[0], orAtFirstClaude, by3b }));
-  check('budget: orShortUsd says how far OpenRouter is behind its minimum (no lesson is invented to fill it)', view0.orShortUsd === 0.075 && view0.orMinNow === 0.075 && trainPaceView(c3b).orShortUsd === 0, JSON.stringify({ view0, now: trainPaceView(c3b) }));
+  check('teach: Claude teaches from the start of the day (not after OpenRouter\'s floor), both toward their dollar targets; OpenRouter still reaches its minimum and Claude stays under its cap',
+    seqB.slice(0, 3).includes('claude') && orAtFirstClaude < 0.075 && by3b.claude <= 0.025 + 1e-9 && by3b.claude >= 0.02 && by3b.openrouter >= 0.075 - 1e-9 && by3b.openrouter + by3b.claude <= 0.1 + 1e-9,
+    JSON.stringify({ first: seqB.slice(0, 3), orAtFirstClaude, by3b }));
+  check('budget: orShortUsd and claudeShortUsd say how far each teacher is behind (shortUsd both), so the school can ask lessons for both; no lesson is invented to fill it',
+    view0.orShortUsd === 0.075 && view0.orMinNow === 0.075 && view0.claudeShortUsd === 0.025 && view0.shortUsd === 0.1 && trainPaceView(c3b).orShortUsd === 0 && trainPaceView(c3b).claudeShortUsd === 0,
+    JSON.stringify({ view0, now: trainPaceView(c3b) }));
+  // TRAIN_CLAUDE_TOTAL_USD: a credit for Claude across days; used up -> Claude stops, lessons go to OpenRouter
+  {
+    const ctot = tctx({ trainMix: 'claude:100', trainOrMinUsd: 0, trainClaudeTotalUsd: 0.01 });
+    const seq = []; for (let i = 0; i < 60; i++) { const r = await teach(ctot, lesson); if (!r) break; seq.push(r.teacher); }
+    const tt = claudeTotal(ctot); const v = trainPaceView(ctot);
+    ctot.S.day = 2; const nextDay = []; for (let i = 0; i < 5; i++) { const r = await teach(ctot, lesson); if (r) nextDay.push(r.teacher); }
+    check('TRAIN_CLAUDE_TOTAL_USD: Claude spends at most the credit in all (kept across days, shown as claudeTotalSpent/claudeTotalCap), then the lessons go to OpenRouter',
+      seq.includes('claude') && tt.spent <= 0.01 + 1e-9 && tt.spent > 0 && seq.at(-1) === 'openrouter' && v.claudeTotalCap === 0.01 && v.claudeTotalSpent === Math.round(tt.spent * 10000) / 10000 && v.claudeShortUsd === 0
+      && claudeTotal(ctot).spent === tt.spent && nextDay.length > 0 && !nextDay.includes('claude'), JSON.stringify({ seq: seq.slice(-3), spent: tt.spent, v: { cap: v.claudeTotalCap, spent: v.claudeTotalSpent }, nextDay }));
+    // a restart: the state is saved and loaded again (JSON), a new context, the same credit used: Claude stays stopped
+    const reS = JSON.parse(JSON.stringify(ctot.S)); const re = { ...ctot, S: reS };
+    const afterRestart = []; for (let i = 0; i < 5; i++) { const r = await teach(re, lesson); if (r) afterRestart.push(r.teacher); }
+    check('TRAIN_CLAUDE_TOTAL_USD survives a restart (kept in the state): the same spent, the same cap, still no Claude lesson', claudeTotal(re).spent === tt.spent && claudeTotal(re).cap === 0.01 && claudeTotal(re).since === tt.since && afterRestart.length > 0 && !afterRestart.includes('claude'),
+      JSON.stringify({ spent: claudeTotal(re).spent, afterRestart }));
+    const free = tctx({ trainMix: 'claude:100', trainOrMinUsd: 0 });
+    check('without TRAIN_CLAUDE_TOTAL_USD there is no credit limit (as before)', claudeTotal(free).cap === null && trainPaceView(free).claudeTotalCap === null);
+  }
+  // behaviour examples: a citizen's own choice answered again by Claude, saved only in the right shape, never wrongdoing
+  {
+    const rows = [];
+    const bc = { S: { day: 1, foundedAt: Date.now() - 3600000 }, cfg: { dayMs: 86400000, dailyBudgetUsd: 25, trainBudgetUsd: 3, trainOrMinUsd: 1, trainMix: 'openrouter:39,claude:61', trainOrModel: OR_T, trainClaudeModel: CL_T, trainPerMin: 1e6, trainBehaviorShare: 0.4 },
+      llm: llmT, trainExample: row => { rows.push(row); return rows.length; } };
+    const cit = { id: 'c1', name: 'Cora', faction: 'civilian' };
+    const w = {
+      life: behaviorWanted(bc, cit, { kind: 'life', system: 'You are Cora.', user: 'Choose your day. Menu: work, study, rest' }),
+      voice: behaviorWanted(bc, cit, { kind: 'question', distill: 'voice', system: 'You are Cora.', user: 'Back an aspiration or voice your own.' }),
+      crime: behaviorWanted(bc, cit, { kind: 'life', system: 'You are Cora.', user: 'Menu: work, pickpocket a tourist, rest' }),
+      bribe: behaviorWanted(bc, cit, { kind: 'life', system: 'You are Cora.', user: 'Menu: work, rest', options: ['work', 'offer a bribe'] }),
+      underworld: behaviorWanted(bc, { ...cit, faction: 'underworld' }, { kind: 'life', system: 'You are Cora.', user: 'Menu: work, rest' }),
+      school: behaviorWanted(bc, cit, { kind: 'train', system: 'You are Cora.', user: 'Question: 2+2?' }),
+      vote: behaviorWanted(bc, cit, { kind: 'vote', system: 'You are Cora.', user: 'Vote.' }),
+    };
+    check('behaviour examples: daily life and the marked kinds (voice, reflection, plan) only; never a choice that touches wrongdoing (pickpocket, bribe, the underworld), never school or votes',
+      w.life === 'life' && w.voice === 'voice' && w.crime === null && w.bribe === null && w.underworld === null && w.school === null && w.vote === null && trainBudgetState(bc).behavior.skipped === 3, JSON.stringify(w));
+    // distill: false is a firm no (a thought that was offered a wrong, in words the regex does not know)
+    const sk0 = trainBudgetState(bc).behavior.skipped;
+    const firmNo = behaviorWanted(bc, cit, { kind: 'life', distill: false, system: 'You are Cora.', user: 'Menu: work, rest, take the shopkeeper\'s coins while he looks away' });
+    const firmNo2 = behaviorWanted(bc, cit, { kind: 'life', distill: false, system: 'You are Cora.', user: 'Choose your day. Menu: work, study, rest' });
+    check('distill: false is a firm no: no behaviour example even for daily life with harmless words (ticket #1130)', firmNo === null && firmNo2 === null && trainBudgetState(bc).behavior.skipped === sk0 + 2, JSON.stringify({ firmNo, firmNo2 }));
+    const okRow = await distillBehavior(bc, cit, { purpose: 'life', system: 'You are Cora.', user: 'BEHAVIOR_JSON Choose your day. Menu: work, study, rest', format: 'json', options: ['work', 'study', 'rest'], student: '{"act":"rest"}', studentEngine: 'local:qwen3:8b' });
+    const badRow = await distillBehavior(bc, cit, { purpose: 'life', system: 'You are Cora.', user: 'BEHAVIOR_BAD Choose your day. Menu: work, study, rest', format: 'json', options: ['work', 'study', 'rest'], student: '{"act":"rest"}', studentEngine: 'local:qwen3:8b' });
+    const B = trainBudgetState(bc).behavior, r0 = rows[0];
+    check('a behaviour example in the right shape is saved (domain behavior, purpose behavior:life, Claude as teacher, the citizen\'s own answer kept as the student\'s); a reply in the wrong shape is not',
+      okRow === true && badRow === null && rows.length === 1 && r0.domain === 'behavior' && r0.purpose === 'behavior:life' && r0.teacherKind === 'claude' && r0.verified === 'format' && /rest/.test(r0.student) && B.kept === 1 && B.invalid === 1 && B.calls === 2,
+      JSON.stringify({ okRow, badRow, rows: rows.map(r => [r.domain, r.purpose, r.teacherKind, r.verified]), B }));
+    check('behaviour examples are paid as Claude teacher calls (budget.train.spentBy.claude, the credit) and shown in budget.train.behavior', trainBudgetState(bc).spentBy.claude >= B.spent && B.spent > 0 && trainPaceView(bc).behavior.calls === 2,
+      JSON.stringify(trainPaceView(bc).behavior));
+    const zero = { ...bc, cfg: { ...bc.cfg, trainBehaviorShare: 0 } };
+    const before = Object.values(seen.claude).reduce((t, n) => t + n, 0);
+    const none = await distillBehavior(zero, cit, { purpose: 'life', system: 'x', user: 'BEHAVIOR_JSON Menu: work', format: 'json', options: ['work'] });
+    check('TRAIN_BEHAVIOR_SHARE=0: no behaviour example is asked (no Claude call)', none === null && Object.values(seen.claude).reduce((t, n) => t + n, 0) === before);
+    // at most 2 at a time: 4 asked together, 2 go to Claude, the other 2 are not asked
+    const claudeHits = () => Object.values(seen.claude).reduce((t, n) => t + n, 0);
+    const pc = { ...bc, S: { day: 1, foundedAt: Date.now() - 3600000 } };
+    const h0 = claudeHits();
+    const four = await Promise.all([0, 1, 2, 3].map(i => distillBehavior(pc, cit, { purpose: 'life', system: 'You are Cora.', user: `BEHAVIOR_JSON together ${i}. Menu: work, study, rest`, format: 'json', options: ['work', 'study', 'rest'] })));
+    check('behaviour examples: at most 2 at a time (4 asked together: 2 Claude calls, 2 not asked)', claudeHits() - h0 === 2 && four.filter(x => x === null).length === 2, JSON.stringify({ calls: claudeHits() - h0, four }));
+    // TRAIN_BEHAVIOR_SHARE: never more than its share of Claude's dollar target (here 10% of it), then no more asks
+    const sc = { ...bc, S: { day: 1, foundedAt: Date.now() - 3600000 }, cfg: { ...bc.cfg, trainBehaviorShare: 0.1 } };
+    const target = trainPaceView(sc).claudeShortUsd; // nothing spent yet: Claude's whole target so far
+    let asked = 0; for (let i = 0; i < 200; i++) { const h = claudeHits(); await distillBehavior(sc, cit, { purpose: 'life', system: 'You are Cora.', user: `BEHAVIOR_JSON share ${i}. Menu: work, study, rest`, format: 'json', options: ['work', 'study', 'rest'] }); if (claudeHits() > h) asked++; else break; }
+    const Bs = trainBudgetState(sc).behavior;
+    check('TRAIN_BEHAVIOR_SHARE caps the behaviour examples at that share of Claude\'s dollar target, then they stop', target > 0 && asked >= 1 && asked < 200 && Bs.spent <= 0.1 * target + 1e-9, JSON.stringify({ target, asked, spent: Bs.spent, cap: 0.1 * target }));
+  }
   // the talent programme: gifted citizens get OpenRouter even when the mix favours Claude, counted apart
   const cg = tctx({ trainMix: 'claude:100', trainOrMinUsd: 0 });
   const g1 = await teach(cg, { ...lesson, gifted: true }), g2 = await teach(cg, { ...lesson, purpose: 'gifted:math' }), g3 = await teach(cg, lesson);

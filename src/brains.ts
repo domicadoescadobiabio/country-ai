@@ -332,7 +332,7 @@ export function trainBudgetState(ctx) {
     // the day that ends: what OpenRouter got, and how far short of its minimum it stayed (too few lessons asked)
     const prevMin = Math.min(T.daily || 0, T.orMinUsd || 0);
     const last = T.day != null && T.spentBy ? { day: T.day, spentBy: T.spentBy, orShortUsd: Math.round(Math.max(0, prevMin - (T.spentBy.openrouter || 0)) * 10000) / 10000 } : T.last || null;
-    Object.assign(T, { day: S.day, spent: 0, spentBy: { openrouter: 0, claude: 0 }, calls: { claude: 0, openrouter: 0 }, denied: 0, gifted: { calls: 0, spent: 0 }, last, dataset: undefined });
+    Object.assign(T, { day: S.day, spent: 0, spentBy: { openrouter: 0, claude: 0 }, calls: { claude: 0, openrouter: 0 }, denied: 0, gifted: { calls: 0, spent: 0 }, last, dataset: undefined, behavior: undefined });
   }
   T.spentBy ||= { openrouter: 0, claude: 0 }; T.gifted ||= { calls: 0, spent: 0 }; // state saved by an older version
   T.daily = ctx.cfg?.trainBudgetUsd ?? 3;
@@ -368,10 +368,34 @@ function trainTargets(ctx) {
   const allowed = T.daily * p, orMin = T.orMinUsd * p, claudeCap = Math.max(0, T.daily - T.orMinUsd) * p;
   return { p, allowed, orMin, claudeCap, orTarget: Math.max(orMin, T.daily * (1 - share) * p), claudeTarget: Math.min(claudeCap, T.daily * share * p) };
 }
+// TRAIN_CLAUDE_TOTAL_USD (owner, 19 Nov: a $100 Claude credit to use in about 4 days): the most the Claude teachers
+// may spend in all, across days, counted from when it was first set (kept in the state, so a restart does not reset
+// it). Reached: Claude teaches no more and the lessons go to OpenRouter. Unset: no limit (and no counting).
+export function claudeTotal(ctx) {
+  const S = ctx.S; const cap = Number(ctx.cfg?.trainClaudeTotalUsd);
+  const t = (S.trainClaudeTotal ||= { spent: 0, cap: null, since: null });
+  if (cap > 0) { if (t.since == null) { t.since = new Date().toISOString(); t.spent = 0; } t.cap = cap; } else t.cap = null;
+  return t;
+}
+const claudeTotalLeft = ctx => { const t = claudeTotal(ctx); return t.cap == null ? Infinity : t.cap - t.spent; };
+// The behaviour examples (owner, 19 Nov): a share of the Claude teachers' dollars (TRAIN_BEHAVIOR_SHARE, default 0.4)
+// answers again some of the citizens' own daily choices, so the local model learns how to choose, not only facts
+function behaviorState(ctx) { const T = trainBudgetState(ctx); return (T.behavior ||= { calls: 0, spent: 0, kept: 0, invalid: 0, skipped: 0 }); }
 export function trainPaceView(ctx) {
-  const T = trainBudgetState(ctx); const g = trainTargets(ctx);
+  const T = trainBudgetState(ctx); const g = trainTargets(ctx); const ct = claudeTotal(ctx);
+  // Claude behind its dollar target, as far as Claude can teach now (a key, the credit not used up) and at least one
+  // lesson's worth (crumbs smaller than a lesson cannot be bought: the school must not chase them)
+  const est = TRAIN_RUN.est.claude;
+  const claudeOpen = !!ctx.llm?.hasClaude && claudeTotalLeft(ctx) >= est;
+  const claudeGap = Math.max(0, g.claudeTarget - T.spentBy.claude);
+  const orShort = Math.max(0, g.orMin - T.spentBy.openrouter), claudeShort = claudeOpen && claudeGap >= est ? claudeGap : 0;
+  const B = behaviorState(ctx);
   return { allowedNow: r4(g.allowed), orMinUsd: T.orMinUsd, orMinNow: r4(g.orMin), claudeCapNow: r4(g.claudeCap),
-    orShortUsd: r4(Math.max(0, g.orMin - T.spentBy.openrouter)), // how far OpenRouter is behind its minimum right now
+    orShortUsd: r4(orShort), // how far OpenRouter is behind its minimum right now
+    claudeShortUsd: r4(claudeShort), // how far Claude is behind its dollar target right now (0 when it cannot teach)
+    shortUsd: r4(orShort + claudeShort), // what the school may still ask of all teachers together
+    claudeTotalSpent: r4(ct.spent), claudeTotalCap: ct.cap, claudeTotalSince: ct.since,
+    behavior: { share: ctx.cfg?.trainBehaviorShare ?? 0.4, calls: B.calls, spent: r4(B.spent), kept: B.kept, invalid: B.invalid, skipped: B.skipped },
     inFlight: TRAIN_RUN.inFlight.openrouter + TRAIN_RUN.inFlight.claude, estPerCall: { openrouter: r4(TRAIN_RUN.est.openrouter), claude: r4(TRAIN_RUN.est.claude) } };
 }
 // can this teacher take one more lesson? what is spent, what running calls will cost and this call's own estimate
@@ -384,6 +408,7 @@ function trainAllows(ctx, who) {
   const committed = T.spent + running + R.est[who];
   if (committed > g.allowed + 1e-12) return false;
   if (who === 'claude' && T.spentBy.claude + R.inFlight.claude * R.est.claude + R.est.claude > g.claudeCap + 1e-12) return false;
+  if (who === 'claude' && R.inFlight.claude * R.est.claude + R.est.claude > claudeTotalLeft(ctx) + 1e-12) return false; // the credit is used up
   const D = ctx.cfg?.dailyBudgetUsd ?? 25;
   if (D > 0 && budgetState(ctx).spent + committed > D * g.p + 1e-12) return false; // only the headroom left under the day's total
   return true;
@@ -395,11 +420,15 @@ function pickTeacher(ctx, llm, gifted) {
   const ok = who => has[who] && trainAllows(ctx, who);
   // the talent programme: gifted citizens get the OpenRouter teacher whenever it can take them
   if (gifted && ok('openrouter')) return 'openrouter';
-  if (T.spentBy.openrouter < g.orMin && ok('openrouter')) return 'openrouter'; // the floor first
-  const behind = { openrouter: g.orTarget - T.spentBy.openrouter, claude: g.claudeTarget - T.spentBy.claude };
-  const order = behind.claude > behind.openrouter ? ['claude', 'openrouter'] : ['openrouter', 'claude'];
-  for (const who of order) if (ok(who) && (who === 'openrouter' || behind.claude > 0)) return who;
-  return null;
+  // whichever is furthest behind its own dollar target (as a share of that target) teaches next, so both move through
+  // the day together (owner, 19 Nov: Claude no longer waits for OpenRouter's floor). The floor stays safe: Claude can
+  // never spend more than (TRAIN_BUDGET_USD - TRAIN_OR_MIN_USD) x pace, so OpenRouter's minimum always fits.
+  const target = { openrouter: g.orTarget, claude: g.claudeTarget };
+  const behind = { openrouter: target.openrouter - T.spentBy.openrouter, claude: target.claude - T.spentBy.claude };
+  const frac = (w: string) => (target[w] > 0 ? behind[w] / target[w] : -Infinity);
+  const order = frac('claude') > frac('openrouter') ? ['claude', 'openrouter'] : ['openrouter', 'claude'];
+  for (const who of order) if (ok(who) && behind[who] > 0) return who;
+  return ok('openrouter') ? 'openrouter' : null; // above both targets OpenRouter may use the rest of the allowance
 }
 // The school paces its teachers itself (src/school.ts: the teacher share and teacher-only lessons while OpenRouter is
 // behind trainPaceView().orShortUsd); here only the limits every teacher call must pass.
@@ -436,6 +465,7 @@ export async function teach(ctx, { system, user, maxTokens = 700, purpose = 'tra
   } finally { TRAIN_RUN.inFlight[who]--; }
   const cost = r.cost || 0;
   T.spent += cost; T.spentBy[who] += cost; T.calls[who]++;
+  if (who === 'claude') { const ct = claudeTotal(ctx); if (ct.cap != null) ct.spent += cost; }
   if (isGifted) { T.gifted.calls++; T.gifted.spent += cost; }
   if (cost > 0) TRAIN_RUN.est[who] = TRAIN_RUN.est[who] * 0.8 + cost * 0.2; // running average of what this teacher's lesson costs
   if (!r.text) return null;
@@ -471,6 +501,7 @@ export function saveExample(ctx, { question, teacher, explanation = '', student 
     if (said !== key) { D.wrong++; return false; } // the teacher missed the server's key: not a training example
     how = 'key';
   } else if (verified === 'rubric' && sc != null) how = 'rubric';
+  else if (verified === 'format') how = 'format'; // a behaviour example: the caller checked it has the shape a citizen's answer must have
   else { D.unverified++; return false; }
   const pur = scrub(purpose, 30) || 'train';
   const dom = cleanDomain(domain) || cleanDomain(pur.match(/^school:([a-z0-9_]+)/i)?.[1]) || 'general';
@@ -483,6 +514,57 @@ export function saveExample(ctx, { question, teacher, explanation = '', student 
   return true;
 }
 
+// ---------------------------------------------------------------- behaviour examples (owner, 19 Nov)
+// "Smarter" the owner's way: independent, learning from mistakes, creative. Some of the citizens' own choices answered
+// by the free local brain (daily life, an aspiration, a reflection after a failure, a plan) are asked again of the
+// Claude teacher, in the background: the citizen keeps their own (local) answer, and Claude's is only saved to
+// train_examples (domain 'behavior', purpose 'behavior:<kind>') when it has the shape a citizen's answer must have.
+// NEVER for a choice that touches wrongdoing (mischief, crime, theft, bribes, the underworld): Claude would almost
+// always refuse, and training on that would make citizens obedient, not free (the People box's own choices, #1035).
+// Paid from the Claude teachers' budget: TRAIN_BEHAVIOR_SHARE (default 0.4) of Claude's dollars so far today, inside
+// trainAllows (pacing, the day's total, TRAIN_CLAUDE_TOTAL_USD) and TRAIN_PER_MIN, at most 2 at a time.
+const WRONGDOING = /\b(mischief|pickpocket\w*|steal\w*|stole|theft|thie\w*|rob\w*|brib\w*|evad\w*|evasion|smuggl\w*|vandal\w*|underworld|crim\w*|fraud\w*|scam\w*|launder\w*|extort\w*|loot\w*|gang\w*)\b/i;
+const BEHAVIOR_KINDS = new Set(['life', 'voice', 'reflection', 'plan']);
+let behaviorInFlight = 0;
+function behaviorAnswerOk(llm, text, format, options) {
+  const t = String(text || '').trim(); if (!t) return false;
+  if (format === 'letter') { const m = t.match(/^\W*([A-D])\b/i); return !!m && (!Array.isArray(options) || options.length === 0 || 'ABCD'.indexOf(m[1].toUpperCase()) < options.length); }
+  if (format === 'json') {
+    const j = llm?.json?.(t); if (!j || typeof j !== 'object' || Array.isArray(j)) return false;
+    if (Array.isArray(options) && options.length) return Object.values(j).some(v => typeof v === 'string' && options.includes(v));
+    return true;
+  }
+  return t.length >= 2 && t.length <= 600 && !/https?:|www\.|<<|>>/i.test(t);
+}
+export function behaviorWanted(ctx, a, { kind, distill, system, user, options }) {
+  // distill: false is a firm no from the caller (e.g. a thought that was offered a wrong): never an example, whatever
+  // the words (not left to the WRONGDOING words alone; ticket #1130)
+  if (distill === false) { if (kind === 'life') behaviorState(ctx).skipped++; return null; }
+  const purpose = distill && BEHAVIOR_KINDS.has(distill) ? distill : kind === 'life' ? 'life' : null;
+  if (!purpose || !ctx.llm?.enabled || !ctx.llm.hasClaude) return null;
+  if ((a?.faction || 'civilian') === 'underworld' || WRONGDOING.test(`${system}\n${user}\n${JSON.stringify(options || '')}`)) { behaviorState(ctx).skipped++; return null; }
+  return purpose;
+}
+export async function distillBehavior(ctx, a, { purpose, system, user, format = 'text', options = null, student = '', studentEngine = '' }) {
+  const B = behaviorState(ctx); const llm = ctx.llm;
+  const share = Number(ctx.cfg?.trainBehaviorShare ?? 0.4);
+  if (!(share > 0) || behaviorInFlight >= 2 || !teachRoom(ctx) || !trainAllows(ctx, 'claude')) return null;
+  if (B.spent + TRAIN_RUN.est.claude > share * trainTargets(ctx).claudeTarget + 1e-12) return null; // its share of Claude's dollars so far
+  const T = trainBudgetState(ctx);
+  teachTimes.push(Date.now()); behaviorInFlight++; TRAIN_RUN.inFlight.claude++;
+  let r;
+  try { r = await llm.askDetailed({ system, user, claudeModel: ctx.cfg?.trainClaudeModel || 'claude-sonnet-5-5', effort: 'low', fallback: false, maxTokens: 600, maxText: 2000 }); }
+  finally { behaviorInFlight--; TRAIN_RUN.inFlight.claude--; }
+  const cost = r?.cost || 0;
+  T.spent += cost; T.spentBy.claude += cost; T.calls.claude++; B.calls++; B.spent += cost;
+  { const ct = claudeTotal(ctx); if (ct.cap != null) ct.spent += cost; }
+  if (cost > 0) TRAIN_RUN.est.claude = TRAIN_RUN.est.claude * 0.8 + cost * 0.2;
+  if (!r?.text || !behaviorAnswerOk(llm, r.text, format, options)) { B.invalid++; return null; }
+  const ok = saveExample(ctx, { question: `${system}\n\n${user}`, teacher: r.text, student, teacherEngine: r.via, studentEngine, purpose: `behavior:${purpose}`, domain: 'behavior', verified: 'format' });
+  if (ok) B.kept++;
+  return ok;
+}
+
 // ---------------------------------------------------------------- one way to think, for everyone
 // Returns { text, engine } or { pending: true } (remote agent has not answered yet).
 // qid must be stable across ticks for the same question.
@@ -491,7 +573,10 @@ export const REMOTE_WAIT_MS = 150000; // a self-run agent has 2.5 minutes to ans
 // domain: the field of study of a school question, handed to the local runner with the job (its LoRA adapter)
 // effort: 'low' | 'medium' | 'high' to choose how hard a paid model thinks (e.g. a leader's short reflection after a
 // report card is 'low'); null keeps the default (leaders' decisions and votes medium, everything else low)
-export async function think(ctx, a, qid, { system, user, kind = 'question', format = 'text', options = null, claudeModel = null, wait = true, paid = true, domain = null, effort = null }) {
+// distill: 'life' | 'voice' | 'reflection' | 'plan' marks a citizen's own choice whose local answer may also become a
+// behaviour example (daily life, kind 'life', counts as 'life' by itself); distill: false = never (pass it for any
+// thought that was offered a wrong)
+export async function think(ctx, a, qid, { system, user, kind = 'question', format = 'text', options = null, claudeModel = null, wait = true, paid = true, domain = null, effort = null, distill = null }) {
   // school (kind 'train') and night school (kind 'night'): the student answers with the free local brain only;
   // the paid teachers are teach()
   // the daily fixed exam (kind 'bench', src/bench.ts) too: local only, last in the queue like the school
@@ -533,15 +618,22 @@ export async function think(ctx, a, qid, { system, user, kind = 'question', form
   // 1. the local brain, free: every citizen and aspirant while it is online and its queue has room
   // school and night-school study (kind 'train' / 'night') is always last, an aspirant's included: exams and votes go first
   const local = () => askLocal(qid, a, { system, user, kind, format, options, domain }, kind === 'train' || kind === 'night' || kind === 'bench' ? TRAIN_PRIORITY : aspirant ? 0 : kind === 'vote' ? 1 : kind === 'life' ? 3 : 2);
+  // a citizen's own choice answered locally: maybe also a behaviour example, in the background (never awaited)
+  const behaviour = r => {
+    if (!r?.text) return;
+    const purpose = behaviorWanted(ctx, a, { kind, distill, system, user, options });
+    if (purpose) distillBehavior(ctx, a, { purpose, system, user, format, options, student: r.text, studentEngine: r.engine }).catch(() => {});
+  };
   if (!paid) {
     if (!wait || !localOnline()) return { text: null, engine: 'offline' };
     const r = local();
+    behaviour(r);
     return r || { text: null, engine: 'offline (local queue full)' };
   }
   if (tier === 'citizen' && wait && localOnline()) {
     const r = local();
     if (r?.pending) return r;
-    if (r?.text) { learn(S, user, options, r.text); return r; }
+    if (r?.text) { learn(S, user, options, r.text); behaviour(r); return r; }
   }
   // 2. the paid API inside the day's paced budget (aspirants are served like the leadership: no tier cap)
   if (ctx.llm.enabled) {

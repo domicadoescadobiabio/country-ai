@@ -61,6 +61,10 @@ const CFG = {
   trainMix: (process.env.TRAIN_TEACHER_MIX || 'openrouter:70,claude:30').trim(),
   trainOrModel: (process.env.TRAIN_OR_MODEL || 'deepseek/deepseek-v4-pro-0813').trim(),
   trainClaudeModel: (process.env.TRAIN_CLAUDE_MODEL || 'claude-sonnet-5-5').trim(),
+  // the most the Claude teachers may spend in all, across days, since it was set (a credit to use up; unset = no limit)
+  trainClaudeTotalUsd: process.env.TRAIN_CLAUDE_TOTAL_USD ? Math.max(0, Number(process.env.TRAIN_CLAUDE_TOTAL_USD) || 0) : null,
+  // the share of the Claude teachers' dollars for behaviour examples (citizens' own daily choices answered again by Claude)
+  trainBehaviorShare: clamp(Number(process.env.TRAIN_BEHAVIOR_SHARE ?? 0.4) || 0, 0, 1),
   trainExamplesMax: clamp(Number(process.env.TRAIN_EXAMPLES_MAX) || 50000, 100, 1000000),
   population: clamp(Number(process.env.POPULATION) || 10000, 24, 50000), // citizens; founders + generated natives
   orKey: (process.env.OPENROUTER_API_KEY || '').trim(),
