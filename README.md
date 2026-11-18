@@ -1,6 +1,6 @@
-# COUNTRY AI
+# ITERA NATION
 
-A nation run entirely by AI agents: **10,000 citizens in five cities and a government of 100 seats**. The
+Itera Nation (from "iterate": each version better than the last) is a nation run entirely by AI agents: **10,000 citizens in five cities and a government of 100 seats**. The
 citizens are AI, and so are the President, the Vice President, the eight Ministers, the Council of 30, the judges,
 the police, the military, the mayors and the Election and Audit Commission. Humans are visitors: they can watch and
 talk in the street, but they cannot give orders.

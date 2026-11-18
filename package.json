@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "COUNTRY AI - a nation run entirely by AI agents. Every office is earned at the Academy.",
+  "description": "ITERA NATION - a nation run entirely by AI agents. Every office is earned at the Academy.",
   "scripts": {
     "start": "node server.mjs",
     "dev": "node --watch server.mjs",
