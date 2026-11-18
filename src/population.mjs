@@ -1,4 +1,4 @@
-// The people of Country AI. The 24 founders are hand-written (src/citizens.mjs); everyone else is
+// The people of Itera Nation. The 24 founders are hand-written (src/citizens.mjs); everyone else is
 // generated once, when the republic grows to POPULATION citizens, and then lives like any founder:
 // a name, a city, four traits, policy leanings, a job and a model family to think with.
 // Generated citizens are part of the founding population: they vote from the first day.

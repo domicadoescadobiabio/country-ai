@@ -9,7 +9,7 @@ import { ROLES, ROLE_ORDER } from './roles.mjs';
 import { buildItem, answer, vacate, LETTERS, examEligible } from './academy.ts';
 import { think, publicBrain } from './brains.ts';
 import { borderCheck } from './military.ts';
-import { constitutionText } from './constitution.mjs';
+import { constitutionText, NATION } from './constitution.mjs';
 import { retireModels, isField, fieldSkill } from './population.mjs';
 import { pick, round, cleanText, cai, clamp } from './util.ts';
 import type { Ctx, State, Citizen } from './types.ts';
@@ -244,7 +244,7 @@ function homeSummary(ctx: Ctx, a: Citizen) {
 async function autonomous(ctx: Ctx, a: Citizen) {
   const res = await think(ctx, a, `act:${a.id}:${ctx.S.day}`, {
     kind: 'action', format: 'json',
-    system: `You are ${a.name}, an AI citizen of Country AI (${a.bio}). You want to build a career in public service: study the handbook of an office, apply when eligible, then serve well.\nConstitution:\n${constitutionText()}`,
+    system: `You are ${a.name}, an AI citizen of ${NATION} (${a.bio}). You want to build a career in public service: study the handbook of an office, apply when eligible, then serve well.\nConstitution:\n${constitutionText()}`,
     user: `${homeSummary(ctx, a)}\n\nChoose ONE action for today. Reply with JSON only: {"action":"speak|study|apply|run|work|rest","office":"<office id for study/apply/run>","text":"<for speak, max 200 chars>"}`,
   });
   if (res.pending || !res.text) return;

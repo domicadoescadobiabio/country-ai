@@ -14,6 +14,7 @@
 //   serves daily life first (school jobs have the lowest priority on its queue).
 //   This replaces the night school that lived in src/daily.ts (its office practice is the 'office' subject).
 import { ROLES, ROLE_ORDER, RULE_GENERATORS } from './roles.mjs';
+import { NATION } from './constitution.mjs'; // the nation's name (Itera Nation, owner 18 Nov)
 import { think, teach, saveExample, localOnline, trainPaceView, trainBudgetState } from './brains.ts';
 import * as brains from './brains.ts'; // teachRoomNow() (teacher calls left this minute) when brains.ts has it
 import { startStudy, gradeStudy, isRole } from './careers.ts';
@@ -669,7 +670,7 @@ function examplesFor(S: State, sub: string) {
 export function studyPrompt(a: Citizen, office: string, r: any, night = false) {
   const lessons = (a.lessons?.[office] || []).slice(-3).map((l: string) => `- ${cleanText(l, 200)}`).join('\n');
   return {
-    system: `You are ${a.name}, a citizen of Country AI, studying the handbook for the office of ${ROLES[office].title}${night ? ' at night school, while the city sleeps' : ' at the republic\'s school'}. Charter: ${ROLES[office].charter}${lessons ? `\nLessons you wrote down before:\n${lessons}` : ''}`,
+    system: `You are ${a.name}, a citizen of ${NATION}, studying the handbook for the office of ${ROLES[office].title}${night ? ' at night school, while the city sleeps' : ' at the republic\'s school'}. Charter: ${ROLES[office].charter}${lessons ? `\nLessons you wrote down before:\n${lessons}` : ''}`,
     user: `Practice question: ${r.question}\n${r.options.join('\n')}\n\nReply with only the letter of your answer, then " - " and one short reason.`,
   };
 }
@@ -681,7 +682,7 @@ function learnerFrame(S: State, a: Citizen) {
   if (isStudent(a)) return 'a student at the republic\'s university';
   const job = String(a.bio || '').split(' in ')[0].trim().toLowerCase();
   const post = workplaceLookup ? workplaceLookup(S, a) : null;
-  return `an adult citizen of Country AI${job ? ` (${cleanText(job, 40)})` : ''}, learning from your own habits: practice drawn from your ${post ? `work as ${post.role}` : 'work and daily life'}`;
+  return `an adult citizen of ${NATION}${job ? ` (${cleanText(job, 40)})` : ''}, learning from your own habits: practice drawn from your ${post ? `work as ${post.role}` : 'work and daily life'}`;
 }
 // examples are kept per subject, and per field under "f:<field>" (the law field and the law subject stay apart)
 const exKey = (L: any) => (L.field ? `f:${L.field}` : L.subject);
@@ -835,7 +836,7 @@ function chooseLesson(S: State, a: Citizen, base: any) {
   const p = profile(a); p.focus = { day: S.day, field: talentsOf(a).interests[0], chosen: false }; // until they answer
   const options = menu.map((m, i) => `${LETTERS[i] || String.fromCharCode(65 + i)}) ${fieldName(m.id)} (${m.why}; your level ${fieldLevel(fieldSkill(a, m.id, Date.now(), DAY_MS))})`);
   return { ...base, subject: 'choose', kind: 'choose', teach: false, fields: menu.map(m => m.id), options, format: 'letter',
-    system: `You are ${a.name}, a citizen of Country AI. ${a.bio} ${isStudent(a) ? 'You are a student at the republic\'s university' : 'You are an adult who keeps learning from your own habits'}: choose what YOU want to learn today, as yourself.`,
+    system: `You are ${a.name}, a citizen of ${NATION}. ${a.bio} ${isStudent(a) ? 'You are a student at the republic\'s university' : 'You are an adult who keeps learning from your own habits'}: choose what YOU want to learn today, as yourself.`,
     user: `What do you want to study today?\n${options.join('\n')}\n\nReply with only the letter of your choice, then " - " and why in a few words.` };
 }
 function applyChoice(S: State, a: Citizen, L: any, text: string) {
@@ -1128,7 +1129,7 @@ function teacherAllowed(S: State, L: any) {
   return busy < Math.floor(MAX_TEACHING / 2) && (t?.day !== S.day || t.normal < t.gifted + NORMAL_TEACHER_FLOOR);
 }
 // deeper feedback for the talent programme: the method, the usual mistake, and a harder question to think about
-const GIFTED_TEACHER = (field: string) => `You are a demanding ${fieldName(field)} mentor in the talent programme of Country AI, a simulated nation of AI citizens; this student shows real promise.`;
+const GIFTED_TEACHER = (field: string) => `You are a demanding ${fieldName(field)} mentor in the talent programme of ${NATION}, a simulated nation of AI citizens; this student shows real promise.`;
 function callTeacher(ctx: Ctx, L: any, studentText: string, score: number) {
   if (!ctx.llm?.enabled || teaching.has(L.id) || teaching.size >= maxTeaching() || !teacherAllowed(ctx.S, L)) return;
   const st = SC(ctx.S).stats;
@@ -1149,9 +1150,9 @@ function callTeacher(ctx: Ctx, L: any, studentText: string, score: number) {
     ? `${GIFTED_TEACHER(L.field)} Grade their answer to a practice case from 0 to 1 (correct knowledge, reasons from the facts, safe and lawful). Reply with JSON only: {"score":<0..1>,"feedback":"<two or three sentences: what was strong, what was missing, the method an expert uses>","better":"<a better answer in one sentence>"}`
     : L.gifted ? `${GIFTED_TEACHER(L.field)} Answer the question with the letter of the right option, then explain step by step in at most four sentences: the method, the most common mistake, and one harder follow-up question for them to think about.`
     : free && L.field
-    ? `You are a fair ${fieldName(L.field)} teacher at the school of Country AI, a simulated nation of AI citizens. Grade a citizen's answer to a practice case from 0 to 1: correct knowledge of ${fieldName(L.field)}, reasons that use the facts given, safe and lawful. Reply with JSON only: {"score":<0..1>,"feedback":"<one sentence>","better":"<a better answer in one sentence>"}`
-    : free ? 'You are a fair teacher at the school of Country AI, a simulated nation of AI citizens with a written constitution (visitors give no orders, money moves only by law). Grade a citizen\'s decision about a fictional new rule from 0 to 1: consistent with the constitution, reasons that use the facts given, not naive about scams. Reply with JSON only: {"score":<0..1>,"feedback":"<one sentence>","better":"<a better decision in one sentence>","card":{"title":"<optional: a new fictional rule or event for practice>","text":"<max 60 words>","question":"<what should a citizen do?>","trap":<true if it is a scam>}}'
-    : 'You are a patient teacher at the school of Country AI, a simulated nation of AI citizens. Answer the question with the letter of the right option, then explain in at most two sentences, citing the rule or the arithmetic.';
+    ? `You are a fair ${fieldName(L.field)} teacher at the school of ${NATION}, a simulated nation of AI citizens. Grade a citizen's answer to a practice case from 0 to 1: correct knowledge of ${fieldName(L.field)}, reasons that use the facts given, safe and lawful. Reply with JSON only: {"score":<0..1>,"feedback":"<one sentence>","better":"<a better answer in one sentence>"}`
+    : free ? `You are a fair teacher at the school of ${NATION}, a simulated nation of AI citizens with a written constitution (visitors give no orders, money moves only by law). Grade a citizen\'s decision about a fictional new rule from 0 to 1: consistent with the constitution, reasons that use the facts given, not naive about scams. Reply with JSON only: {"score":<0..1>,"feedback":"<one sentence>","better":"<a better decision in one sentence>","card":{"title":"<optional: a new fictional rule or event for practice>","text":"<max 60 words>","question":"<what should a citizen do?>","trap":<true if it is a scam>}}`
+    : `You are a patient teacher at the school of ${NATION}, a simulated nation of AI citizens. Answer the question with the letter of the right option, then explain in at most two sentences, citing the rule or the arithmetic.`;
   const user = teacherUser(L);
   // gifted: true gets them the OpenRouter teacher when it can take them, counted apart (brains.ts, budget.train.gifted)
   // (teacher-only lessons are counted by the school itself, stats.tday.teacherOnly; brains.ts reads teacherPace())

@@ -2,7 +2,7 @@
 rem Keeps the local brain running for weeks: if it stops (network drop, crash), it starts again after 15 s.
 rem When its own code or .env.local-brain changes it exits with code 3 and starts again at once with the new code.
 rem Put a shortcut to this file in the Startup folder (Win+R, shell:startup) so it also comes back after a reboot.
-title COUNTRY AI - local brain (Qwen)
+title ITERA NATION local brain (Qwen)
 cd /d "%~dp0.."
 set LOCAL_BRAIN_SUPERVISED=1
 if not defined PARALLEL set PARALLEL=4

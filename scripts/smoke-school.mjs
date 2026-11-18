@@ -12,6 +12,7 @@ const { schoolScore, act } = await import('../src/careers.ts');
 const pop = await import('../src/population.mjs');
 const { LETTERS, buildItem } = await import('../src/academy.ts');
 const { RAID_PAYLOADS } = await import('../src/military.ts');
+const { NATION } = await import('../src/constitution.mjs'); // the nation's name in prompts (Itera Nation, owner 18 Nov)
 
 const round2 = x => Math.round(x * 1000) / 1000;
 let pass = 0, fail = 0;
@@ -137,7 +138,7 @@ for (let r = 0; r < 10 || (S.school.cards.length === before.cards && r < 40); r+
   give(12, 40); await tick(); await tick(); answerAll(jobs()); await tick();
   await new Promise(res => setTimeout(res, 5)); await tick();
 }
-check('teachers are called only through teach() (the school\'s teacher prompts, nothing else paid)', paidCalls.length > 0 && paidCalls.every(q => /teacher at the school of Country AI/.test(q.system)) && S.school.stats.teacherCalls > before.calls, `${paidCalls.length}`);
+check('teachers are called only through teach() (the school\'s teacher prompts, nothing else paid)', paidCalls.length > 0 && paidCalls.every(q => q.system.includes(`teacher at the school of ${NATION}`)) && S.school.stats.teacherCalls > before.calls, `${paidCalls.length}`);
 check('teacher answers are counted in the public state', school.schoolState(S).teacherAnswers > 0 && school.schoolState(S).teacherCalls >= school.schoolState(S).teacherAnswers);
 const ex = S.school.examples;
 check('a teacher\'s explanation that matches the server\'s key becomes a worked example', Object.values(ex).some(l => l.length > 0), JSON.stringify(ex));

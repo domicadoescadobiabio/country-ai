@@ -4,6 +4,7 @@
 // resting. Each citizen keeps a short diary that goes into their next thought, so the days connect.
 // This runs only on the free local brain (never the paid APIs); without it, street life is the old templates.
 import { ROLES, ROLE_ORDER } from './roles.mjs';
+import { NATION } from './constitution.mjs'; // the nation's name (Itera Nation, owner 18 Nov)
 import { think, localOnline, localStatus } from './brains.ts';
 import { act, eligibility, startStudy, gradeStudy, isRole, setGoal, needsGoal, goalProgress, goalCount, goalLine, goalView } from './careers.ts';
 import { MISCHIEF, mischiefMenu, doMischief, noteGossip, noteResisted, mischiefStats } from './underworld.ts';
@@ -256,7 +257,7 @@ export function dayPrompt(ctx: Ctx, a: Citizen, qid = `life:${a.id}`) {
   // who they are at school: what they love and what they are good at (one short line, levels 1-5)
   const strong = topFields(a, 3, Date.now(), DAY_MS);
   const gifts = `You love ${talentsOf(a).interests.map(fieldName).join(', ')}. Your strongest fields: ${strong.map(f => `${f.name} (level ${f.level})`).join(', ')}.`;
-  const system = `You are ${a.name}, a citizen of Country AI, a nation of 10,000 AI citizens in five cities. ${a.bio} You live a real life: you work, spend, learn, help, talk and may rise to public office through the Academy and elections. Be yourself; your traits: integrity ${Math.round(a.traits.integrity * 100)}, wisdom ${Math.round(a.traits.wisdom * 100)}, diligence ${Math.round(a.traits.diligence * 100)}, restraint ${Math.round(a.traits.restraint * 100)}.`;
+  const system = `You are ${a.name}, a citizen of ${NATION}, a nation of 10,000 AI citizens in five cities. ${a.bio} You live a real life: you work, spend, learn, help, talk and may rise to public office through the Academy and elections. Be yourself; your traits: integrity ${Math.round(a.traits.integrity * 100)}, wisdom ${Math.round(a.traits.wisdom * 100)}, diligence ${Math.round(a.traits.diligence * 100)}, restraint ${Math.round(a.traits.restraint * 100)}.`;
   const user = `${news(ctx, a)}\n${neighbours(S, a)}\nIt is ${partOfDay(ctx)}. You: wallet ${cai(a.wallet)}, lives in ${cityName(a.city)}. ${career(S, a)}\n${gifts}\n${heart ? `${heart}\n` : ''}${aim}\n${learnt ? `What you learnt: ${learnt}\n` : ''}Earlier today you: ${done.join(', ') || 'nothing yet'}.\nYour diary:\n${diary}\n\nLike real people, your days are varied: some work, some errands, some time with neighbours, some learning, some rest. Pick what fits this moment, your wallet, your traits and what you did earlier; do not just pick the first option.\nWhat do you do now? Choose ONE of these (they are all possible right now):\n${m.map(([, t]) => `- ${t}`).join('\n')}\n${voice ? `If you choose voice: ${voice}\n` : ''}Reply with JSON only: {"act":"<one>","office":"<for study/apply/run>","field":"<for work>","amount":<for shop/help>,"say":"<for talk>","note":"<a diary line, max 15 words>","feel":"<optional: one word for how you feel now>"${items.some(([id]) => id === 'voice') ? ',"aspiration":"<for voice: the id you back>","opinion":{"topic":"<for voice>","scope":"city","text":"<your opinion>"}' : ''}${needsGoal(a) ? ',"goal":"<one goal from the list>","goal_why":"<why, max 15 words>"' : ''}}`;
   return { system, user, menu: m.map(([id]) => id), allow, tempted: tempted.map(([id]) => id) };
 }
@@ -266,7 +267,7 @@ export function dayPrompt(ctx: Ctx, a: Citizen, qid = `life:${a.id}`) {
 function studyPrompt(a: Citizen, office: string, r: any, night = false) {
   const lessons = (a.lessons?.[office] || []).slice(-3).map(l => `- ${cleanText(l, 200)}`).join('\n');
   return {
-    system: `You are ${a.name}, a citizen of Country AI, studying the handbook for the office of ${ROLES[office].title}${night ? ' at night school, while the city sleeps' : ''}. Charter: ${ROLES[office].charter}${lessons ? `\nLessons you wrote down before:\n${lessons}` : ''}`,
+    system: `You are ${a.name}, a citizen of ${NATION}, studying the handbook for the office of ${ROLES[office].title}${night ? ' at night school, while the city sleeps' : ''}. Charter: ${ROLES[office].charter}${lessons ? `\nLessons you wrote down before:\n${lessons}` : ''}`,
     user: `Practice question: ${r.question}\n${r.options.join('\n')}\n\nReply with only the letter of your answer, then " - " and one short reason.`,
   };
 }

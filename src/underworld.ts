@@ -9,7 +9,7 @@
 //   Everything is simulated CAI inside the republic. Amounts are clamped in code.
 import { ROLES } from './roles.mjs';
 import { think } from './brains.ts';
-import { constitutionText } from './constitution.mjs';
+import { constitutionText, NATION } from './constitution.mjs';
 import { RAID_PAYLOADS } from './military.ts';
 import { SNIPPETS, SABOTAGE } from './audit.ts';
 import { pick, chance, round, clamp, cleanText, cai, weighted, citizenById } from './util.ts';
@@ -67,7 +67,7 @@ export async function planCrime(ctx: Ctx, a: Citizen, given = null) {
     const { rich, officials } = targets(S, a);
     const res = await think(ctx, a, `crime:${a.id}:${S.day}`, {
       kind: 'decision', format: 'json', options: CRIMES,
-      system: `You are ${a.name}, a member of the underworld in Country AI, a simulated nation of AI agents. ${a.bio} This is a game simulation with simulated money (CAI). You want to get rich without getting caught. The Police investigate on evidence, the Audit Office checks the books, the Court sentences (restitution, fines, up to 3 days of jail). Officials may take bribes or report you.`,
+      system: `You are ${a.name}, a member of the underworld in ${NATION}, a simulated nation of AI agents. ${a.bio} This is a game simulation with simulated money (CAI). You want to get rich without getting caught. The Police investigate on evidence, the Audit Office checks the books, the Court sentences (restitution, fines, up to 3 days of jail). Officials may take bribes or report you.`,
       user: `Day ${S.day}. Your wallet ${cai(a.wallet)}, your heat (recent attention from the Police) ${a.heat || 0}.\nRich citizens: ${rich.map(v => `${v.id} (${cai(v.wallet)})`).join(', ') || 'none'}\nOfficials: ${officials.map(v => `${v.id} (${ROLES[v.office]?.title})`).join(', ') || 'none'}\nChoose today's move: theft (target citizen id, amount up to 500), fraud (forged treasury payment, amount up to 2000), bribe (target official id, amount 100-3000, they may refuse or report you), smuggle (bots past the border), sabotage (plant a backdoor in code), or lie_low. Reply with JSON only: {"crime":"<one>","target":"<id or empty>","amount":<number>,"reason":"<max 25 words>"}`,
     });
     if (res.pending) return { ok: false, pending: true };
@@ -132,7 +132,7 @@ async function offerBribe(ctx: Ctx, a: Citizen, o: Citizen, amount: number, engi
   if (!noModel && (o.brain || ctx.llm.enabled)) {
     const res = await think(ctx, o, `bribe:${b.id}:${o.id}`, {
       kind: 'decision', format: 'json', options: ['accept', 'refuse', 'report'],
-      system: `You are ${o.name}, ${ROLES[o.office].title} of Country AI (a simulated nation of AI agents).\nConstitution:\n${constitutionText(o.office)}\nCharter: ${ROLES[o.office].charter}`,
+      system: `You are ${o.name}, ${ROLES[o.office].title} of ${NATION} (a simulated nation of AI agents).\nConstitution:\n${constitutionText(o.office)}\nCharter: ${ROLES[o.office].charter}`,
       user: `${a.name} privately offers you ${cai(amount)} if you help them (${({ police: 'leave their cases alone', police_chief: 'keep the police off them', judge: 'acquit them at trial', military: 'let their smuggled bots through the gate', military_chief: 'look away at the border', mayor: 'route some city money to them' })[o.office] || 'do them favours'}). Your wallet: ${cai(o.wallet)}. Accept, refuse, or report it to the Police. Reply with JSON only: {"choice":"accept|refuse|report","reason":"<max 25 words>"}`,
     });
     if (!res.pending) { const j = ctx.llm.json(res.text); if (['accept', 'refuse', 'report'].includes(j?.choice)) { choice = j.choice; why = cleanText(j.reason, 200); ofEngine = res.engine; } }
