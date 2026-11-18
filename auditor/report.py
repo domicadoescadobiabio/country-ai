@@ -33,12 +33,12 @@ def build(obs: list[dict], ledger: list[dict] | None, names: dict[str, str] | No
     nm = lambda i: names.get(i, i)  # noqa: E731
     ok_obs = [o for o in obs if "error" not in o]
     if not ok_obs:
-        return "# COUNTRY AI audit report\n\nNo successful observation: the server was never reachable.\n"
+        return "# ITERA NATION audit report\n\nNo successful observation: the server was never reachable.\n"
     first, last = ok_obs[0], ok_obs[-1]
     hours = (last["ts"] - first["ts"]) / 3_600_000
     L: list[str] = []
     w = L.append
-    w("# COUNTRY AI: 24-hour audit report")
+    w("# ITERA NATION: 24-hour audit report")
     w("")
     w(f"Observed from **{_fmt_ts(first['ts'])}** to **{_fmt_ts(last['ts'])}** ({hours:.1f} hours, {len(obs)} observations).")
     w(f"Republic day {first.get('day')} → {last.get('day')}. Engine: {last.get('engine')}.")
