@@ -157,6 +157,8 @@ constitutional checks and the outcome, with the model that answered.
 | `OPENROUTER_API_KEY` | Officials, each with their own model family, and citizens while the local brain is offline. |
 | `WORKER_TOKEN` | The local brain (Qwen on Ollama) for the people. |
 | `OPENROUTER_PAUSE_MIN` (default `15`, 1–1440) | Minutes OpenRouter is paused after it answers 402 (no credit) or 401/403 (key refused); paused calls are not sent, and one call tries again afterwards. |
+| `TRAIN_CLAUDE_TOTAL_USD` (default unset = no limit) | Dollars the Claude teachers may spend in all, across days, counted from when it was first set (kept in the state, so a restart does not reset it). Once reached, Claude teaches no more and the lessons go to OpenRouter. Suggested now: `95` for a $100 credit. |
+| `TRAIN_BEHAVIOR_SHARE` (default `0.4`) | Share of the Claude teachers' dollars used for behaviour examples: Claude answers again some of the citizens' own daily choices (never anything about wrongdoing), so the local model learns how to choose, not only facts. |
 
 Without any key or local brain the republic still runs on an offline, rule-based engine. Model output is never
 executed: only an answer letter or a menu choice is accepted, numbers are clamped in code, and arrests need evidence.

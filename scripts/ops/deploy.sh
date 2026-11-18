@@ -6,8 +6,16 @@
 cd "$ROOT"
 need railway
 
+# Only a clean tree is deployed: railway up uploads the working tree, so an uncommitted (unreviewed) edit would
+# go live too (Security #1118/#1123, deployment af6e9ec3). Commit or stash first, or deploy a reviewed commit from
+# a worktree (git worktree add --detach <dir> <commit>; railway up <dir> --path-as-root --detach).
+dirty="$(git status --short)"
+[[ -z "$dirty" ]] || die "working tree is not clean, refusing to deploy:
+$dirty"
+
 if [[ "${SKIP_CHECKS:-}" != "1" ]]; then "$ROOT/scripts/ops/check.sh"; fi
-[[ -z "$(git status --porcelain)" ]] || warn "working tree has uncommitted changes (they are deployed too)"
+# check again right before the upload: another box may have changed a file while the checks ran
+[[ -z "$(git status --short)" ]] || die "working tree changed during the checks, refusing to deploy"
 
 say "uploading to Railway"
 railway up --detach
