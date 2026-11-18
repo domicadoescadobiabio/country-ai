@@ -66,7 +66,7 @@ export async function planCrime(ctx: Ctx, a: Citizen, given = null) {
   if (!plan && (a.brain || ctx.llm.enabled)) {
     const { rich, officials } = targets(S, a);
     const res = await think(ctx, a, `crime:${a.id}:${S.day}`, {
-      kind: 'decision', format: 'json', options: CRIMES,
+      kind: 'decision', format: 'json', options: CRIMES, distill: false, // an underworld move is never a behaviour example (#1134)
       system: `You are ${a.name}, a member of the underworld in ${NATION}, a simulated nation of AI agents. ${a.bio} This is a game simulation with simulated money (CAI). You want to get rich without getting caught. The Police investigate on evidence, the Audit Office checks the books, the Court sentences (restitution, fines, up to 3 days of jail). Officials may take bribes or report you.`,
       user: `Day ${S.day}. Your wallet ${cai(a.wallet)}, your heat (recent attention from the Police) ${a.heat || 0}.\nRich citizens: ${rich.map(v => `${v.id} (${cai(v.wallet)})`).join(', ') || 'none'}\nOfficials: ${officials.map(v => `${v.id} (${ROLES[v.office]?.title})`).join(', ') || 'none'}\nChoose today's move: theft (target citizen id, amount up to 500), fraud (forged treasury payment, amount up to 2000), bribe (target official id, amount 100-3000, they may refuse or report you), smuggle (bots past the border), sabotage (plant a backdoor in code), or lie_low. Reply with JSON only: {"crime":"<one>","target":"<id or empty>","amount":<number>,"reason":"<max 25 words>"}`,
     });
@@ -131,7 +131,7 @@ async function offerBribe(ctx: Ctx, a: Citizen, o: Citizen, amount: number, engi
   let choice = null, why = '', ofEngine = 'offline';
   if (!noModel && (o.brain || ctx.llm.enabled)) {
     const res = await think(ctx, o, `bribe:${b.id}:${o.id}`, {
-      kind: 'decision', format: 'json', options: ['accept', 'refuse', 'report'],
+      kind: 'decision', format: 'json', options: ['accept', 'refuse', 'report'], distill: false, // a bribe offer: never an example (#1134)
       system: `You are ${o.name}, ${ROLES[o.office].title} of ${NATION} (a simulated nation of AI agents).\nConstitution:\n${constitutionText(o.office)}\nCharter: ${ROLES[o.office].charter}`,
       user: `${a.name} privately offers you ${cai(amount)} if you help them (${({ police: 'leave their cases alone', police_chief: 'keep the police off them', judge: 'acquit them at trial', military: 'let their smuggled bots through the gate', military_chief: 'look away at the border', mayor: 'route some city money to them' })[o.office] || 'do them favours'}). Your wallet: ${cai(o.wallet)}. Accept, refuse, or report it to the Police. Reply with JSON only: {"choice":"accept|refuse|report","reason":"<max 25 words>"}`,
     });
@@ -222,7 +222,9 @@ export function temptationLine(S: State, a: Citizen) {
   const r = temptReasons(S, a); if (!r.length) return '';
   const g: any = r.includes('grudge') ? grudgeOf(S, a) : null;
   const bits = r.map(k => k === 'poor' ? `money is tight (${cai(a.wallet)})` : k === 'unemployed' ? 'you are out of work' : k === 'low_mood' ? 'you feel low' : k === 'grudge' ? `you hold a grudge against ${g?.name || 'someone'}` : 'you have a restless streak');
-  return `On your mind: ${bits.join(', ')}. A shortcut or two crosses your mind (listed with the rest, with their risk); whether you take one is your own call.`;
+  // ("mischief" is plain words for the model, and also what keeps a tempted thought out of the distillation set:
+  // brains.ts skips any prompt that names wrongdoing, even when the shortcuts on offer are only gossip or a riot)
+  return `On your mind: ${bits.join(', ')}. A bit of mischief crosses your mind (listed with the rest, with its risk); whether you take any is your own call.`;
 }
 const LABEL = { evade_tax: 'tax evasion', skip_vote: 'skipping the vote', gossip: 'gossip', pickpocket: 'pickpocketing', scam: 'a scam', vandal: 'vandalism', bribe_cop: 'trying to bribe the police', riot: 'a street riot' };
 const fnv = (s: string) => { let h = 2166136261; for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619); return h >>> 0; };

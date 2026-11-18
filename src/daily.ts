@@ -108,7 +108,7 @@ export const DAILY_LIMITS: Record<string, number> = { shop: 2, help: 2, study: 3
 const cityName = id => CITIES.find(c => c.id === id)?.name || id;
 
 type Allow = { apply: string[]; run: string[]; work?: string[] };
-const pending = new Map<string, { agent: string; stage: 'day' | 'study' | 'night'; system: string; user: string; menu?: string[]; allow?: Allow; tempted?: string[]; studyId?: string; office?: string; options?: string[]; night?: number; retried?: boolean; spread?: string | null }>();
+const pending = new Map<string, { agent: string; stage: 'day' | 'study' | 'night'; system: string; user: string; menu?: string[]; allow?: Allow; tempted?: string[]; studyId?: string; office?: string; options?: string[]; night?: number; retried?: boolean; spread?: string | null; distill?: string | false | null }>();
 const D = (S: State) => {
   S.daily ||= {};
   const d = S.daily;
@@ -305,7 +305,11 @@ export function dayPrompt(ctx: Ctx, a: Citizen, qid = `life:${a.id}`) {
   const gifts = `You love ${talentsOf(a).interests.map(fieldName).join(', ')}. Your strongest fields: ${strong.map(f => `${f.name} (level ${f.level})`).join(', ')}.`;
   const system = `You are ${a.name}, a citizen of ${NATION}, a nation of 10,000 AI citizens in five cities. ${a.bio} You live a real life: you work, spend, learn, help, talk and may rise to public office through the Academy and elections. Be yourself; your traits: integrity ${Math.round(a.traits.integrity * 100)}, wisdom ${Math.round(a.traits.wisdom * 100)}, diligence ${Math.round(a.traits.diligence * 100)}, restraint ${Math.round(a.traits.restraint * 100)}.`;
   const user = `${news(ctx, a)}\n${neighbours(S, a)}\nIt is ${partOfDay(ctx)}. You: wallet ${cai(a.wallet)}, lives in ${cityName(a.city)}. ${career(S, a)}\n${gifts}\n${heart ? `${heart}\n` : ''}${aim}\n${learnt ? `What you learnt: ${learnt}\n` : ''}${tempt ? `${tempt}\n` : ''}Earlier today you: ${done.join(', ') || 'nothing yet'}.\nYour diary:\n${diary}\n\nLike real people, your days are varied: some work, some errands, some time with neighbours, some learning, some rest. Pick what fits this moment, your wallet, your traits and what you did earlier; do not just pick the first option.\nWhat do you do now? Choose ONE of these (they are all possible right now):\n${m.map(([, t]) => `- ${t}`).join('\n')}\n${voice ? `If you choose voice: ${voice}\n` : ''}Reply with JSON only: {"act":"<one>","office":"<for study/apply/run>","field":"<for work>","amount":<for shop/help>,"say":"<for talk>","note":"<a diary line, max 15 words>","feel":"<optional: one word for how you feel now>"${items.some(([id]) => id === 'voice') ? ',"aspiration":"<for voice: the id you back>","opinion":{"topic":"<for voice>","scope":"city","text":"<your opinion>"}' : ''}${needsGoal(a) ? ',"goal":"<one goal from the list>","goal_why":"<why, max 15 words>"' : ''}}`;
-  return { system, user, menu: m.map(([id]) => id), allow, tempted: tempted.map(([id]) => id), spread: m.some(([id]) => id === 'voice') ? spread : null };
+  // what this thought may teach the next model (ticket #1120, brains.ts distillBehavior): speaking up, acting on a
+  // lesson, or choosing the week's goal; never a thought that was offered a wrong (null; daily life is 'life' anyway)
+  // (false: a firm no to brains.ts, ticket #1134/#1130; null: daily life's own 'life')
+  const distill: string | false | null = tempted.length ? false : m.some(([id]) => id === 'voice') ? 'voice' : hint ? 'reflection' : needsGoal(a) ? 'plan' : null;
+  return { system, user, menu: m.map(([id]) => id), allow, tempted: tempted.map(([id]) => id), spread: m.some(([id]) => id === 'voice') ? spread : null, distill };
 }
 
 // The practice-question prompt, by day and at night school. It carries the last few written lessons for that
@@ -798,7 +802,7 @@ async function poll(ctx: Ctx) {
   for (const [qid, p] of [...pending]) {
     const a = ctx.agent(p.agent);
     if (!a || a.status !== 'free') { pending.delete(qid); continue; }
-    const r = await think(ctx, a, qid, { system: p.system, user: p.user, kind: 'life', format: p.stage === 'day' ? 'json' : 'letter', options: p.options || null, paid: false });
+    const r = await think(ctx, a, qid, { system: p.system, user: p.user, kind: 'life', format: p.stage === 'day' ? 'json' : 'letter', options: p.options || null, paid: false, ...(p.stage === 'day' && (p.distill || p.distill === false) ? { distill: p.distill } : {}) });
     if (r.pending) continue;
     pending.delete(qid);
     if (!r.text) continue; // the local brain went away: this thought is dropped, nothing paid

@@ -798,7 +798,9 @@ for (const phase of ['night', 'day']) {
   const st = school.schoolState(TS).teacher;
   // every field of school.teacher is really there (14 Nov: a comment once swallowed orShortUsd and concurrency)
   check('after the first tick the pace carries the time it was worked out', typeof school.schoolState(TS).teacher.pacedAt === 'number' && Date.now() - school.schoolState(TS).teacher.pacedAt < 60000);
-  check('school.teacher carries every pacing number', ['shareNow', 'shareBase', 'behind', 'orShortUsd', 'concurrency', 'pacedAt', 'teacherOnly', 'teacherOnlyToday', 'teacherOnlyKept', 'keptByField'].every(k => k in school.schoolState(TS).teacher) && school.schoolState(TS).teacher.orShortUsd > 0 && school.schoolState(TS).teacher.concurrency === 16, JSON.stringify(school.schoolState(TS).teacher));
+  check('the pace follows trainPaceView(ctx).shortUsd, what all teachers together are short of (ticket #1120); orShortUsd stays as a reading',
+    Math.abs(school.schoolState(TS).teacher.shortUsd - trainPaceView(tctx).shortUsd) < 0.01 && school.schoolState(TS).teacher.shortUsd >= school.schoolState(TS).teacher.orShortUsd, JSON.stringify({ school: school.schoolState(TS).teacher.shortUsd, pace: trainPaceView(tctx).shortUsd, or: trainPaceView(tctx).orShortUsd }));
+  check('school.teacher carries every pacing number', ['shareNow', 'shareBase', 'behind', 'shortUsd', 'orShortUsd', 'concurrency', 'pacedAt', 'teacherOnly', 'teacherOnlyToday', 'teacherOnlyKept', 'keptByField'].every(k => k in school.schoolState(TS).teacher) && school.schoolState(TS).teacher.orShortUsd > 0 && school.schoolState(TS).teacher.concurrency === 16, JSON.stringify(school.schoolState(TS).teacher));
   check('with the local brain offline, teacher-only lessons still run and count in the public numbers', calls.length > 0 && st.teacherOnly > 0 && st.teacherOnlyToday === st.teacherOnly && school._pending().length === 0, JSON.stringify(st));
   const fieldsAsked = calls.map(q => pop.FIELD_IDS.find(f => q.purpose === undefined && false) || null); void fieldsAsked;
   const domains = savedT.map(e => e.domain);

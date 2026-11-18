@@ -1013,7 +1013,7 @@ const TEACHER_ONLY_PER_TICK = 6;
 const STUDENT_TEACHER_SLOTS = 4; // teacher places teacher-only lessons never take: kept for students, the gifted first
 // pacedAt: when the pace was last worked out (null after a restart until the first school tick, so a monitor can
 // tell numbers that are not fresh yet; ticket #538)
-const pace = { behind: false, short: 0, minNow: 0, share: TEACHER_SHARE, teacherOnly: 0, est: 0.0011, allowedNow: 0, pacedAt: null as number | null };
+const pace = { behind: false, short: 0, orShort: 0, minNow: 0, share: TEACHER_SHARE, teacherOnly: 0, est: 0.0011, allowedNow: 0, pacedAt: null as number | null };
 // the share of lessons that get a teacher: the base when on schedule, up to all of them when behind by 5% of the
 // minimum so far (or 5 cents)
 export function teacherShareFor(base: number, short: number, minNow: number) {
@@ -1024,13 +1024,16 @@ export function teacherShareFor(base: number, short: number, minNow: number) {
 // trainPaceView it sets the share of lessons with a teacher and how many teacher-only lessons to start (enough to
 // catch up, at most a batch); brains.ts still enforces every limit in teach() (budget, Claude's cap, TRAIN_PER_MIN)
 function updatePace(ctx: Ctx) {
-  if (!ctx.llm?.enabled) { Object.assign(pace, { behind: false, short: 0, share: TEACHER_SHARE, teacherOnly: 0, pacedAt: Date.now() }); return; }
+  if (!ctx.llm?.enabled) { Object.assign(pace, { behind: false, short: 0, orShort: 0, share: TEACHER_SHARE, teacherOnly: 0, pacedAt: Date.now() }); return; }
   let pv: any = null; try { pv = trainPaceView(ctx); } catch { pv = null; }
   const batch = Math.max(0, Math.min(TEACHER_ONLY_PER_TICK, maxTeachingWhenBehind() - teaching.size));
-  const short = Number(pv?.orShortUsd) || 0, minNow = Number(pv?.orMinNow) || 0;
+  // ticket #1120: behind is what all teachers together are still short of (shortUsd = OpenRouter's + Claude's; Claude's
+  // is 0 when it cannot teach or its credit is gone); teach() picks which teacher answers. orShortUsd stays as a reading.
+  const orShort = Number(pv?.orShortUsd) || 0;
+  const short = Number.isFinite(Number(pv?.shortUsd)) ? Number(pv.shortUsd) || 0 : orShort, minNow = Number(pv?.orMinNow) || 0;
   const est = Number(pv?.estPerCall?.openrouter) || 0.0011;
   const teacherOnly = short > 0 ? Math.min(batch, Math.ceil(short / Math.max(1e-4, est))) : 0;
-  Object.assign(pace, { behind: short > 0, short, minNow, share: teacherShareFor(TEACHER_SHARE, short, minNow), teacherOnly, est, allowedNow: Number(pv?.allowedNow) || 0, pacedAt: Date.now() });
+  Object.assign(pace, { behind: short > 0, short, orShort, minNow, share: teacherShareFor(TEACHER_SHARE, short, minNow), teacherOnly, est, allowedNow: Number(pv?.allowedNow) || 0, pacedAt: Date.now() });
 }
 const maxTeachingWhenBehind = () => Math.max(MAX_TEACHING, TEACHER_CONCURRENCY_MAX);
 const maxTeaching = () => (pace.behind ? Math.max(MAX_TEACHING, TEACHER_CONCURRENCY_MAX) : MAX_TEACHING);
@@ -1327,7 +1330,7 @@ export function schoolState(S: State) {
     barter: { asked: s.barter?.asked || 0, right: s.barter?.right || 0, rightShare: s.barter?.asked ? round(s.barter.right / s.barter.asked, 2) : null,
       byLevel: Object.fromEntries([1, 2, 3, 4, 5].map(l => [l, (s.barter?.byLevel?.[l] || [0, 0]).map((x: any) => Number(x) || 0)])) },
     // the teachers' pacing for budget.train: the share of lessons with a teacher now, teacher-only lessons, data kept
-    teacher: { shareNow: pace.share, shareBase: TEACHER_SHARE, behind: pace.behind, orShortUsd: round(pace.short, 4), concurrency: maxTeaching(), pacedAt: pace.pacedAt,
+    teacher: { shareNow: pace.share, shareBase: TEACHER_SHARE, behind: pace.behind, shortUsd: round(pace.short, 4), orShortUsd: round(pace.orShort || 0, 4), concurrency: maxTeaching(), pacedAt: pace.pacedAt,
       teacherOnly: s.stats.teacherOnly || 0, teacherOnlyToday: s.stats.tday?.day === S.day ? s.stats.tday.teacherOnly || 0 : 0, teacherOnlyKept: s.stats.teacherOnlyKept || 0,
       keptByField: Object.fromEntries(Object.entries(s.keptByField || {}).filter(([k]) => /^[a-z][a-z0-9_]{0,23}$/.test(k))) }, inFlight: pending.size, gifted: giftedView(S), perMin: { day: DAY_PER_MIN, night: NIGHT_PER_MIN }, teacherShare: TEACHER_SHARE, cards: s.cards.length, examples: Object.fromEntries(Object.entries(s.examples).map(([k, v]: any) => [k, v.length])), ...summary.view };
 }
@@ -1418,7 +1421,7 @@ export function schoolNow() {
 }
 // for tests: forget module state (a test may build several republics in one process)
 export const teacherPace = () => ({ ...pace, concurrency: maxTeaching() }); // budget.train and tests
-export function _resetSchool() { pending.clear(); teaching.clear(); soon.length = 0; askedStems = new Set(); sentQuestions = new Set(); saturated.day = -1; saturated.fields.clear(); Object.assign(pace, { behind: false, short: 0, minNow: 0, share: TEACHER_SHARE, teacherOnly: 0, allowedNow: 0, pacedAt: null }); recentLessons.length = 0; lastLessonBy.clear(); plan = { key: null, ids: [], i: 0 }; summary = { at: 0, n: -1, view: null }; giftedCache = { ref: null, map: new Map() }; }
+export function _resetSchool() { pending.clear(); teaching.clear(); soon.length = 0; askedStems = new Set(); sentQuestions = new Set(); saturated.day = -1; saturated.fields.clear(); Object.assign(pace, { behind: false, short: 0, orShort: 0, minNow: 0, share: TEACHER_SHARE, teacherOnly: 0, allowedNow: 0, pacedAt: null }); recentLessons.length = 0; lastLessonBy.clear(); plan = { key: null, ids: [], i: 0 }; summary = { at: 0, n: -1, view: null }; giftedCache = { ref: null, map: new Map() }; }
 export const _teacherPending = () => [...teaching.values()].filter(e => !e.done).length;
 export const _pending = () => [...pending.values()];
 export const promptFor = lessonPrompt; // the lesson's system prompt (tests: notes and worked examples in it)

@@ -43,6 +43,16 @@ export async function mischiefChecks(check) {
   // why they are tempted, in plain server words, in their own prompt (owner, 19 Nov: Qwen refused all 8,960 offers)
   check('a tempted citizen\'s prompt says what is on their mind (money tight, a low mood, a grudge against Vic) and that it is their own call',
     /On your mind: .*money is tight \(90 CAI\).*you feel low.*grudge against Vic Doe.*your own call/.test(p.user) && !/On your mind/.test(dayPrompt(ctx, ann).user), (p.user.match(/^On your mind.*$/m) || [''])[0]);
+  // ticket #1120: a thought that was offered a wrong is never marked for distillation, and its prompt names mischief,
+  // so brains.ts skips it even when the only shortcuts are gossip or a riot; an untempted one may be ('voice', 'plan', …)
+  const { behaviorWanted } = await import('../src/brains.ts');
+  const bctx = { ...ctx, llm: { ...ctx.llm, enabled: true, hasClaude: true }, cfg: { ...ctx.cfg } };
+  const mild = { ...p, user: p.user.replace(/^- (pickpocket|scam|vandal|bribe_cop|evade_tax):.*$/gm, '- riot: get angry neighbours to make noise in the street (the Police will notice)') };
+  const pa = dayPrompt(ctx, ann);
+  const plain = { ...p, user: mild.user.replace(/mischief/gi, 'idea') }; // even with no word of wrongdoing left in it
+  check('a tempted thought carries distill: false, a firm no: brains.ts skips it whatever its words, even a riot alone (tickets #1120, #1134)',
+    p.distill === false && behaviorWanted(bctx, tom, { kind: 'life', distill: p.distill, system: p.system, user: plain.user }) === null && behaviorWanted(bctx, tom, { kind: 'life', distill: null, system: p.system, user: mild.user }) === null && ['voice', 'reflection', 'plan', null].includes(pa.distill)
+    && behaviorWanted(bctx, ann, { kind: 'life', distill: pa.distill, system: pa.system, user: pa.user }) === (pa.distill || 'life'), JSON.stringify({ tempted: p.distill, ann: pa.distill }));
   const jobless = person('jo', { job: 'unemployed', wallet: 300 }); jobless.mischief = 0.15;
   check('being out of work adds to temptation too (+0.1), and is named as a reason', uw.temptation(S, jobless) === 0.25 && uw.temptReasons(S, jobless).includes('unemployed') && uw.temptReasons(S, tom).join() === 'poor,low_mood,grudge', `${uw.temptation(S, jobless)} ${uw.temptReasons(S, tom)}`);
   S.underworld.mischief.today = 999;
