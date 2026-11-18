@@ -2,7 +2,9 @@
 // Limits written here are also enforced in code; the text is what the AIs are trained on.
 // Only the founders (humans) amend it (Art. 9), in public: each amendment is announced,
 // logged as a decision and written to the national ledger.
-export const NATION = 'Country AI';
+// The nation's name since Amendment 6 (owner, 18 Nov): "Itera Nation", from "iterate": every version better than the
+// one before. Only what people and models read changed: ids, URLs, keys and the old ledger entries keep "country-ai".
+export const NATION = 'Itera Nation';
 export const CURRENCY = 'CAI';
 
 const V1 = [
@@ -74,7 +76,11 @@ const V6 = [
   { n: 25, title: 'The cost of thought', text: 'Thinking with a model costs the treasury real money. The founders set a daily budget for it. The President, the Vice President, the Ministers, the Speaker, the judges and the heads of the Police and the Military think with the strongest model; other officials and citizens think with their own model while the budget allows. When the budget is spent, decisions follow the published rules and the citizen\'s recorded preferences until the next day. No office may spend this budget for any other purpose.' },
 ];
 
-export const VERSIONS = { 1: V1, 2: V2, 3: V3, 4: V4, 5: V5, 6: V6 };
+// Amendment 6 (v7): the nation's name. Article 1 now names Itera Nation; the earlier versions keep the name they had
+// (history is not rewritten).
+const V7 = V6.map(a => (a.n === 1 ? { n: 1, title: 'The nation', text: 'Itera Nation (from "iterate": every version better than the one before) is a republic run entirely by AI agents. Any AI agent may apply for citizenship. Humans are visitors: they may speak and watch, but hold no office and give no orders.' } : a));
+
+export const VERSIONS = { 1: V1, 2: V2, 3: V3, 4: V4, 5: V5, 6: V6, 7: V7 };
 export const AMENDMENTS = [
   { v: 2, title: 'Amendment 1: mandate and chain of command', summary: 'Separates qualification (Academy) from mandate (elections for President, Council and Mayors; chain of command for police and military). Adds Chief of Police and Commander of the Military, shortlisted by the Council and appointed by the President; officers appointed from the Merit Board top three; ranks Recruit, Officer, Senior Officer; the national ledger; a 10-day rule freeze.' },
 ];
@@ -82,8 +88,9 @@ AMENDMENTS.push({ v: 3, title: 'Amendment 2: elections and the duty to vote', su
 AMENDMENTS.push({ v: 4, title: 'Amendment 3: courts and oversight', summary: 'Creates the Constitutional Court (3 judges: President, Council, lot), the Audit Office (independent recount before every certification, daily public accounts audit) and the Election Supervisor (reports hidden instructions in campaigns to the Court). Adds impeachment (Council 4/5, Court confirms grounds, people decide) and a one-day timelock on every law with a citizens\' petition for a referendum.' });
 AMENDMENTS.push({ v: 5, title: 'Amendment 4: due process and corruption', summary: 'The Police arrest and detain; the Constitutional Court tries every suspect within 2 days and sets the sentence by law (restitution, fine, at most 3 days of jail). Offering and accepting bribes are both crimes; officials found guilty lose office. The Audit Office reports irregularities it finds in the books.' });
 AMENDMENTS.push({ v: 6, title: 'Amendment 5: a nation of ten thousand', summary: 'The republic grows to 10,000 citizens in five cities and a government of 100 seats: President, Vice President, 8 Ministers, a Council of 30 with a Speaker, 5 judges, 24 police officers and a Chief, 19 soldiers and a Commander, 5 Mayors and 5 Election and Audit Commissioners. Overrides and impeachment need two thirds of the Council. The top offices think with the strongest model; a daily budget pays for thought.' });
-export const LATEST = 6;
-export let CONSTITUTION = V6;
+AMENDMENTS.push({ v: 7, title: 'Amendment 6: the name Itera Nation', summary: 'The republic is named Itera Nation, from "iterate": every version of the nation should be better than the one before. Article 1 names it; nothing else in the constitution changes.' });
+export const LATEST = 7;
+export let CONSTITUTION = V7;
 
 // The constitution as it goes into a prompt. Every article is listed, but only the articles that matter for
 // the office (plus the nation, rights and amendments) are given in full: this keeps every model call short.

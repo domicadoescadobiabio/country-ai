@@ -152,11 +152,16 @@ try {
     let a = await boot(); const c1 = await changes(a.B); const h1 = await (await fetch(a.B + '/api/health')).json();
     a.ch.kill(); await new Promise(r => { a.ch.once('exit', r); setTimeout(r, 3000); });
     a = await boot(); await wait(2000); const c2 = (await (await fetch(a.B + '/api/ledger?kind=clock_change&limit=50')).json()).entries; const h2 = await (await fetch(a.B + '/api/health')).json();
+    const am2 = (await (await fetch(a.B + '/api/ledger?kind=amendment&limit=50')).json()).entries;
     a.ch.kill(); await new Promise(r => { a.ch.once('exit', r); setTimeout(r, 3000); });
     try { fs.rmSync(RD, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch { /* windows handle */ }
     const etMidnightNext = (() => { const nx = h1.clock?.nextDayAt; return nx && new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hourCycle: 'h23', hour: '2-digit', minute: '2-digit' }).format(new Date(nx)) === '00:00'; })();
     check('clock: a real server records the switch to ET once (clock_change, reason timezone), keeps day 1, and the next day starts at 00:00 ET', c1.length === 1 && c1[0].data.reason === 'timezone' && c1[0].data.tz === 'America/New_York' && h1.day === 1 && etMidnightNext, JSON.stringify({ c1: c1.map(e => e.data), h1: h1.clock }));
     check('clock: after a restart nothing is recorded again and the day does not move', c2.length === 1 && h2.day === h1.day && h2.clock.nextDayAt === h1.clock.nextDayAt, JSON.stringify({ n: c2.length, d1: h1.day, d2: h2.day }));
+    // Amendment 6 (owner, 18 Nov): the name Itera Nation, recorded once by the founders, not again after a restart
+    const v7 = am2.filter(e => e.data?.version === 7);
+    check('Amendment 6 (the name Itera Nation) is on the ledger exactly once, by the founders, also after a restart', v7.length === 1 && v7[0].actor === 'founders' && /Itera Nation/.test(v7[0].data.title) && v7[0].data.articles.find(x => x.n === 1)?.text.startsWith('Itera Nation'),
+      JSON.stringify(am2.map(e => [e.data?.version, e.actor])));
   }
 
   startServer(); // now, not earlier: see startServer
@@ -186,6 +191,9 @@ try {
   const cen0 = (await get('/api/ledger?kind=census&limit=1')).entries?.[0]?.data;
   check('starts with every seat vacant', Object.values(s0.seats).every(x => x.length === 0) || cen0?.seated === 0, JSON.stringify({ seated: Object.values(s0.seats).flat().length, census0: cen0 && { hour: cen0.hour, seated: cen0.seated } }));
   check('founders exist', s0.citizens.length >= 10);
+  check('the nation is named Itera Nation (config.nation, Article 1 of the constitution in force, v7 by Amendment 6)', s0.config.nation === 'Itera Nation' && s0.config.constitutionVersion >= 7
+    && /^Itera Nation\b/.test(s0.config.constitution.find(a => a.n === 1)?.text || '') && !JSON.stringify(s0.config.constitution).includes('Country AI') && s0.config.amendments.some(x => x.v === 7 && /Itera Nation/.test(x.title)),
+    JSON.stringify({ nation: s0.config.nation, v: s0.config.constitutionVersion, art1: s0.config.constitution.find(a => a.n === 1)?.text?.slice(0, 40) }));
 
   // --- Academy + President
   const s1 = await until(s => s.seats.president?.length === 1, 90000);

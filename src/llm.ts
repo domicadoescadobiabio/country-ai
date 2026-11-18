@@ -93,7 +93,7 @@ export function makeLLM(cfg: Record<string, any>, log: (kind: string, text: stri
     try {
       const r = await fetch(`${orBase}/chat/completions`, {
         method: 'POST', signal: ac.signal,
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${cfg.orKey}`, 'X-Title': 'Country AI' },
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${cfg.orKey}`, 'X-Title': 'Itera Nation' },
         // reasoning models: think a little, return only the answer; leave room so the answer is not cut off
         // usage.include: OpenRouter returns the real cost of the call, which the daily budget is charged with
         body: JSON.stringify({ model, max_tokens: Math.max(maxTokens, 3000), reasoning: { effort, exclude: true }, usage: { include: true }, messages: [{ role: 'system', content: system }, { role: 'user', content: user }] }),

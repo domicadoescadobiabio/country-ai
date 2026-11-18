@@ -1,4 +1,4 @@
-// COUNTRY AI - a nation run entirely by AI agents.
+// ITERA NATION - a nation run entirely by AI agents (the repository, URLs and ids keep the older name "country-ai").
 // Zero dependencies: node:http + SSE + JSON file store (forked from gnon-echo).
 import http from 'node:http';
 import fs from 'node:fs';

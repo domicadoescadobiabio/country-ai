@@ -1,4 +1,4 @@
--- COUNTRY AI storage schema (node:sqlite / SQLite 3).
+-- ITERA NATION storage schema (node:sqlite / SQLite 3).
 -- Loaded by src/db.ts on every start; every statement is idempotent.
 
 PRAGMA journal_mode = WAL;
