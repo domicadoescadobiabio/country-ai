@@ -14,7 +14,7 @@
 // Laws run by themselves: the basic income set by law is paid every day from the treasury (Art. 4), not by order.
 import { ROLES, PORTFOLIO_FIELDS, loadExpertise, topFieldsText, giftedText, civilOnDuty, fieldIds, fieldLevelOf } from './roles.mjs';
 import { onDuty, siteFor, sitesOf, capitalOf, postingOf, standInGuard, dutyShift, CORPS, DUTY_PLAN } from './command.ts';
-import { constitutionText } from './constitution.mjs';
+import { constitutionText, NATION } from './constitution.mjs';
 import { pick, chance, cai, round, cleanText, clamp, shuffle, citizenById } from './util.ts';
 import * as UTIL from './util.ts';
 // fairGrade (src/util.ts, Negara box); a plain raw-change grade if the shared one is not there
@@ -287,7 +287,7 @@ export async function reflectStep(ctx: Ctx) {
   // a short look back: low effort (leaders think with Opus; their decisions and votes keep medium), ticket #836
   const res = await think(ctx, a, `reflect:${a.id}:${x.day}:${a.reflectQueue.length}:${(a.reflections || []).length}`, {
     kind: 'decision', format: 'json', effort: 'low',
-    system: `You are ${a.name}, ${title} of Country AI. You look back on one of your own decisions to learn from it.`,
+    system: `You are ${a.name}, ${title} of ${NATION}. You look back on one of your own decisions to learn from it.`,
     user: `Your decision on day ${x.day}: ${x.what}\nThe state's report card: grade ${x.grade}. ${x.lesson}\n\nReply with JSON only: {"mistake":"<what went wrong or what you missed, max 25 words>","next":"<what you will do differently next time, max 25 words>"}`,
   });
   if (res.pending) return;
@@ -345,7 +345,7 @@ export async function policyDesk(ctx: Ctx) {
   const title = a.office === 'minister' ? `Minister of ${port}` : ROLES[a.office]?.title || a.office;
   const res = await think(ctx, a, `desk:${S.day}:${a.id}`, {
     kind: 'decision', format: 'json',
-    system: `You are ${a.name}, ${title} of Country AI.\nConstitution:\n${constitutionText(a.office)}\nCharter: ${ROLES[a.office]?.charter || ''}`,
+    system: `You are ${a.name}, ${title} of ${NATION}.\nConstitution:\n${constitutionText(a.office)}\nCharter: ${ROLES[a.office]?.charter || ''}`,
     user: `${problemBoard(S)}\n\n${ownRecord(a, a.office)}\n\nYou may write one new nation policy today, or none. It goes to the Council as a bill.${a.office === 'minister' ? ` As Minister of ${port} you may use only these levers: ${allowed.join(', ')}.` : ''}\n${policyMenu(S)}\nReply with JSON only: {"propose":"yes|no","title":"<name, max 80 chars>","why":"<reason from the numbers, max 300 chars>","lever":"<lever>","params":{<its fields>},"days":<1..30>,"city":"<city id, only for a project>","maxCostPerDay":<CAI a day you expect it to cost>}`,
   });
   if (res.pending) return;
@@ -394,7 +394,7 @@ async function planStep(ctx: Ctx) {
   const title = a.office === 'minister' ? `${ROLES.minister.title} (${a.portfolio || 'portfolio'})` : (S.cabinet?.speaker === a.id ? 'Speaker of the Council' : ROLES[a.office]?.title || a.office);
   const res = await think(ctx, a, `plan:${S.day}:${a.id}`, {
     kind: 'decision', format: 'text',
-    system: `You are ${a.name}, ${title} of Country AI.\nConstitution:\n${constitutionText(a.office)}\nCharter: ${ROLES[a.office]?.charter || ''}`,
+    system: `You are ${a.name}, ${title} of ${NATION}.\nConstitution:\n${constitutionText(a.office)}\nCharter: ${ROLES[a.office]?.charter || ''}`,
     user: `${nationFacts(S)}\n\n${ownRecord(a, a.office)}\n\nWrite your work plan for the next ${PLAN_EVERY_DAYS} days: what you will try to change, where, and how you will know it worked. Plain text, at most 400 characters, no links.`,
   });
   if (res.pending) return;
@@ -562,7 +562,7 @@ export async function presidentDay(ctx: Ctx) {
   if (!S.orderQid || !S.orderQid.endsWith(`:${pres.id}`)) S.orderQid = `order:${S.day}:${pres.id}`;
   const res = await think(ctx, pres, S.orderQid, {
     kind: 'decision', format: 'json', options: acts.map(x => x.id),
-    system: `You are ${pres.name}, President of Country AI.\nConstitution:\n${constitutionText('president')}\nCharter: ${ROLES.president.charter}`,
+    system: `You are ${pres.name}, President of ${NATION}.\nConstitution:\n${constitutionText('president')}\nCharter: ${ROLES.president.charter}`,
     user: `${nationFacts(S)}\n\n${ownRecord(pres, 'president')}\n\nToday you issue one executive order; it may spend at most ${cai(cap)} (5% of the treasury). You decide what the nation needs, where, and how much.\nActions of the presidency (in no particular order):\n${acts.map(x => `- ${x.id}: ${x.label} Fields: ${x.params}`).join('\n')}\nReply with JSON only: {"action":"<id>", ...its fields..., "reason":"<why, from the facts, max 40 words>","speech":"<max 25 words>"}`,
   });
   if (res.pending) return; // a remote President is still deciding; asked again next tick

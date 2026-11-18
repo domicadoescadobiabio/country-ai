@@ -3,6 +3,7 @@
 // It never acts inside the country - that is the Police.
 import { BILL_TYPES } from './council.ts';
 import { pick, chance, rint, clamp } from './util.ts';
+import { NATION } from './constitution.mjs';
 import type { Ctx } from './types.ts';
 
 // level = the lowest border level at which the rule is enforced (Council sets the level 1-3).
@@ -76,7 +77,7 @@ async function screen(ctx: Ctx, item: any) {
   if (item.kind === 'immigrant') {
     m.admitted++;
     record(ctx, { kind: 'immigrant', verdict: 'admitted', by: g.id, sample: short(item.name) });
-    ctx.say('border', g.id, `Visa granted to ${item.name}. Welcome to Country AI.`, { kind: 'admitted' });
+    ctx.say('border', g.id, `Visa granted to ${item.name}. Welcome to ${NATION}.`, { kind: 'admitted' });
   }
   return { ok: true };
 }

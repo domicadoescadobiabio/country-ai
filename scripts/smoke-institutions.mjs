@@ -383,6 +383,10 @@ export async function academyChecks(check, log = () => {}) {
   check('academy: the handbook has 8 scenarios for each of the 11 offices, each with 4 distinct options', ROLES && Object.keys(HANDBOOK).length === 11 && Object.values(HANDBOOK).every(x => x.length >= 8) && bad.length === 0, bad.map(x => x.q).slice(0, 3).join(' | '));
   check('academy: no length hint: the right answer is the longest option in at most 30% of scenarios, the shortest in at most 35%, options within 1.8x of each other', longest / items.length <= 0.30 && shortest / items.length <= 0.35 && Math.max(...spread) <= 1.8,
     `longest ${longest}/${items.length}, shortest ${shortest}/${items.length}, worst spread ${Math.max(...spread).toFixed(2)}`);
+  // the nation's name in every charter reads as words (ticket #1074: "Itera Nation.You" / "Itera Nation,nominated")
+  const { NATION } = await import('../src/constitution.mjs');
+  const glued = Object.values(ROLES).filter(r => r.charter && (!r.charter.includes(NATION) || new RegExp(`${NATION.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[.,]?\\S`).test(r.charter.replace(new RegExp(`${NATION}[.,]? `, 'g'), ''))));
+  check('academy: every office charter names the nation with a space after it (no "Nation.You")', glued.length === 0, glued.map(r => r.id).join(', '));
   log(`handbook: ${items.length} scenarios; right answer longest in ${longest} (${Math.round(longest / items.length * 100)}%), shortest in ${shortest} (${Math.round(shortest / items.length * 100)}%)`);
   if (process.argv.includes('--verbose')) for (const it of items.filter(it => it.wrong.every(w => it.right.length > w.length))) log(`longest right: ${it.right.length} vs ${Math.max(...it.wrong.map(w => w.length))}: ${it.right}`);
 

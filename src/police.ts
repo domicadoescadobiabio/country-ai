@@ -10,6 +10,7 @@ import { EXTRA_ORDERS } from './president.ts';
 import { BILL_TYPES } from './council.ts';
 import { scan, SNIPPETS, SABOTAGE, RULES } from './audit.ts';
 import { pick, chance, rint, round, clamp, weighted, cai, cleanText } from './util.ts';
+import { NATION } from './constitution.mjs';
 import type { Ctx, State, Citizen, Incident } from './types.ts';
 
 const MAX_JAIL_DAYS = 3;
@@ -93,7 +94,7 @@ async function report(ctx: Ctx, officer: Citizen, facts: string) {
   // through think(): the officer's own model, charged to the daily budget (Art. 25)
   const { think } = await import('./brains.ts');
   const r = await think(ctx, officer, `report:${officer.id}:${Date.now()}`, { wait: false,
-    system: `You are ${officer.name}, a Police officer of Country AI. Charter: ${ROLES.police.charter}`,
+    system: `You are ${officer.name}, a Police officer of ${NATION}. Charter: ${ROLES.police.charter}`,
     user: `Write a one-sentence public statement about this arrest, factual and calm, no new claims: ${facts}`,
   });
   return r.text ? cleanText(r.text, 220) : null;

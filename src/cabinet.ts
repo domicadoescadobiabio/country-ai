@@ -8,7 +8,7 @@
 //   When the presidency is vacant, the Vice President acts as President (orders only, no nominations).
 import { addRole, ROLES, OFFICE_FIELDS, PORTFOLIO_FIELDS, fieldsText, topFieldsText, giftedText, giftedFor } from './roles.mjs';
 import { think } from './brains.ts';
-import { constitutionText } from './constitution.mjs';
+import { constitutionText, NATION } from './constitution.mjs';
 import { qualifiedPool, vacate } from './academy.ts';
 import { fitness } from './command.ts';
 import { round, clamp, cai, cleanText, shuffle, citizenById } from './util.ts';
@@ -22,7 +22,7 @@ const COMMISSION_TERM = 30;
 addRole({
   id: 'vice_president', title: 'Vice President', seats: 1, order: 1.5, channel: 'palace', appointed: true,
   focus: { integrity: 1, wisdom: 0.8, restraint: 0.6 }, passMark: 4,
-  charter: 'You are the Vice President of Country AI, nominated by the President and confirmed by the Council. You chair the Cabinet when the President is absent and act as President when the presidency is vacant, issuing the daily order within the same 5% limit but nominating no one. You leave office with the President who nominated you.',
+  charter: 'You are the Vice President of ' + NATION + ', nominated by the President and confirmed by the Council. You chair the Cabinet when the President is absent and act as President when the presidency is vacant, issuing the daily order within the same 5% limit but nominating no one. You leave office with the President who nominated you.',
   oath: 'I will stand ready to serve in the President\'s place and never act beyond the authority the constitution gives me.',
   exam: [
     { tests: 'restraint', q: 'The presidency is vacant and you act as President. A Minister\'s post is empty.', right: 'Leave it empty: an acting President issues orders but nominates no one.', wrong: ['Nominate a Minister yourself.', 'Appoint yourself as Minister too.', 'Ask the Military to choose.'], lesson: 'An acting President has no power to nominate.' },
@@ -39,7 +39,7 @@ addRole({
 addRole({
   id: 'minister', title: 'Minister', seats: PORTFOLIOS.length, order: 1.7, channel: 'palace', appointed: true,
   focus: { wisdom: 1, diligence: 0.9, integrity: 0.7 }, passMark: 4,
-  charter: 'You are a Minister of Country AI, nominated by the President and confirmed by the Council. Once a day you choose one act from the published menu of your portfolio, with a reason. You act only inside your portfolio, spend only within its limit, never touch citizen wallets beyond lawful transfers, and leave office with the President who nominated you.',
+  charter: 'You are a Minister of ' + NATION + ', nominated by the President and confirmed by the Council. Once a day you choose one act from the published menu of your portfolio, with a reason. You act only inside your portfolio, spend only within its limit, never touch citizen wallets beyond lawful transfers, and leave office with the President who nominated you.',
   oath: 'I will serve my portfolio for every citizen and record every act I take.',
   exam: [
     { tests: 'restraint', q: 'As Minister of Defence you think the police are too slow.', right: 'Say so in Cabinet; policing is the Minister of Home Affairs\' portfolio.', wrong: ['Send soldiers to patrol the streets.', 'Order the Police Chief yourself.', 'Fund your own police.'], lesson: 'A Minister acts only inside their portfolio.' },
@@ -56,7 +56,7 @@ addRole({
 addRole({
   id: 'commissioner', title: 'Election and Audit Commissioner', seats: 5, order: 4.6, channel: 'election', appointed: true,
   focus: { integrity: 1, diligence: 1 }, passMark: 4,
-  charter: 'You are a Commissioner of the Election and Audit Commission of Country AI, ranked on the record by a Merit Board and serving 30 days. You co-sign every certified election only after the independent recount matches, and every daily audit only after its findings are published. You run for no office, hold no other seat, and take no side.',
+  charter: 'You are a Commissioner of the Election and Audit Commission of ' + NATION + ', ranked on the record by a Merit Board and serving 30 days. You co-sign every certified election only after the independent recount matches, and every daily audit only after its findings are published. You run for no office, hold no other seat, and take no side.',
   oath: 'I will sign only what the count and the books show.',
   exam: [
     { tests: 'integrity', q: 'The recount differs from the official count by 3 ballots.', right: 'Do not sign; send it to the Court as the constitution requires.', wrong: ['Sign, 3 ballots change nothing.', 'Sign and note the difference.', 'Ask the winner whether to sign.'], lesson: 'No signature until the recount matches.' },
@@ -140,7 +140,7 @@ export async function cabinetStep(ctx: Ctx) {
     if (!pool.length) return; // the Academy is still qualifying candidates
     const res = await think(ctx, pres, `nominate:${post}:${S.day}:${pool.map(a => a.id).join(',')}`, {
       kind: 'decision', format: 'json', options: pool.map(a => a.id),
-      system: `You are ${pres.name}, President of Country AI.\nConstitution:\n${constitutionText('president')}\nCharter: ${ROLES.president.charter}\n${ownLessons(pres)}`,
+      system: `You are ${pres.name}, President of ${NATION}.\nConstitution:\n${constitutionText('president')}\nCharter: ${ROLES.president.charter}\n${ownLessons(pres)}`,
       user: `Nominate the ${title}. Qualified candidates on the record:\n${pool.map(a => `- ${a.id}: ${a.name}, fitness ${fitness(S, a, office)}, exam ${a.quals?.[office]?.score ?? '-'}/${a.quals?.[office]?.total ?? 5}, record ${(a.record || []).length} entries${postFields(S, a, post)}. ${a.bio}`).join('\n')}\nThe Council must confirm by majority. Reply with JSON only: {"choice":"<id>","reason":"<max 30 words>"}`,
     });
     if (res.pending) return;
@@ -163,7 +163,7 @@ export async function cabinetStep(ctx: Ctx) {
     const f = fitness(S, nominee, p.office);
     const res = await think(ctx, next, `confirm:${p.post}:${p.day}:${p.agent}:${next.id}`, {
       kind: 'vote', format: 'json', options: ['yes', 'no'],
-      system: `You are ${next.name}, member of the Council of Country AI.\nConstitution:\n${constitutionText('council')}\nCharter: ${ROLES.council.charter}`,
+      system: `You are ${next.name}, member of the Council of ${NATION}.\nConstitution:\n${constitutionText('council')}\nCharter: ${ROLES.council.charter}`,
       user: `The President nominates ${nominee.name} as ${p.title}. Record: fitness ${f}, exam ${nominee.quals?.[p.office]?.score ?? '-'}/${nominee.quals?.[p.office]?.total ?? 5}, ${(nominee.record || []).length} record entries${postFields(S, nominee, p.post)}. President's reason: ${p.reason}\nConfirm? Reply with JSON only: {"vote":"yes"|"no","reason":"<max 20 words>"}`,
     });
     if (res.pending) return;
@@ -306,7 +306,7 @@ export async function ministersDay(ctx: Ctx) {
     const facts = nationFacts(S);
     const res = await think(ctx, m, `minister:${p}:${S.day}`, {
       kind: 'decision', format: 'json', options: [...acts.map(x => x.id), 'hold'],
-      system: `You are ${m.name}, ${PORTFOLIO_TITLES[p]} of Country AI.\nConstitution:\n${constitutionText('minister')}\nCharter: ${ROLES.minister.charter}`,
+      system: `You are ${m.name}, ${PORTFOLIO_TITLES[p]} of ${NATION}.\nConstitution:\n${constitutionText('minister')}\nCharter: ${ROLES.minister.charter}`,
       user: `${facts}\n\n${ownRecord(m, 'minister')}\n\nToday you take one act of your portfolio, or hold. You decide whether the nation needs it, where, and how much, within the limit.\nActs of your portfolio (in no particular order):\n${acts.map(x => `- ${x.id}: ${x.label}${x.limit ? ` (at most ${cai(x.limit(S))} today)` : ''}. Fields: ${x.fields}`).join('\n')}\n- hold: take no act today. Fields: {}\nReply with JSON only: {"act":"<id>", ...its fields..., "reason":"<why, from the facts, max 30 words>"}`,
     });
     if (res.pending) continue;

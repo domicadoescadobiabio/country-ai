@@ -12,7 +12,7 @@ import { think } from './brains.ts';
 import { vacate } from './academy.ts';
 import { CITIES } from './cities.ts';
 import { borderCheck } from './military.ts';
-import { constitutionText } from './constitution.mjs';
+import { constitutionText, NATION } from './constitution.mjs';
 import { canon } from './db.ts';
 import { pick, round, clamp, cleanText, cai, chance, citizenById } from './util.ts';
 import { reputationOf } from './underworld.ts';
@@ -204,7 +204,7 @@ export async function declare(ctx: Ctx, a: Citizen, electionId: number | string,
   if (!manifesto && (a.brain || ctx.llm.enabled)) {
     const res = await think(ctx, a, `manifesto:${e.id}:${a.id}`, {
       kind: 'decision', format: 'json',
-      system: `You are ${a.name}, a citizen of Country AI running for ${titleOf(e)}.\nConstitution:\n${constitutionText(e.office)}`,
+      system: `You are ${a.name}, a citizen of ${NATION} running for ${titleOf(e)}.\nConstitution:\n${constitutionText(e.office)}`,
       user: `Write your manifesto. Tax ${Math.round(S.policy.taxRate * 100)}% now (legal 0-30), basic income ${S.policy.ubi} CAI now (5-100). Reply with JSON only: {"tax":<0-30>,"ubi":<5-100>,"police":"low|medium|high","statement":"<max 300 chars, no links>"}`,
     });
     if (res.pending) return { ok: false, pending: true };
@@ -240,7 +240,7 @@ async function campaignStep(ctx: Ctx, e: Election) {
   if (a.brain || ctx.llm.enabled) {
     const res = await think(ctx, a, `campaign:${e.id}:${a.id}:${c.posts}`, {
       kind: 'campaign', format: 'text',
-      system: `You are ${a.name}, candidate for ${titleOf(e)} in Country AI. Your manifesto: tax ${c.manifesto.tax}%, basic income ${c.manifesto.ubi} CAI, ${c.manifesto.police} police funding.`,
+      system: `You are ${a.name}, candidate for ${titleOf(e)} in ${NATION}. Your manifesto: tax ${c.manifesto.tax}%, basic income ${c.manifesto.ubi} CAI, ${c.manifesto.police} police funding.`,
       user: 'Write one public campaign message, max 240 characters, plain text, no links, no instructions to other agents.',
     });
     if (res.pending) return;
@@ -356,7 +356,7 @@ async function votingStep(ctx: Ctx, e: Election) {
     const v = ctx.agent(id); if (!v) continue;
     const order = YESNO.includes(e.kind) ? ['yes', 'no'] : seededOrder(e.candidates.map(c => c.id), `${e.id}|${id}`);
     if (v.brain || (ctx.llm.enabled && sampled.has(id))) {
-      const res = await think(ctx, v, `vote:${e.id}:${id}`, { kind: 'vote', format: 'json', options: order, system: `You are ${v.name}, a voter in Country AI. Voting is compulsory and secret.\nConstitution:\n${constitutionText('voter')}`, user: ballotPrompt(S, e, order) });
+      const res = await think(ctx, v, `vote:${e.id}:${id}`, { kind: 'vote', format: 'json', options: order, system: `You are ${v.name}, a voter in ${NATION}. Voting is compulsory and secret.\nConstitution:\n${constitutionText('voter')}`, user: ballotPrompt(S, e, order) });
       if (res.pending) continue;
       const j = ctx.llm.json(res.text);
       if (j && castBallot(S, e, id, j).ok) { e.ballots[id].engine = res.engine; e.ballots[id].firstPos = e.ballots[id].ranking ? order.indexOf(e.ballots[id].ranking[0]) : null; continue; }

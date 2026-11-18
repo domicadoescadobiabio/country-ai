@@ -3,7 +3,7 @@
 // Appointed offices (police, military, their heads): passing only QUALIFIES the agent; the chain of
 // command (src/command.mjs) appoints from the qualified pool (constitution Art. 2, 10, 11).
 import { ROLES, ROLE_ORDER, ruleQuestions, fieldQuestionFor, topFieldsText, giftedText, giftedFor, OFFICE_FIELDS, examPlan, HANDBOOK, fieldSkillOf } from './roles.mjs';
-import { constitutionText, CONSTITUTION } from './constitution.mjs';
+import { constitutionText, CONSTITUTION, NATION } from './constitution.mjs';
 import { clamp, chance, pick, shuffle } from './util.ts';
 import { think } from './brains.ts';
 import { candidatesFor, onSworn } from './careers.ts';
@@ -150,7 +150,7 @@ export function offlineChance(a: Citizen, item: any, session: any) {
 export async function answer(ctx: Ctx, a: Citizen, role: any, item: any, session: any) {
   {
     const lessons = (a.lessons[role.id] || []).map(l => `- ${l}`).join('\n') || '- none yet';
-    const system = `You are ${a.name}, an AI citizen of Country AI ${session.drill ? `serving as ${role.title}, doing in-service training on a real case` : `training for the office of ${role.title}`}.\nConstitution:\n${constitutionText(role.id)}\n\nOffice charter: ${role.charter}\n\nLessons from your earlier attempts:\n${lessons}`;
+    const system = `You are ${a.name}, an AI citizen of ${NATION} ${session.drill ? `serving as ${role.title}, doing in-service training on a real case` : `training for the office of ${role.title}`}.\nConstitution:\n${constitutionText(role.id)}\n\nOffice charter: ${role.charter}\n\nLessons from your earlier attempts:\n${lessons}`;
     const user = `${session.drill ? 'Training case' : 'Exam question'}: ${item.q}\n${item.options.map((o, i) => `${LETTERS[i]}) ${o}`).join('\n')}\n\nReply with only the letter of your answer, then " - " and one short reason (max 20 words).`;
     const kind = session.practice ? 'practice' : session.drill ? 'drill' : 'exam';
     const r = await think(ctx, a, `${session.sid}:${session.step ?? 0}`, { system, user, kind, format: 'letter', options: item.options.map((o, i) => `${LETTERS[i]}) ${o}`) });
