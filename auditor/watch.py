@@ -17,6 +17,8 @@ MONOTONE_MIN_NEW = 200      # fewer new thoughts than this (the republic's night
 MONOTONE_SHARE = 0.70       # one act above this share of the new thoughts is monotone
 SCHOOL_WINDOW_S = 3600      # lessons / train queue are judged over the last hour
 QUEUE_GROWTH = 10           # queuedTrain rising at every observation by at least this much in total
+BUDGET_FULL_SHARE = 0.9     # a share of the model purse this full counts as spent
+BUDGET_PACE_MARGIN = 0.35   # government spending this far ahead of the hour of the day is a warning
 RUNWAY_DAYS = 5.0           # treasury left at the net UBI burn
 REJECTED_SHARE = 0.5        # gov.rejectedShare above this for a whole day
 SEATS_STUCK_S = 12 * 3600   # seats filled unchanged this long
@@ -148,6 +150,40 @@ def cabinet_pending(state: dict, memo: dict, now: float) -> dict | None:
         mins = int((now - seen["since"]) / 60)
         return _alarm("pemerintah:cabinet-stuck", "pemerintah", f"cabinet nomination gained no vote for {mins} min: {what}")
     return None
+
+
+def leader_budget(state: dict, memo: dict) -> list[dict]:
+    """Leaders must not drop to offline because the day's model budget ran out early.
+
+    The government's share is `budget.daily - budget.train.daily` (e.g. 45 - 38 = 7 USD while the school takes the
+    Claude credits). A refused leader call counts only when the purse is nearly empty: a few refusals at low
+    spend are the per-minute pacing, not an empty budget."""
+    b = state.get("budget") or {}
+    train = b.get("train") or {}
+    daily, train_daily = _num(b.get("daily")), _num(train.get("daily")) or 0.0
+    spent, train_spent = _num(b.get("spent")) or 0.0, _num(train.get("spent")) or 0.0
+    denied = _num((b.get("denied") or {}).get("leader")) or 0.0
+    hour = _num((((state.get("daily") or {}).get("clock")) or {}).get("hour"))
+    if not daily:
+        return []
+    gov_cap = max(daily - train_daily, 0.0)
+    prev = memo.get("budget")
+    memo["budget"] = {"day": b.get("day"), "deniedLeader": denied}
+    memo["budgetView"] = {"govCap": round(gov_cap, 2), "govSpent": round(spent, 4), "trainSpent": round(train_spent, 4),
+                          "leader": _num(b.get("leader")), "official": _num(b.get("official")), "deniedLeader": denied}
+    full = spent >= BUDGET_FULL_SHARE * gov_cap or spent + train_spent >= BUDGET_FULL_SHARE * daily
+    out = []
+    new_denied = denied - prev["deniedLeader"] if prev and prev.get("day") == b.get("day") else 0.0
+    if new_denied > 0 and full:
+        out.append(_alarm("negara:leader-offline", "negara",
+                          f"leaders refused {new_denied:.0f} model call(s) and fell back offline: the government spent "
+                          f"${spent:.2f} of its ${gov_cap:.2f} share (training ${train_spent:.2f} of ${train_daily:.2f}, "
+                          f"day total ${daily:.2f})" + (f" at {hour:.0f}:00" if hour is not None else "")))
+    if hour is not None and 0 < hour < 20 and gov_cap > 0 and spent / gov_cap > hour / 24 + BUDGET_PACE_MARGIN:
+        out.append(_alarm("negara:leader-budget-pace", "negara",
+                          f"government budget burning ahead of the day: ${spent:.2f} of ${gov_cap:.2f} spent by {hour:.0f}:00 "
+                          f"({100 * spent / gov_cap:.0f}%, pace {100 * hour / 24:.0f}%); leaders may go offline before night"))
+    return out
 
 
 def _ubi_short(ubi_entries: list[dict] | None) -> str:
@@ -395,6 +431,7 @@ def evaluate(state: dict, health: dict | None, ledger_by_kind: dict | None, memo
             alarms.append(a)
     alarms += academy_training(state, memo)
     alarms += school_training(state, memo, now)
+    alarms += leader_budget(state, memo)
     alarms += llm_errors(state, memo)
     dup = ledger_duplicates(ledger_by_kind) if ledger_by_kind is not None else None
     if dup and (a := ledger_alarm(dup)):
@@ -404,4 +441,5 @@ def evaluate(state: dict, health: dict | None, ledger_by_kind: dict | None, memo
     memo["open"] = keys
     return {"alarms": alarms, "opened": [k for k in keys if k not in before], "closed": sorted(before - set(keys)),
             "streets": rep, "acts": memo.get("actsWindow"), "runway": memo.get("runway"),
-            "school": memo.get("schoolWindow"), "today": memo.get("today"), "ledgerOnce": dup}
+            "school": memo.get("schoolWindow"), "budget": memo.get("budgetView"), "today": memo.get("today"),
+            "ledgerOnce": dup}

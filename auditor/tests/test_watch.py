@@ -263,6 +263,36 @@ class OpenRouterPausedTest(unittest.TestCase):
         self.assertIn("negara:openrouter-paused", keys)
 
 
+class LeaderBudgetTest(unittest.TestCase):
+    def st(self, spent, denied, train_spent=5.0, hour=13.0, day=9):
+        return {"budget": {"day": day, "daily": 45, "spent": spent, "leader": spent / 2, "official": spent / 2,
+                           "denied": {"leader": denied}, "train": {"daily": 38, "spent": train_spent}},
+                "daily": {"clock": {"hour": hour}}}
+
+    def keys(self, *states):
+        memo, out = {}, []
+        for s in states:
+            out = watch.leader_budget(s, memo)
+        return {a["key"] for a in out}
+
+    def test_pacing_refusals_at_low_spend_are_not_an_empty_purse(self):
+        self.assertEqual(self.keys(self.st(2.6, 2), self.st(2.7, 4)), set())
+
+    def test_leaders_offline_when_the_share_is_spent(self):
+        self.assertIn("negara:leader-offline", self.keys(self.st(6.0, 2, hour=21), self.st(6.5, 5, hour=21)))
+
+    def test_whole_purse_spent_by_training_counts_too(self):
+        self.assertIn("negara:leader-offline", self.keys(self.st(3.0, 0, train_spent=38, hour=21),
+                                                          self.st(3.1, 1, train_spent=38, hour=21)))
+
+    def test_a_new_day_does_not_count_yesterdays_refusals(self):
+        self.assertEqual(self.keys(self.st(6.5, 9, hour=23, day=9), self.st(0.1, 12, hour=1, day=10)), set())
+
+    def test_pace_warning(self):
+        self.assertIn("negara:leader-budget-pace", self.keys(self.st(5.0, 0, hour=6)))  # 71% spent at 25% of the day
+        self.assertEqual(self.keys(self.st(3.0, 0, hour=12)), set())  # 43% at half the day
+
+
 class BuildTest(unittest.TestCase):
     def test_restart_without_deploy(self):
         memo = {}
