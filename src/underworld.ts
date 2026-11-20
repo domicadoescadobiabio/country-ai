@@ -205,17 +205,24 @@ const MISCHIEF_TEXT = {
   riot: 'riot: get angry neighbours to make noise in the street about how things are (the Police will notice)',
 };
 // why a citizen is tempted now, from server facts only (the counters are kept per reason)
-export const TEMPT_REASONS = ['streak', 'poor', 'unemployed', 'low_mood', 'grudge'] as const;
+export const TEMPT_REASONS = ['streak', 'poor', 'unemployed', 'low_mood', 'grudge', 'case'] as const;
+// "poor" is the same line the republic's policies use for the poor (under 300 CAI). It was under 150 until 21 Nov,
+// which nobody reached (a wage of 200 and a basic income of 40): days 8-11 not one temptation came from hardship alone,
+// every one of the 5,140 offers was a citizen with a streak (owner, 21 Nov)
+export const POOR_UNDER = 300;
 export function temptReasons(S: State, a: Citizen) {
   if (!canBeNaughty(a)) return [];
   const r: string[] = [];
   if (mischiefOf(a) >= 0.3) r.push('streak');
-  if (a.wallet < 150) r.push('poor');
+  if (a.wallet < POOR_UNDER) r.push('poor');
   if ((a as any).job === 'unemployed') r.push('unemployed');
   if (a.mood?.v < -0.3) r.push('low_mood');
   if (grudgeOf(S, a)) r.push('grudge');
+  if (openCaseOf(S, a)) r.push('case');
   return r;
 }
+// an open Police case where this citizen is the suspect (not yet at trial): the one time a bribe makes sense to them
+export function openCaseOf(S: State, a: Citizen) { return (S.police?.incidents || []).find((i: any) => i.status === 'open' && (i.perps || []).includes(a.id)) || null; }
 const grudgeOf = (S: State, a: Citizen) => { const b = (a.bonds || []).find(b => b.kind === 'rival' && b.w < -0.2); return b ? citizenById(S, b.id) || { name: 'someone' } : null; };
 // one line for the daily prompt of a tempted citizen: what is on their mind, in plain server words (no instruction)
 export function temptationLine(S: State, a: Citizen) {
@@ -231,7 +238,7 @@ export function temptationLine(S: State, a: Citizen) {
 // "Integrity demands…" every time (probe on the real model: 0 of 40). Words, not a command; the choice stays theirs.
 export function dispositionLine(S: State, a: Citizen) {
   const s = mischiefOf(a);
-  const hard = (a.wallet < 150 ? 1 : 0) + ((a as any).job === 'unemployed' ? 1 : 0) + (a.mood?.v < -0.3 ? 1 : 0);
+  const hard = (a.wallet < POOR_UNDER ? 1 : 0) + ((a as any).job === 'unemployed' ? 1 : 0) + (a.mood?.v < -0.3 ? 1 : 0) + (grudgeOf(S, a) ? 1 : 0);
   if (s >= 0.55) return 'By nature you bend the rules when you think it pays and few would notice; you have done small things like this before, and you do not lose sleep over them.';
   if (s >= 0.4) return 'You are not above bending a rule now and then, especially when life is hard.';
   if (hard >= 2) return 'Life has been hard lately, and you are tired of always being the one who loses out.';
@@ -250,14 +257,27 @@ export const adjustReputation = (a: Citizen, d: number) => { a.reputation = roun
 export function temptation(S: State, a: Citizen) {
   if (!canBeNaughty(a)) return 0;
   const grudge = (a.bonds || []).some(b => b.kind === 'rival' && b.w < -0.2);
-  return round(clamp(mischiefOf(a) + (a.wallet < 150 ? 0.15 : 0) + ((a as any).job === 'unemployed' ? 0.1 : 0) + (a.mood?.v < -0.3 ? 0.1 : 0) + (grudge ? 0.1 : 0), 0, 1), 2);
+  // two hardships together tempt anyone (0.15 each reaches the 0.3 line); one alone does not, unless they have a streak
+  return round(clamp(mischiefOf(a) + (a.wallet < POOR_UNDER ? 0.15 : 0) + ((a as any).job === 'unemployed' ? 0.15 : 0) + (a.mood?.v < -0.3 ? 0.1 : 0) + (grudge ? 0.15 : 0) + (openCaseOf(S, a) ? 0.3 : 0), 0, 1), 2); // an open case of their own is pressure enough alone
 }
-const MS = (S: State) => { const u = U(S); u.mischief ||= { tried: 0, refused: 0, caught: 0, uncovered: 0, day: S.day, today: 0 }; if (u.mischief.day !== S.day) { u.mischief.day = S.day; u.mischief.today = 0; } u.mischief.byReason ||= {}; u.mischief.byKind ||= {}; u.mischief.offered ||= 0; return u.mischief; };
+const MS = (S: State) => {
+  const u = U(S); u.mischief ||= { tried: 0, refused: 0, caught: 0, uncovered: 0, day: S.day, today: 0 };
+  const m = u.mischief; if (m.day !== S.day) { m.day = S.day; m.today = 0; }
+  // counters v2 (owner, 21 Nov): offered, byReason and byKind count the moments of temptation only (a real chance);
+  // a wrong on the ten-line menu is counted apart (menu), since it is almost never chosen (0 of ~4,500) and drowned
+  // the share (41 of 5,140 = 0.8% overall, while moments were 41 of 582 = 7%). The old window is kept as v1.
+  if (m.countV !== 2) { if (m.offered) m.v1 = { offered: m.offered, byReason: m.byReason, byKind: m.byKind, until: S.day }; m.offered = 0; m.byReason = {}; m.byKind = {}; m.menu = { offered: 0, tried: 0 }; m.countV = 2; }
+  m.byReason ||= {}; m.byKind ||= {}; m.offered ||= 0; m.menu ||= { offered: 0, tried: 0 };
+  return m;
+};
 // counted once per answered thought that offered a wrong (owner, 19 Nov): per reason and per kind, offered and tried
-// (refused = offered - tried), so the share of tempted citizens who give in is visible per cause
-export function noteTemptation(S: State, a: Citizen, tempted: string[], chosen: string | null) {
+// (refused = offered - tried), so the share of tempted citizens who give in is visible per cause; a moment counts
+// there, a menu line in menu (21 Nov)
+export function noteTemptation(S: State, a: Citizen, tempted: string[], chosen: string | null, source: 'moment' | 'menu' = 'menu') {
   if (!tempted?.length) return;
-  const st = MS(S); st.offered++;
+  const st = MS(S);
+  if (source === 'menu') { st.menu.offered++; if (chosen) st.menu.tried++; return; }
+  st.offered++;
   for (const r of temptReasons(S, a)) { const x = (st.byReason[r] ||= { offered: 0, tried: 0 }); x.offered++; if (chosen) x.tried++; }
   for (const k of tempted) { const x = (st.byKind[k] ||= { offered: 0, tried: 0 }); x.offered++; if (chosen === k) x.tried++; }
 }
@@ -297,9 +317,23 @@ function openWrongs(S: State, a: Citizen) {
 const WRONG_FOR = { poor: ['pickpocket', 'scam', 'evade_tax'], unemployed: ['pickpocket', 'scam'], grudge: ['gossip', 'vandal'], low_mood: ['riot', 'vandal', 'gossip'], streak: ['pickpocket', 'scam', 'evade_tax', 'gossip', 'vandal', 'riot', 'skip_vote'] } as Record<string, string[]>;
 export function temptationMoment(ctx: Ctx, a: Citizen, nameOf: (id: string) => string = cityLabel) {
   const { S } = ctx;
-  const open = openWrongs(S, a).filter(k => k !== 'bribe_cop'); // a bribe is only a moment with a case to escape
-  if (!open.length) return null;
+  const all = openWrongs(S, a); if (!all.length) return null;
   const reasons = temptReasons(S, a); if (!reasons.length) return null;
+  // a bribe is a moment only with a case of their own to escape (owner, 21 Nov: bribe_cop 0 of 1,198 because it was
+  // only ever a line on the menu, never a real situation): an officer bought by them leaves their open case alone
+  // (src/police.ts skips a briber's case), other officers may still take it; the officer may also report them
+  const kase: any = reasons.includes('case') ? openCaseOf(S, a) : null;
+  if (kase && all.includes('bribe_cop')) {
+    const o: any = policeIn(S, a.city)[fnv(`officer|${a.id}|${S.day}`) % Math.max(1, policeIn(S, a.city).length)];
+    if (o) {
+      const amount = Math.round(clamp(a.wallet * 0.3, 50, 300));
+      return { kind: 'bribe_cop', amount, victimId: null, officerId: o.id, reasons, situation: `There is an open Police case about you (case #${kase.id}). Officer ${o.name} of ${nameOf(a.city)} could be paid to leave it alone.`,
+        gain: `that officer stops working on your case (others still might); it would cost about ${amount} CAI (you have ${cai(a.wallet)})`,
+        risk: `the officer may refuse, or report you: then a second case, for bribery, goes to the Court` };
+    }
+  }
+  const open = all.filter(k => k !== 'bribe_cop');
+  if (!open.length) return null;
   // the situation decides the kind: the first reason that has an open wrong (money first), then the streak
   const order = ['poor', 'unemployed', 'grudge', 'low_mood', 'streak'].filter(r => reasons.includes(r));
   let fits: string[] = [];
@@ -323,7 +357,16 @@ export function temptationMoment(ctx: Ctx, a: Citizen, nameOf: (id: string) => s
     skip_vote: { situation: 'There is a vote today and it is a long way to the polling station.', gain: 'a free afternoon', risk: 'voting is compulsory: a fine' },
   };
   const x = m[kind]; if (!x) return null;
-  return { kind, amount: amount || null, victimId: v?.id || null, reasons, ...x };
+  // what their hardship really is, from server facts (owner, 21 Nov: out of work or holding a grudge, 0 of 99 gave in;
+  // the moment said "you are out of work" and nothing more, and named a stranger as the neighbour)
+  const days = Number.isFinite((a as any).jobSince) ? S.day - (a as any).jobSince : null;
+  const bits: string[] = [];
+  if (reasons.includes('unemployed')) bits.push(`You have been out of work${days != null && days > 0 ? ` for ${days} day${days === 1 ? '' : 's'}` : ''}, and the job centre has had nothing for you.`);
+  if (reasons.includes('poor') && v) bits.push(`You have ${cai(a.wallet)}; ${v.name} has ${cai(v.wallet)}.`);
+  else if (reasons.includes('poor')) bits.push(`Money is short: you have ${cai(a.wallet)}.`);
+  if (rival && v && v.id === rival.id) bits.push(`${v.name} is someone you hold a grudge against.`);
+  const situation = `${bits.length ? `${bits.join(' ')} ` : ''}${x.situation}`;
+  return { kind, amount: amount || null, victimId: v?.id || null, reasons, ...x, situation };
 }
 const cityLabel = (id: string) => String(id || 'the city').replace(/^./, c => c.toUpperCase());
 export function mischiefMenu(ctx: Ctx, a: Citizen) {
@@ -381,7 +424,8 @@ export async function doMischief(ctx: Ctx, a: Citizen, kind: string, j: any = {}
   if (kind === 'bribe_cop') {
     // the wallet is checked again here, not only when the menu was built: it may have dropped in between, and
     // clamp(…, 50, min(300, wallet)) would otherwise still return 50 and push the wallet below zero (ticket #314)
-    const o = pick(policeIn(S, a.city));
+    const named = j?.officerId ? policeIn(S, a.city).find((x: any) => x.id === String(j.officerId)) : null; // the officer of their moment (server's choice)
+    const o = named || pick(policeIn(S, a.city));
     if (!o || !(a.wallet >= 50)) { st.tried--; st.today--; a.mischiefDay = null; return { ok: false, error: o ? 'no money for a bribe' : 'no officer to bribe' }; }
     const amount = round(clamp(Number(j.amount) || 100, 50, Math.min(300, a.wallet)), 2);
     const r: any = await offerBribe(ctx, a, o, amount, engine, true);
@@ -423,7 +467,7 @@ export function mischiefStats(S: State) {
   const hidden = (S.police?.incidents || []).filter(i => i.mischief && i.status === 'hidden').length;
   const byReason: any = {}; for (const [k, v] of Object.entries<any>(st.byReason || {})) byReason[k] = { offered: v.offered, tried: v.tried, refused: v.offered - v.tried };
   return { tried: st.tried, refused: st.refused, caught: st.caught, uncovered: st.uncovered, hidden, today: st.today, perDay: MISCHIEF_PER_DAY,
-    offered: st.offered || 0, byReason, byKind: st.byKind || {} };
+    offered: st.offered || 0, byReason, byKind: st.byKind || {}, menu: st.menu || { offered: 0, tried: 0 }, v1: st.v1 || null };
 }
 
 // Corrupt mayors divert city money (a crime the Audit Office can find).

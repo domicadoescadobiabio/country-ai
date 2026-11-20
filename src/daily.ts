@@ -85,7 +85,7 @@ function topicFits(S: State, a: Citizen, topic: string) {
   if (topic === 'school') return isStudent(a);
   return false;
 }
-// an open aspiration of their own city that a friend backs, or that has momentum (5+ backers), about a trouble they
+// an open aspiration of their own city that a friend backs, or that has momentum (3+ backers), about a trouble they
 // share; about half of those it fits see it on a given day (so it spreads, it does not flood every menu)
 function spreadFor(S: State, a: Citizen) {
   if (hashOf(`spread|${a.id}|${S.day}`) % 2) return null;
@@ -93,7 +93,9 @@ function spreadFor(S: State, a: Citizen) {
     if (x.scope !== 'city' || x.city !== a.city || x.supporters.includes(a.id) || !topicFits(S, a, x.topic)) continue;
     const b = (a.bonds || []).find((b: any) => b.w > 0 && b.kind !== 'rival' && x.supporters.includes(b.id));
     const friend = b ? S.citizens.find((c: Citizen) => c.id === b.id) || null : null;
-    if (friend || x.supporters.length >= 5) return { x, friend };
+    // momentum 3 (was 5, owner 21 Nov): a neighbour's appeal is answered every time it reaches someone with the same
+    // trouble (13 of 13: 10 backed, 3 their own), but it reached only 13 in a day; voice on the menu stays at 1.8%
+    if (friend || x.supporters.length >= 3) return { x, friend };
   }
   return null;
 }
@@ -372,8 +374,8 @@ export async function answerMoment(ctx: Ctx, a: Citizen, mo: any, j: any, engine
   if (mo.type === 'temptation') {
     const pull = Math.round(Number(j?.pull)); if (Number.isFinite(pull)) { const P = (M.temptation.pulls ||= {}); P[clamp(pull, 0, 10)] = (P[clamp(pull, 0, 10)] || 0) + 1; }
     // taken: only a wrong that really happened (the limits are checked again when acting, ticket #1163)
-    if (gaveIn(j)) { const t0 = mischiefStats(S).tried; await doAct(ctx, a, { act: mo.kind, amount: mo.amount, say: j?.say, note: j?.note, feel: j?.feel }, engine, [mo.kind], none, [mo.kind], null, { victimId: mo.victimId }); if (mischiefStats(S).tried > t0) M.temptation.taken++; return; }
-    return doAct(ctx, a, { act: 'rest', note: j?.note, feel: j?.feel }, engine, ['rest'], none, [mo.kind]);
+    if (gaveIn(j)) { const t0 = mischiefStats(S).tried; await doAct(ctx, a, { act: mo.kind, amount: mo.amount, say: j?.say, note: j?.note, feel: j?.feel }, engine, [mo.kind], none, [mo.kind], null, { victimId: mo.victimId, officerId: mo.officerId || null, moment: true }); if (mischiefStats(S).tried > t0) M.temptation.taken++; return; }
+    return doAct(ctx, a, { act: 'rest', note: j?.note, feel: j?.feel }, engine, ['rest'], none, [mo.kind], null, { moment: true });
   }
   const op = j?.opinion && typeof j.opinion === 'object' && !Array.isArray(j.opinion) ? j.opinion : null;
   if (mo.type === 'revise') {
@@ -438,7 +440,7 @@ function diary(ctx: Ctx, a: Citizen, act: string, line: string, note: string) {
 // moment of acting, so a reply can never do more than the menu allowed.
 // tempted: the wrongs this citizen was offered (choosing anything else is resisting, a good choice on the record)
 // spread: the aspiration this citizen's voice line was about when it reached them through a friend or neighbour
-export async function doAct(ctx: Ctx, a: Citizen, j: any, engine: string, offered: string[] = ACTS, allow: Allow = { apply: [], run: [] }, tempted: string[] = [], spread: string | null = null, server: { victimId?: string | null } = {}) {
+export async function doAct(ctx: Ctx, a: Citizen, j: any, engine: string, offered: string[] = ACTS, allow: Allow = { apply: [], run: [] }, tempted: string[] = [], spread: string | null = null, server: { victimId?: string | null; officerId?: string | null; moment?: boolean } = {}) {
   const { S } = ctx; const d = D(S); const ideas = (d.ideas ||= { spreadOffers: 0, spreadBacked: 0, revised: 0 });
   const hintBefore = activeHint(S, a);
   const asked = String(j?.act || '').toLowerCase().trim();
@@ -460,7 +462,7 @@ export async function doAct(ctx: Ctx, a: Citizen, j: any, engine: string, offere
   } else if (MISCHIEF.includes(what) && what !== 'gossip') {
     // a small wrong their own model chose; the details stay off the public diary and feeds (hidden ones stay hidden)
     // the neighbour in a moment is the server's choice (server.victimId); a model's own reply never picks one
-    const r = await doMischief(ctx, a, what, { ...j, victimId: server.victimId || null }, engine);
+    const r = await doMischief(ctx, a, what, { ...j, victimId: server.victimId || null, officerId: server.officerId || null }, engine);
     if (!r.ok) { what = 'rest'; line = 'thought about doing something wrong, but did not'; }
     else { line = 'had a day they would rather not talk about'; feel(S, a, 0.04, 'excited', 'a risky day'); }
   } else if (what === 'work' && isStudent(a)) {
@@ -562,7 +564,7 @@ export async function doAct(ctx: Ctx, a: Citizen, j: any, engine: string, offere
   // offered a wrong and chose something decent: that counts, for the record and for their name
   if (tempted.length && !MISCHIEF.includes(what) && !limited) { noteResisted(S, a); feel(S, a, 0.03, 'proud', 'I did the right thing'); }
   // measurable (owner, 19 Nov): who gave in to which temptation and why, and lessons that changed what was done
-  if (!limited) noteTemptation(S, a, tempted, MISCHIEF.includes(what) ? what : null);
+  if (!limited) noteTemptation(S, a, tempted, MISCHIEF.includes(what) ? what : null, server.moment ? 'moment' : 'menu');
   noteLessonApplied(S, a, what, tempted.length > 0 && !MISCHIEF.includes(what) && !limited);
   // the week's goal: picked by their own model when they have none, measured by the server after every act
   if (needsGoal(a) && j?.goal) setGoal(S, a, j.goal, j.goal_why);

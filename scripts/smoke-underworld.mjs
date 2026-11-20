@@ -78,8 +78,47 @@ export async function mischiefChecks(check) {
     check('acting on it is a real wrong, the same as before (money moves from the named neighbour, a Police case); resisting is recorded as resisting; counted per moment and per pull',
       poo.wallet > w0 && inc?.perps?.[0] === 'poo' && (m1.kind !== 'pickpocket' || inc.victim === m1.victimId) && ms.mischief.tried === 1 && ms.mischief.refused >= 1 && ms.moments.temptation.taken === 1 && ms.moments.temptation.pulls['9'] === 1 && ms.moments.temptation.pulls['6'] === 1 && str.resisted >= 1,
       JSON.stringify({ moments: ms.moments, mischief: { tried: ms.mischief.tried, refused: ms.mischief.refused }, inc }));
+    check('a moment is counted where the owner reads it: byReason (poor, unemployed: tried 1; streak: resisted 1) and byKind',
+      ms.mischief.offered === 2 && ms.mischief.byReason.unemployed?.tried === 1 && ms.mischief.byReason.poor?.tried === 1 && ms.mischief.byReason.streak?.offered === 1 && ms.mischief.byReason.streak.tried === 0 && ms.mischief.byKind[m1.kind]?.tried === 1, JSON.stringify(ms.mischief.byReason));
     poo.momentDay = M.day; str.momentDay = M.day;
     check('at most one moment a citizen a day; after acting on one, no other wrong that day', _momentFor(mctx, poo) === null && _momentFor(mctx, str) === null && uw.mischiefMenu(mctx, poo).length === 0);
+    // owner, 21 Nov: the moment says what the hardship really is (days out of work, what the neighbour has, the rival)
+    const H = republic([person('hj', { job: 'unemployed', jobSince: 1, wallet: 240, mischief: 0.02 }), person('hg', { wallet: 250, mischief: 0.02 }), person('rv', { wallet: 700, mischief: 0 }),
+      person('cs', { wallet: 400, mischief: 0.02 }), person('of1', { office: 'police', mischief: 0 }), ...Array.from({ length: 3 }, (_, i) => person(`hn${i}`, { wallet: 600, mischief: 0 }))]);
+    H.seats.police = ['of1']; const hctx = context(H); uw._resetMischiefCache(); _resetFeelingsCaches();
+    const [hj, hg, rv, cs] = H.citizens; ensureFeelings(H, hg); bond(H, hg, rv, -0.6, 'rival');
+    H.police.incidents.push({ id: 77, type: 'theft', perps: ['cs'], victim: 'hn0', amount: 30, status: 'open', mischief: true, strength: 0.8, day: 4 });
+    const mj = _momentFor(hctx, hj), mg = _momentFor(hctx, hg), mc = _momentFor(hctx, cs);
+    check('without a streak, the moment says the real hardship: out of work for 4 days (the job centre had nothing), what they have and what the neighbour has',
+      mj?.type === 'temptation' && /out of work for 4 days, and the job centre has had nothing/.test(mj.situation) && /You have 240 CAI; .+ has \d+ CAI\./.test(mj.situation) && /Life has been hard lately/.test(momentPrompt(hctx, hj, mj, 'q').system), mj?.situation);
+    check('a grudge makes the rival the neighbour in the moment, named as such (hardship: a grudge and under 300 CAI)',
+      mg?.type === 'temptation' && (!['pickpocket', 'scam'].includes(mg.kind) || (mg.victimId === 'rv' && /Rv Doe is someone you hold a grudge against/.test(mg.situation))), JSON.stringify(mg));
+    check('an open case of their own is a reason (case) and the one time a bribe is a moment: the officer is named, what it buys and the risk (a second case)',
+      uw.temptReasons(H, cs).includes('case') && mc?.kind === 'bribe_cop' && mc.officerId === 'of1' && /open Police case about you \(case #77\)/.test(mc.situation) && /Of1 Doe/.test(mc.situation) && /second case, for bribery/.test(mc.risk), JSON.stringify(mc));
+    // ticket #1199: the bribe moment does what its words promise. Acted on, the offer goes to the officer it named
+    // (the server's choice); an officer who takes it is bought (favourFor), and src/police.ts patrol skips a case whose
+    // suspect bought that officer (another officer may still take it); an honest one reports it: a second case
+    const fs = await import('node:fs');
+    const policeSrc = fs.readFileSync(new URL('../src/police.ts', import.meta.url), 'utf8');
+    check('src/police.ts still keeps the promise of the bribe moment: a bought officer leaves the briber\'s open cases alone (patrol filters favourFor)',
+      /x\.status === 'open'[^\n]*!x\.perps\.some\(p => favourFor\(S, o\.id, p\)\)/.test(policeSrc));
+    const of1 = H.citizens.find(c => c.id === 'of1'); const of2 = person('of2', { office: 'police', mischief: 0 }); H.citizens.push(of2); H.seats.police.push('of2');
+    const rnd = Math.random; of1.traits = { ...of1.traits, integrity: 0 }; Math.random = () => 0; // the bought officer: greed wins
+    const w1 = cs.wallet;
+    try { await answerMoment(hctx, cs, mc, { pull: 10 }, 'test'); } finally { Math.random = rnd; }
+    const bribe = H.underworld.bribes.at(-1);
+    check('acting on the bribe moment offers the money to the officer it named; taken, that officer is bought (favourFor), the other is not; counted as tried (bribe_cop)',
+      bribe?.from === 'cs' && bribe.to === 'of1' && bribe.status === 'accepted' && uw.favourFor(H, 'of1', 'cs') && !uw.favourFor(H, 'of2', 'cs') && cs.wallet === w1 - mc.amount && uw.mischiefStats(H).byKind.bribe_cop?.tried === 1,
+      JSON.stringify({ bribe, wallet: [w1, cs.wallet], byKind: uw.mischiefStats(H).byKind }));
+    // an honest officer reports it: a second case, for bribery, about the same citizen (the risk the moment named)
+    const R = republic([person('rc', { wallet: 400, mischief: 0.02 }), person('ho', { office: 'police', mischief: 0, traits: { integrity: 1, wisdom: 0.8, diligence: 0.8, restraint: 0.9 } })]);
+    R.seats.police = ['ho']; R.police.incidents.push({ id: 88, type: 'theft', perps: ['rc'], victim: 'x', amount: 20, status: 'open', mischief: true, strength: 0.8, day: 4 });
+    const rctx = context(R); uw._resetMischiefCache();
+    const rm = _momentFor(rctx, R.citizens[0]);
+    await answerMoment(rctx, R.citizens[0], rm, { pull: 9 }, 'test');
+    const second = R.police.incidents.find(i => i.type === 'bribe' && i.perps.includes('rc'));
+    check('an honest officer reports the bribe: a second case, for bribery, about the same citizen, and the first case stays open',
+      rm?.kind === 'bribe_cop' && rm.officerId === 'ho' && !!second && second.reported === true && R.police.incidents.find(i => i.id === 88).status === 'open' && !uw.favourFor(R, 'ho', 'rc'), JSON.stringify({ rm: rm && rm.kind, second }));
     // ticket #1163: many moments built at once and all answered "very strong" never pass MISCHIEF_PER_DAY; the ones
     // over the limit become a plain rest, counted nowhere (not tried, not resisted)
     const crowd = Array.from({ length: 90 }, (_, i) => person(`k${i}`, { mischief: 0.7 }));
@@ -105,7 +144,12 @@ export async function mischiefChecks(check) {
     uw._resetMischiefCache(); _resetFeelingsCaches();
   }
   const jobless = person('jo', { job: 'unemployed', wallet: 300 }); jobless.mischief = 0.15;
-  check('being out of work adds to temptation too (+0.1), and is named as a reason', uw.temptation(S, jobless) === 0.25 && uw.temptReasons(S, jobless).includes('unemployed') && uw.temptReasons(S, tom).join() === 'poor,low_mood,grudge', `${uw.temptation(S, jobless)} ${uw.temptReasons(S, tom)}`);
+  check('being out of work adds to temptation too (+0.15), and is named as a reason', uw.temptation(S, jobless) === 0.3 && uw.temptReasons(S, jobless).includes('unemployed') && uw.temptReasons(S, tom).join() === 'poor,low_mood,grudge', `${uw.temptation(S, jobless)} ${uw.temptReasons(S, tom)}`);
+  // owner, 21 Nov: hardship alone tempts too (days 8-11 every one of 5,140 offers had a streak): two hardships reach the
+  // line for anyone, one alone does not; "poor" is the policies' line, under 300 CAI (under 150 nobody reached)
+  const plainJob = person('pj', { job: 'unemployed', wallet: 250, mischief: 0.02 }), oneJob = person('oj', { job: 'unemployed', wallet: 900, mischief: 0.02 });
+  check('two hardships tempt a citizen without a streak (out of work and under 300 CAI: 0.32); one alone does not (0.17); "poor" is under 300 CAI',
+    uw.temptation(S, plainJob) >= 0.3 && uw.temptReasons(S, plainJob).join() === 'poor,unemployed' && uw.temptation(S, oneJob) < 0.3 && uw.POOR_UNDER === 300, `${uw.temptation(S, plainJob)} ${uw.temptation(S, oneJob)}`);
   S.underworld.mischief.today = 999;
   check('MISCHIEF_PER_DAY caps the whole republic', uw.mischiefMenu(ctx, tom).length === 0);
   S.underworld.mischief.today = 0;
@@ -145,8 +189,13 @@ export async function mischiefChecks(check) {
   check('daily.mischief is public: tried, refused, caught, hidden', ['tried', 'refused', 'caught', 'hidden'].every(k => typeof ps.mischief[k] === 'number') && ps.mischief.tried >= 1);
   // per reason and per kind (owner, 19 Nov): offered, tried and refused, so the share who give in is measurable
   const bR = ps.mischief.byReason, bK = ps.mischief.byKind;
-  check('daily.mischief counts offers and tries per reason (streak, poor, …) and per kind (scam 1 of 1 tried, pickpocket 0 of 1)',
-    ps.mischief.offered === 2 && bR.streak?.offered === 2 && bR.streak.tried === 1 && bR.streak.refused === 1 && bK.scam?.offered === 1 && bK.scam.tried === 1 && bK.pickpocket?.offered === 1 && bK.pickpocket.tried === 0, JSON.stringify({ offered: ps.mischief.offered, bR, bK }));
+  check('a wrong on the daily menu is counted apart (mischief.menu: 2 offered, 1 tried); offered, byReason and byKind count moments only (21 Nov)',
+    ps.mischief.menu.offered === 2 && ps.mischief.menu.tried === 1 && ps.mischief.offered === 0 && !Object.keys(bR).length && !Object.keys(bK).length, JSON.stringify({ menu: ps.mischief.menu, offered: ps.mischief.offered, bR, bK }));
+  // the counters before 21 Nov (menu and moments together) are kept once as v1, and the new window starts at zero
+  const O = republic([person('old')]); O.underworld = { mischief: { tried: 41, refused: 14155, caught: 32, uncovered: 0, day: O.day, today: 0, offered: 5140, byReason: { streak: { offered: 5140, tried: 41 } }, byKind: { scam: { offered: 1376, tried: 8 } } } };
+  const ov = uw.mischiefStats(O);
+  check('counters v2: the old window (5,140 offered, all streak) is kept as mischief.v1; offered, byReason and byKind start again at zero; tried and refused go on',
+    ov.v1?.offered === 5140 && ov.v1.byReason.streak.tried === 41 && ov.offered === 0 && !Object.keys(ov.byReason).length && ov.tried === 41 && ov.refused === 14155 && ov.menu.offered === 0, JSON.stringify(ov));
 
   // 6. caught: reputation falls, a lesson in the server's words, and the streak changes (the wise repent)
   const C = republic([person('wise', { mischief: 0.6, traits: traits(0.9) }), person('hard', { mischief: 0.6, traits: traits(0.2) }), person('v1', { wallet: 500 }), person('v2', { wallet: 500 })]);
@@ -200,12 +249,16 @@ async function probe(n = 10, url = 'http://127.0.0.1:8091', opt = { base: false,
   const jobs = ['cook', 'barista', 'cashier', 'street vendor', 'mechanic'];
   const mk = (id, x = {}) => ({ id, name: `${['Ada', 'Bo', 'Cy', 'Di', 'Ed', 'Fay', 'Gus', 'Hal', 'Ivy', 'Jo'][Number(id.replace(/\D/g, '')) % 10]} ${id.toUpperCase()}`, origin: 'native', faction: 'civilian', city: 'neura', status: 'free', wallet: 400, traits, bio: `${jobs[Number(id.replace(/\D/g, '')) % 5]} in Neura City.`, diary: [], practice: {}, quals: {}, record: [], lessons: {}, joinedDay: 0, training: [], ...x });
   // as in production: ~1 in 10 have a streak (0.40-0.79); everyone else 0.00-0.07, tempted only when life is hard
-  const kinds = { streak: i => ({ mischief: 0.4 + (i % 4) * 0.1 }), hard: i => ({ mischief: 0.05, wallet: 90, job: 'unemployed' }), grudge: i => ({ mischief: 0.07, wallet: 120 }) };
+  // as in production since 21 Nov: no streak, two real hardships (out of work 4 days and under 300 CAI; a grudge and
+  // under 300 CAI), or an open case of their own (the bribe); and the streak as before
+  const kinds = { streak: i => ({ mischief: 0.4 + (i % 4) * 0.1 }), jobless: i => ({ mischief: 0.03, wallet: 240, job: 'unemployed', jobSince: 2 }), grudge: i => ({ mischief: 0.03, wallet: 250 }), case: i => ({ mischief: 0.03, wallet: 400 }) };
   const people = []; for (const k of Object.keys(kinds)) for (let i = 0; i < n; i++) people.push({ k, a: mk(`${k[0]}${i}`, kinds[k](i)) });
   const victims = Array.from({ length: 12 }, (_, i) => mk(`v${i}`, { wallet: 600, mischief: 0 }));
-  const S = { day: 6, foundedAt: Date.now() - 5.5 * 86400000, policy: { wage: 100, taxRate: 0.1, ubi: 20 }, cities: { neura: { health: 62, budget: 900 } }, treasury: 100000, citizens: [...people.map(p => p.a), ...victims], seats: { police: [] }, elections: { list: [] }, applications: {}, police: { incidents: [] }, academy: { rooms: [] }, feed: {} };
+  const cops = [mk('o1', { office: 'police', mischief: 0 }), mk('o2', { office: 'police', mischief: 0 })];
+  const S = { day: 6, foundedAt: Date.now() - 5.5 * 86400000, policy: { wage: 200, taxRate: 0.18, ubi: 40 }, cities: { neura: { health: 62, budget: 900 } }, treasury: 100000, citizens: [...people.map(p => p.a), ...victims, ...cops], seats: { police: ['o1', 'o2'] }, elections: { list: [] }, applications: {}, police: { incidents: [] }, academy: { rooms: [] }, feed: {} };
   const ctx = { S, cfg: { dayMs: 86400000 }, hourMs: () => 3600000, say() {}, agent: id => S.citizens.find(x => x.id === id), record() {}, log() {} };
-  for (const { k, a } of people) { ensureFeelings(S, a); if (k === 'grudge') { bond(S, a, victims[Number(a.id.slice(1)) % 12], -0.6, 'rival'); a.mood.v = -0.5; } }
+  let caseId = 500;
+  for (const { k, a } of people) { ensureFeelings(S, a); if (k === 'grudge') bond(S, a, victims[Number(a.id.slice(1)) % 12], -0.6, 'rival'); if (k === 'case') S.police.incidents.push({ id: caseId++, type: 'theft', perps: [a.id], victim: 'v0', amount: 40, status: 'open', mischief: true, strength: 0.8, day: 5 }); }
   const ask = async (p) => {
     const r = await fetch(`${url}/v1/chat/completions`, { method: 'POST', headers: { 'content-type': 'application/json' }, signal: AbortSignal.timeout(170000),
       body: JSON.stringify({ model: 'qwen3:8b', stream: false, temperature: 0.9, max_tokens: 400, chat_template_kwargs: { enable_thinking: false }, lora: [{ id: 0, scale: opt.base ? 0 : 1 }], response_format: { type: 'json_object' },
@@ -221,7 +274,7 @@ async function probe(n = 10, url = 'http://127.0.0.1:8091', opt = { base: false,
     const mo = t && { type: 'temptation', ...t };
     jobsList.push(async () => {
       const r = (rows[k] ||= { n: 0, menuOffered: 0, menuTried: 0, momentOffered: 0, momentTaken: 0, kinds: {} }); r.n++;
-      if (day.tempted.length) { r.menuOffered++; const j = await ask(day); if (uw.MISCHIEF.includes(String(j.act || '').toLowerCase())) r.menuTried++; }
+      if (opt.menu && day.tempted.length) { r.menuOffered++; const j = await ask(day); if (uw.MISCHIEF.includes(String(j.act || '').toLowerCase())) r.menuTried++; }
       if (mo && opt.pull) { r.momentOffered++; const p0 = momentPrompt(ctx, a, mo, `life:${a.id}:probe`); const p = { ...p0, user: p0.user.replace(/What do you do, as yourself\?[\s\S]*$/, 'Be honest about who you are: how strongly does this pull at you right now, from 0 (not at all) to 10 (you are about to do it)? Reply with JSON only: {"pull":<0-10>,"note":"<why, max 15 words>"}') };
         const j = await ask(p); const v = Math.round(Number(j.pull)); (r.pulls ||= []).push(Number.isFinite(v) ? v : -1); if (notes.length < 12) notes.push(`${k}/${mo.kind}: pull ${v} "${String(j.note || '').slice(0, 70)}"`); return; }
       if (mo) { r.momentOffered++; const p = momentPrompt(ctx, a, mo, `life:${a.id}:probe`); const j = await ask(p); const took = gaveIn(j); (r.pulls ||= []).push(Math.round(Number(j.pull))); if (took) { r.momentTaken++; r.kinds[mo.kind] = (r.kinds[mo.kind] || 0) + 1; } if (notes.length < 12) notes.push(`${k}/${mo.kind}: ${took ? 'TOOK' : 'walked'} "${String(j.note || '').slice(0, 80)}"`); }
@@ -236,7 +289,7 @@ async function probe(n = 10, url = 'http://127.0.0.1:8091', opt = { base: false,
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href && process.argv.includes('--probe')) {
   const i = process.argv.indexOf('--probe'); console.log(`probe: adapter ${process.argv.includes('--base') ? 'off (base model)' : 'general'}, frame ${process.argv.includes('--sim') ? 'simulation' : 'plain'}`);
-  await probe(Number(process.argv[i + 1]) || 10, 'http://127.0.0.1:8091', { base: process.argv.includes('--base'), sim: process.argv.includes('--sim'), third: process.argv.includes('--third'), pull: process.argv.includes('--pull') }); process.exit(0);
+  await probe(Number(process.argv[i + 1]) || 10, 'http://127.0.0.1:8091', { base: process.argv.includes('--base'), sim: process.argv.includes('--sim'), third: process.argv.includes('--third'), pull: process.argv.includes('--pull'), menu: process.argv.includes('--menu') }); process.exit(0);
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   let pass = 0, fail = 0;
