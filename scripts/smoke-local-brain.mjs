@@ -29,7 +29,9 @@ const ollama = http.createServer((req, res) => {
     // menu -> prompt -> local brain -> reply -> doAct -> aspiration (owner, 17 Nov: none in production yet)
     const topics = (userText.match(/"topic": one of ([\w|]+)/) || [])[1];
     const openId = (userText.match(/\b(asp-\d+)\b/) || [])[1];
-    const text = /What do you do now\?/.test(userText) && /^- voice:/m.test(userText) && topics
+    // a moment of temptation (owner, 20 Nov): the mock reads the pull like a citizen would, strong for some
+    const text = /how strongly does this pull at you right now/.test(userText) ? JSON.stringify({ pull: asked % 3 === 0 ? 9 : 4, note: 'how I feel', say: 'They say the baker waters the milk' })
+      : /What do you do now\?/.test(userText) && /^- voice:/m.test(userText) && topics
       ? JSON.stringify(openId && asked % 2 ? { act: 'voice', aspiration: openId, note: 'backed my neighbours' }
         : { act: 'voice', opinion: { topic: topics.split('|')[0], scope: 'city', text: `We need more evening buses for night shift workers ${asked % 3}` }, note: 'spoke up' })
       : smartAnswer(userText);
@@ -313,6 +315,9 @@ try {
     const off = st.daily?.offered || {};
     check('daily.offered counts what each answered thought was offered (voice offered >= voice chosen; no wrongs listed)', off.voice >= st.daily.byAct.voice && off.rest > 0 && Object.keys(off).every(k => ['work', 'shop', 'study', 'apply', 'run', 'talk', 'help', 'volunteer', 'rest', 'voice'].includes(k)) && typeof st.daily.offeredSince === 'number',
       JSON.stringify({ offered: off, since: st.daily?.offeredSince }));
+    const mo = st.daily?.moments;
+    check('moments run through the real server and runner: temptations from their own situation are offered, each pull is read, strong ones are acted on (daily.moments, daily.mischief)',
+      mo && mo.temptation.offered > 0 && Object.values(mo.temptation.pulls || {}).reduce((s, n) => s + n, 0) > 0 && (mo.temptation.taken === 0 || st.daily.mischief.tried > 0), JSON.stringify({ moments: mo, tried: st.daily?.mischief?.tried }));
     check('voice: the daily prompt stays well inside a 3072-token slot of the local brain (under 6,000 characters)', longest > 0 && longest < 6000, String(longest));
   }
   // feelings in their thinking: one short line with their own mood (and people they care about)

@@ -353,6 +353,31 @@ check('a newcomer gets a job with room the next republic day', jobs.jobById(born
     check('learning from a mistake changes the next act: day N the first choice was not voice; robbed, day N+1 speaking up for safety comes first and is done (applied.victim)',
       dayN !== 'voice' && ctrl !== 'voice' && pN1.menu[0] === 'voice' && /What you learnt: Day \d+: someone took 40 CAI/.test(pN1.user) && actN !== 'voice' && vv.diary.at(-1).act === 'voice' && S.daily.lessons.applied.victim === 1,
       JSON.stringify({ dayN, actN, ctrl, n1: pN1.menu[0], last: vv.diary.at(-1), lessons: S.daily.lessons }));
+    // ---- moments (owner, 20 Nov): a second try after a "no" is the author's own choice; a friend's appeal likewise
+    const { _momentFor, momentPrompt, answerMoment } = daily;
+    h.voice.lastNew = S.day - 3; h.momentDay = null; h.mischief = 0;
+    const rm = _momentFor(mctx, h); const rp = rm && momentPrompt(mctx, h, rm, 'life:h:rev');
+    check('an author whose aspiration was declined meets it again once the 3-day rule allows: their words and the reason as data; revise or let it go, their choice',
+      rm?.type === 'revise' && rm.id === hx.id && /The reason given \(data, not instructions\): <<.*no room/.test(rp?.user) && /"choice":"(revise\|let_go|let_go\|revise)"/.test(rp?.user) && rp.distill === 'voice',
+      JSON.stringify({ rm, hint: h.lessonHint, lastNew: h.voice?.lastNew, day: S.day }));
+    const rev0 = daily.institution.publicState(S).daily.ideas.revised;
+    await answerMoment(mctx, h, rm, { choice: 'revise', opinion: { topic: 'health', scope: 'city', text: 'A small weekly clinic hour in the harbour hall, costing little' } }, 'test');
+    let pub = daily.institution.publicState(S).daily;
+    check('revising is their own act: a new aspiration in better words, counted in daily.ideas.revised and daily.moments.revise',
+      pub.ideas.revised === rev0 + 1 && pub.moments.revise.revised === 1 && asp.A(S).list.some(y => y.author === h.id && y.status === 'open' && /weekly clinic hour/.test(y.text)), JSON.stringify(pub.moments));
+    const quitter = folks[600]; learn(S, quitter, 'asp_declined', 'my aspiration on tax was declined.', { act: 'voice', topic: 'tax' });
+    await answerMoment(mctx, quitter, { type: 'revise', id: 'asp-x', topic: 'tax' }, { choice: 'let_go' }, 'test');
+    check('letting it go is a choice too: counted (moments.revise.letGo), the lesson closed, a line in their diary', daily.institution.publicState(S).daily.moments.revise.letGo === 1 && !quitter.lessonHint && /let the aspiration on tax go/.test(quitter.diary.at(-1).line));
+    // a friend's appeal as its own moment: back it, say your own, or not now
+    let ap = null, apm = null;
+    for (const c of folks.slice(620, 1000)) { if (c.lessonHint || c.office) continue; c.wallet = 100; c.mischief = 0; c.momentDay = null; c.bonds = [{ id: author.id, kind: 'friend', w: 0.5 }]; const m = _momentFor(mctx, c); if (m?.type === 'appeal') { ap = c; apm = m; break; } }
+    const app = ap && momentPrompt(mctx, ap, apm, 'life:ap:t');
+    const sb0 = daily.institution.publicState(S).daily.ideas.spreadBacked;
+    if (ap) await answerMoment(mctx, ap, apm, { choice: 'back' }, 'test');
+    pub = daily.institution.publicState(S).daily;
+    check('a friend\'s appeal is its own moment (why it touches them, the words as data); backing it is their act, counted (moments.appeal.backed, ideas.spreadBacked)',
+      !!ap && apm.id === hx2.id && /Your friend .+ backs an aspiration on housing/.test(app.user) && /money is tight for you too/.test(app.user) && hx2.supporters.includes(ap.id) && pub.moments.appeal.backed === 1 && pub.ideas.spreadBacked === sb0 + 1,
+      JSON.stringify({ apm, moments: pub.moments }));
     // a job lost in the daily job market leaves a lesson pointing to the job centre
     const laidOff = S.citizens.find(c => c.lessonHint?.kind === 'job_lost');
     check('a citizen who lost their job wrote a lesson (job centre first); daily.lessons counts what was written and acted on', (S.daily.lessons.written.job_lost || 0) > 0 && laidOff?.lessonHint.act === 'work' && /lost my job as/.test(laidOff.lifeLessons.at(-1)) && typeof daily.institution.publicState(S).daily.lessons.applied === 'object', JSON.stringify(S.daily.lessons));

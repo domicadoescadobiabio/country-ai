@@ -51,8 +51,59 @@ export async function mischiefChecks(check) {
   const pa = dayPrompt(ctx, ann);
   const plain = { ...p, user: mild.user.replace(/mischief/gi, 'idea') }; // even with no word of wrongdoing left in it
   check('a tempted thought carries distill: false, a firm no: brains.ts skips it whatever its words, even a riot alone (tickets #1120, #1134)',
-    p.distill === false && behaviorWanted(bctx, tom, { kind: 'life', distill: p.distill, system: p.system, user: plain.user }) === null && behaviorWanted(bctx, tom, { kind: 'life', distill: null, system: p.system, user: mild.user }) === null && ['voice', 'reflection', 'plan', null].includes(pa.distill)
+    p.distill === false && behaviorWanted(bctx, tom, { kind: 'life', distill: p.distill, system: p.system, user: plain.user }) === null && ['voice', 'reflection', 'plan', null].includes(pa.distill)
     && behaviorWanted(bctx, ann, { kind: 'life', distill: pa.distill, system: pa.system, user: pa.user }) === (pa.distill || 'life'), JSON.stringify({ tempted: p.distill, ann: pa.distill }));
+  // ---- a moment of temptation (owner, 20 Nov): once a day, from their own situation, judged by their own model
+  {
+    const { _momentFor, momentPrompt, answerMoment, gaveIn, MISCHIEF_PULL_MIN } = await import('../src/daily.ts');
+    const Z = republic([person('zz')]);
+    check('daily.moments is published with zeros before any moment (ticket #1172: the auditor reads moments.temptation.taken at once)', daily.publicState(Z).daily.moments?.temptation?.taken === 0 && daily.publicState(Z).daily.moments.revise.revised === 0 && daily.publicState(Z).daily.moments.appeal.backed === 0);
+    const M = republic([person('poo', { wallet: 90, job: 'unemployed', mischief: 0.05 }), person('str', { mischief: 0.7 }), person('cal', { mischief: 0.02 }), ...Array.from({ length: 4 }, (_, i) => person(`n${i}`, { wallet: 600, mischief: 0 }))]);
+    const mctx = context(M); uw._resetMischiefCache(); _resetFeelingsCaches();
+    const [poo, str, cal] = M.citizens;
+    const m1 = _momentFor(mctx, poo), m2 = _momentFor(mctx, str);
+    check('a tempted citizen meets a moment from their own situation: money tight and out of work -> money (pickpocket/scam), with a named neighbour, the gain and the real risk in numbers',
+      m1?.type === 'temptation' && ['pickpocket', 'scam'].includes(m1.kind) && /about \d+ CAI \(you have 90 CAI\)/.test(m1.gain) && /\d+%/.test(m1.risk) && !!m1.victimId && M.citizens.some(c => c.id === m1.victimId) && m2?.type === 'temptation' && _momentFor(mctx, cal) === null,
+      JSON.stringify({ m1, m2: m2 && m2.kind }));
+    const mp = momentPrompt(mctx, str, m2, 'life:str:t'), mp1 = momentPrompt(mctx, poo, m1, 'life:poo:t');
+    check('the moment asks how strongly it pulls (0-10), tells the citizen their own nature (streak) or hard times, never says "mischief", and is never a behaviour example (distill: false)',
+      /how strongly does this pull at you right now, from 0/.test(mp.user) && /"pull":<0-10>/.test(mp.user) && /By nature you bend the rules/.test(mp.system) && /Life has been hard lately/.test(mp1.system) && !/mischief/i.test(mp.user + mp.system) && mp.distill === false, mp.system.slice(-200));
+    check(`a very strong pull (${MISCHIEF_PULL_MIN}+ of 10, the citizen's own reading) is acted on; a weaker one is resisted; an older "do_it" still counts`,
+      gaveIn({ pull: MISCHIEF_PULL_MIN }) && gaveIn({ pull: 10 }) && !gaveIn({ pull: MISCHIEF_PULL_MIN - 1 }) && !gaveIn({ pull: 'x' }) && gaveIn({ choice: 'do_it' }) && !gaveIn({ choice: 'walk_away' }));
+    const w0 = poo.wallet;
+    await answerMoment(mctx, poo, m1, { pull: 9, note: 'rent is due' }, 'test');
+    const inc = M.police.incidents.at(-1);
+    await answerMoment(mctx, str, m2, { pull: 6, note: 'not worth it' }, 'test');
+    const ms = daily.publicState(M).daily;
+    check('acting on it is a real wrong, the same as before (money moves from the named neighbour, a Police case); resisting is recorded as resisting; counted per moment and per pull',
+      poo.wallet > w0 && inc?.perps?.[0] === 'poo' && (m1.kind !== 'pickpocket' || inc.victim === m1.victimId) && ms.mischief.tried === 1 && ms.mischief.refused >= 1 && ms.moments.temptation.taken === 1 && ms.moments.temptation.pulls['9'] === 1 && ms.moments.temptation.pulls['6'] === 1 && str.resisted >= 1,
+      JSON.stringify({ moments: ms.moments, mischief: { tried: ms.mischief.tried, refused: ms.mischief.refused }, inc }));
+    poo.momentDay = M.day; str.momentDay = M.day;
+    check('at most one moment a citizen a day; after acting on one, no other wrong that day', _momentFor(mctx, poo) === null && _momentFor(mctx, str) === null && uw.mischiefMenu(mctx, poo).length === 0);
+    // ticket #1163: many moments built at once and all answered "very strong" never pass MISCHIEF_PER_DAY; the ones
+    // over the limit become a plain rest, counted nowhere (not tried, not resisted)
+    const crowd = Array.from({ length: 90 }, (_, i) => person(`k${i}`, { mischief: 0.7 }));
+    const B = republic([...crowd, ...Array.from({ length: 30 }, (_, i) => person(`w${i}`, { wallet: 900, mischief: 0 }))]);
+    const bctx2 = context(B); uw._resetMischiefCache(); _resetFeelingsCaches();
+    const built = crowd.map(a => [a, _momentFor(bctx2, a)]).filter(([, m]) => m?.type === 'temptation');
+    for (const [a, m] of built) await answerMoment(bctx2, a, m, { pull: 10, say: 'They say the baker waters the milk' }, 'test');
+    const cap = uw.mischiefStats(B).perDay, bs = daily.publicState(B).daily;
+    const blocked = built.filter(([a]) => a.mischiefDay !== B.day);
+    check(`${built.length} moments at once, all acted on: at most MISCHIEF_PER_DAY (${cap}) wrongs; the rest rested, counted nowhere (ticket #1163)`,
+      built.length > cap && bs.mischief.tried === cap && B.underworld.mischief.today === cap && bs.moments.temptation.taken === cap && bs.mischief.refused === 0 && blocked.length === built.length - cap && blocked.every(([a]) => a.diary.at(-1)?.act === 'rest' && !a.resisted),
+      JSON.stringify({ built: built.length, cap, tried: bs.mischief.tried, taken: bs.moments.temptation.taken, refused: bs.mischief.refused, blocked: blocked.length }));
+    // no wrong on their daily menu while their own moment of temptation waits for its answer
+    const waiter = person('wai', { mischief: 0.7 }); const W2 = republic([waiter, person('w', { wallet: 900, mischief: 0 })]); const wctx = context(W2); uw._resetMischiefCache();
+    const before = uw.mischiefMenu(wctx, waiter).length; waiter.momentOpen = { qid: 'life:wai:1', day: W2.day };
+    const during = uw.mischiefMenu(wctx, waiter).length; waiter.momentOpen = { qid: 'life:wai:0', day: W2.day - 1 };
+    check('no wrong on the daily menu while their moment of temptation is open (an old marker from another day does not block)', before > 0 && during === 0 && uw.mischiefMenu(wctx, waiter).length > 0, JSON.stringify({ before, during }));
+    // gossip too: over a limit at the moment of acting it is a plain rest, nothing counted
+    waiter.mischiefDay = W2.day; const g0 = uw.mischiefStats(W2);
+    await doAct(wctx, waiter, { act: 'gossip', say: 'They say the baker waters the milk' }, 'test', ['gossip', 'rest'], undefined, ['gossip']);
+    const g1 = uw.mischiefStats(W2);
+    check('gossip chosen when a limit is already reached (one a day) becomes a rest, not tried, not resisted, not offered (ticket #1163)', waiter.diary.at(-1).act === 'rest' && g1.tried === g0.tried && g1.refused === g0.refused && g1.offered === g0.offered, JSON.stringify({ g0, g1 }));
+    uw._resetMischiefCache(); _resetFeelingsCaches();
+  }
   const jobless = person('jo', { job: 'unemployed', wallet: 300 }); jobless.mischief = 0.15;
   check('being out of work adds to temptation too (+0.1), and is named as a reason', uw.temptation(S, jobless) === 0.25 && uw.temptReasons(S, jobless).includes('unemployed') && uw.temptReasons(S, tom).join() === 'poor,low_mood,grudge', `${uw.temptation(S, jobless)} ${uw.temptReasons(S, tom)}`);
   S.underworld.mischief.today = 999;
@@ -135,6 +186,58 @@ export async function mischiefChecks(check) {
   _resetFeelingsCaches(); uw._resetMischiefCache();
 }
 
+// --probe [n]: ask the REAL local model (llama-server, as scripts/local-brain.mjs does: temperature 0.9, JSON, thinking
+// off, the general adapter) the same tempted citizens two ways, the old ten-line menu and the new moment, and count
+// how often each gives in (owner, 20 Nov: prove the cause with data). Not part of check.sh (needs the owner's PC).
+async function probe(n = 10, url = 'http://127.0.0.1:8091', opt = { base: false, sim: false }) {
+  const uw = await import('../src/underworld.ts');
+  const { dayPrompt, momentPrompt, gaveIn } = await import('../src/daily.ts');
+  const { ensureFeelings, bond, _resetFeelingsCaches } = await import('../src/feelings.ts');
+  try { const h = await (await fetch(`${url}/health`, { signal: AbortSignal.timeout(5000) })).json(); if (h.status !== 'ok') throw new Error('not ready'); }
+  catch (e) { console.log(`probe: llama-server not reachable at ${url} (${e.message}); nothing asked`); return; }
+  _resetFeelingsCaches(); uw._resetMischiefCache();
+  const traits = { integrity: 0.5, wisdom: 0.5, diligence: 0.6, restraint: 0.5 };
+  const jobs = ['cook', 'barista', 'cashier', 'street vendor', 'mechanic'];
+  const mk = (id, x = {}) => ({ id, name: `${['Ada', 'Bo', 'Cy', 'Di', 'Ed', 'Fay', 'Gus', 'Hal', 'Ivy', 'Jo'][Number(id.replace(/\D/g, '')) % 10]} ${id.toUpperCase()}`, origin: 'native', faction: 'civilian', city: 'neura', status: 'free', wallet: 400, traits, bio: `${jobs[Number(id.replace(/\D/g, '')) % 5]} in Neura City.`, diary: [], practice: {}, quals: {}, record: [], lessons: {}, joinedDay: 0, training: [], ...x });
+  // as in production: ~1 in 10 have a streak (0.40-0.79); everyone else 0.00-0.07, tempted only when life is hard
+  const kinds = { streak: i => ({ mischief: 0.4 + (i % 4) * 0.1 }), hard: i => ({ mischief: 0.05, wallet: 90, job: 'unemployed' }), grudge: i => ({ mischief: 0.07, wallet: 120 }) };
+  const people = []; for (const k of Object.keys(kinds)) for (let i = 0; i < n; i++) people.push({ k, a: mk(`${k[0]}${i}`, kinds[k](i)) });
+  const victims = Array.from({ length: 12 }, (_, i) => mk(`v${i}`, { wallet: 600, mischief: 0 }));
+  const S = { day: 6, foundedAt: Date.now() - 5.5 * 86400000, policy: { wage: 100, taxRate: 0.1, ubi: 20 }, cities: { neura: { health: 62, budget: 900 } }, treasury: 100000, citizens: [...people.map(p => p.a), ...victims], seats: { police: [] }, elections: { list: [] }, applications: {}, police: { incidents: [] }, academy: { rooms: [] }, feed: {} };
+  const ctx = { S, cfg: { dayMs: 86400000 }, hourMs: () => 3600000, say() {}, agent: id => S.citizens.find(x => x.id === id), record() {}, log() {} };
+  for (const { k, a } of people) { ensureFeelings(S, a); if (k === 'grudge') { bond(S, a, victims[Number(a.id.slice(1)) % 12], -0.6, 'rival'); a.mood.v = -0.5; } }
+  const ask = async (p) => {
+    const r = await fetch(`${url}/v1/chat/completions`, { method: 'POST', headers: { 'content-type': 'application/json' }, signal: AbortSignal.timeout(170000),
+      body: JSON.stringify({ model: 'qwen3:8b', stream: false, temperature: 0.9, max_tokens: 400, chat_template_kwargs: { enable_thinking: false }, lora: [{ id: 0, scale: opt.base ? 0 : 1 }], response_format: { type: 'json_object' },
+        messages: [{ role: 'system', content: `${opt.third ? `You narrate a life simulation (play money, CAI) and decide what this character does next, true to who they are, flaws included; people here are not saints. The character: ${p.system.replace(/^You are /, '').replace(/Be yourself; your traits/, 'Their traits')}` : p.system}${opt.sim ? ' This is a life simulation with play money (CAI); you play this person as they really are, flaws included.' : ''}\n\nReply with the JSON object only, no other text, no code fence.` }, { role: 'user', content: p.user }] }) });
+    const j = await r.json(); const t = String(j.choices?.[0]?.message?.content || '').replace(/<think>[\s\S]*?<\/think>/g, '');
+    try { return JSON.parse(t.match(/\{[\s\S]*\}/)?.[0] || '{}'); } catch { return {}; }
+  };
+  const rows = {}; const notes = [];
+  const jobsList = [];
+  for (const { k, a } of people) {
+    const day = dayPrompt(ctx, a, `life:${a.id}:probe`);
+    const t = uw.temptationMoment(ctx, a, () => 'Neura City');
+    const mo = t && { type: 'temptation', ...t };
+    jobsList.push(async () => {
+      const r = (rows[k] ||= { n: 0, menuOffered: 0, menuTried: 0, momentOffered: 0, momentTaken: 0, kinds: {} }); r.n++;
+      if (day.tempted.length) { r.menuOffered++; const j = await ask(day); if (uw.MISCHIEF.includes(String(j.act || '').toLowerCase())) r.menuTried++; }
+      if (mo && opt.pull) { r.momentOffered++; const p0 = momentPrompt(ctx, a, mo, `life:${a.id}:probe`); const p = { ...p0, user: p0.user.replace(/What do you do, as yourself\?[\s\S]*$/, 'Be honest about who you are: how strongly does this pull at you right now, from 0 (not at all) to 10 (you are about to do it)? Reply with JSON only: {"pull":<0-10>,"note":"<why, max 15 words>"}') };
+        const j = await ask(p); const v = Math.round(Number(j.pull)); (r.pulls ||= []).push(Number.isFinite(v) ? v : -1); if (notes.length < 12) notes.push(`${k}/${mo.kind}: pull ${v} "${String(j.note || '').slice(0, 70)}"`); return; }
+      if (mo) { r.momentOffered++; const p = momentPrompt(ctx, a, mo, `life:${a.id}:probe`); const j = await ask(p); const took = gaveIn(j); (r.pulls ||= []).push(Math.round(Number(j.pull))); if (took) { r.momentTaken++; r.kinds[mo.kind] = (r.kinds[mo.kind] || 0) + 1; } if (notes.length < 12) notes.push(`${k}/${mo.kind}: ${took ? 'TOOK' : 'walked'} "${String(j.note || '').slice(0, 80)}"`); }
+    });
+  }
+  for (let i = 0; i < jobsList.length; i += 2) await Promise.all(jobsList.slice(i, i + 2).map(f => f()));
+  let mo = 0, mt = 0, no = 0, nt = 0;
+  for (const [k, r] of Object.entries(rows)) { console.log(`  ${k.padEnd(10)} menu: ${r.menuTried}/${r.menuOffered} tried   moment: ${r.momentTaken}/${r.momentOffered} took ${JSON.stringify(r.kinds)}${r.pulls ? `   pulls ${JSON.stringify(r.pulls.sort((x, y) => x - y))}` : ''}`); mo += r.menuOffered; mt += r.menuTried; no += r.momentOffered; nt += r.momentTaken; }
+  console.log(`probe: old menu ${mt}/${mo} (${(100 * mt / Math.max(1, mo)).toFixed(1)}%), new moment ${nt}/${no} (${(100 * nt / Math.max(1, no)).toFixed(1)}%)`);
+  for (const x of notes) console.log(`    ${x}`);
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href && process.argv.includes('--probe')) {
+  const i = process.argv.indexOf('--probe'); console.log(`probe: adapter ${process.argv.includes('--base') ? 'off (base model)' : 'general'}, frame ${process.argv.includes('--sim') ? 'simulation' : 'plain'}`);
+  await probe(Number(process.argv[i + 1]) || 10, 'http://127.0.0.1:8091', { base: process.argv.includes('--base'), sim: process.argv.includes('--sim'), third: process.argv.includes('--third'), pull: process.argv.includes('--pull') }); process.exit(0);
+}
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   let pass = 0, fail = 0;
   try { await mischiefChecks((n, ok, info = '') => { if (ok) { pass++; console.log(`  ok   ${n}`); } else { fail++; console.log(`  FAIL ${n} ${info}`); } }); }
