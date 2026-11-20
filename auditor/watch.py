@@ -19,6 +19,8 @@ SCHOOL_WINDOW_S = 3600      # lessons / train queue are judged over the last hou
 QUEUE_GROWTH = 10           # queuedTrain rising at every observation by at least this much in total
 BUDGET_FULL_SHARE = 0.9     # a share of the model purse this full counts as spent
 BUDGET_PACE_MARGIN = 0.35   # government spending this far ahead of the hour of the day is a warning
+COURT_SURGE = 2.0           # criminal trials today at least this many times the day before is a sharp rise
+COURT_MIN_TRIALS = 20       # ... and at least this many trials (a quiet day doubling from 2 to 4 is no surge)
 RUNWAY_DAYS = 5.0           # treasury left at the net UBI burn
 REJECTED_SHARE = 0.5        # gov.rejectedShare above this for a whole day
 SEATS_STUCK_S = 12 * 3600   # seats filled unchanged this long
@@ -219,6 +221,29 @@ def mischief(state: dict, trials_by_day: dict | None = None) -> tuple[dict, dict
                             f"daily.mischief.today {today:.0f} is over its cap perDay {per_day:.0f} on day {day} "
                             f"(temptations taken {taken if taken is not None else '-'}, criminal trials today {trials})")
     return view, None
+
+
+def court_load(state: dict, trials_by_day: dict | None) -> dict | None:
+    """Criminal trials rising sharply on the same day leaders start being refused model calls.
+
+    Judges think with the leaders' model budget, so a flood of small criminal cases can push leaders offline
+    (Security finding on court.ts: judges offline for small offences). Needs the ledger count per day."""
+    if not trials_by_day:
+        return None
+    day = state.get("day")
+    if not isinstance(day, int):
+        return None
+    today, yesterday = trials_by_day.get(day, 0), trials_by_day.get(day - 1, 0)
+    b = state.get("budget") or {}
+    denied = _num((b.get("denied") or {}).get("leader")) or 0.0
+    sharp = today >= COURT_MIN_TRIALS and today >= COURT_SURGE * max(yesterday, 1)
+    if not (sharp and denied > 0):
+        return None
+    gov_cap = (_num(b.get("daily")) or 0) - (_num((b.get("train") or {}).get("daily")) or 0)
+    return _alarm("pemerintah:court-load", "pemerintah",
+                  f"day {day}: {today} criminal trials (day before {yesterday}) while leaders were refused "
+                  f"{denied:.0f} model call(s); leader spend ${_num(b.get('leader')) or 0:.2f}, government "
+                  f"${_num(b.get('spent')) or 0:.2f} of ${gov_cap:.2f}")
 
 
 def _ubi_short(ubi_entries: list[dict] | None) -> str:
@@ -470,6 +495,10 @@ def evaluate(state: dict, health: dict | None, ledger_by_kind: dict | None, memo
     memo["mischiefView"], a = mischief(state, trials_by_day)
     if a:
         alarms.append(a)
+    if a := court_load(state, trials_by_day):
+        alarms.append(a)
+    if trials_by_day and isinstance(state.get("day"), int):
+        memo["mischiefView"]["criminalTrialsYesterday"] = trials_by_day.get(state["day"] - 1, 0)
     alarms += llm_errors(state, memo)
     dup = ledger_duplicates(ledger_by_kind) if ledger_by_kind is not None else None
     if dup and (a := ledger_alarm(dup)):

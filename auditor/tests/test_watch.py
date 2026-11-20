@@ -325,6 +325,23 @@ class MischiefTest(unittest.TestCase):
         self.assertIsNone(view["temptationTaken"])
 
 
+class CourtLoadTest(unittest.TestCase):
+    def st(self, denied):
+        return {"day": 12, "budget": {"daily": 45, "spent": 6.5, "leader": 5.0, "denied": {"leader": denied},
+                                      "train": {"daily": 38}}}
+
+    def test_surge_with_refused_leaders(self):
+        a = watch.court_load(self.st(3), {11: 45, 12: 95})
+        self.assertEqual(a["key"], "pemerintah:court-load")
+        self.assertIn("95 criminal trials (day before 45)", a["text"])
+
+    def test_surge_without_refusals_or_refusals_without_surge(self):
+        self.assertIsNone(watch.court_load(self.st(0), {11: 45, 12: 95}))
+        self.assertIsNone(watch.court_load(self.st(3), {11: 45, 12: 60}))
+        self.assertIsNone(watch.court_load(self.st(3), {11: 2, 12: 6}))  # too few to call a surge
+        self.assertIsNone(watch.court_load(self.st(3), None))
+
+
 class BuildTest(unittest.TestCase):
     def test_restart_without_deploy(self):
         memo = {}
