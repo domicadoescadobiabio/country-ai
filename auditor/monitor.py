@@ -106,7 +106,18 @@ def observe(src: ApiSource, cursor: ChainCursor, recounted: set[int], memo: dict
             memo["ubiAfter"], memo["ubiLast"] = ubi[-1]["seq"], ubi
     except Exception as exc:
         obs["ledgerUbiError"] = str(exc)
-    obs["watch"] = watch.evaluate(st, health, by_kind, memo, ubi_entries=ubi)
+    trials = None
+    try:
+        new_cases = list(src.ledger_kind("court_case", after=memo.get("casesAfter", 0)))
+        if new_cases:
+            memo["casesAfter"] = new_cases[-1]["seq"]
+        counts = memo.setdefault("trialsByDay", {})
+        for d, n in watch.criminal_trials_by_day(new_cases).items():
+            counts[d] = counts.get(d, 0) + n
+        trials = counts
+    except Exception as exc:
+        obs["ledgerCasesError"] = str(exc)
+    obs["watch"] = watch.evaluate(st, health, by_kind, memo, ubi_entries=ubi, trials_by_day=trials)
     try:
         census = src.get("/api/census") or {}
         obs["census"] = (census.get("hours") or [])[-1:] or None

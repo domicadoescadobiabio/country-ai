@@ -311,6 +311,14 @@ class MischiefTest(unittest.TestCase):
         self.assertEqual(a["key"], "rakyat:mischief-cap")
         self.assertEqual(view["temptationTaken"], 70.0)
 
+    def test_trials_counted_from_the_ledger(self):
+        cases = [{"day": 11, "data": {"kind": "criminal"}}] * 45 + [{"day": 11, "data": {"kind": "policy"}},
+                                                                    {"day": 10, "data": {"kind": "criminal"}}]
+        by_day = watch.criminal_trials_by_day(cases)
+        self.assertEqual(by_day, {11: 45, 10: 1})
+        view, _ = watch.mischief(self.st(41), by_day)
+        self.assertEqual((view["criminalTrialsToday"], view["trialsFrom"]), (45, "ledger"))
+
     def test_fields_not_live_yet(self):
         view, a = watch.mischief({"daily": {}})
         self.assertIsNone(a)

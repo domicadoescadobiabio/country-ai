@@ -186,19 +186,33 @@ def leader_budget(state: dict, memo: dict) -> list[dict]:
     return out
 
 
-def mischief(state: dict) -> tuple[dict, dict | None]:
+def criminal_trials_by_day(court_cases: list[dict]) -> dict:
+    """Criminal cases opened per republic day, from the ledger's `court_case` entries (the state lists only some)."""
+    out: dict = {}
+    for e in court_cases:
+        if (e.get("data") or {}).get("kind") == "criminal":
+            out[e.get("day")] = out.get(e.get("day"), 0) + 1
+    return out
+
+
+def mischief(state: dict, trials_by_day: dict | None = None) -> tuple[dict, dict | None]:
     """Citizens' small wrongs per day against their cap, with the day's temptations taken and criminal trials.
 
     `daily.mischief.today` must never pass `daily.mischief.perDay` (MISCHIEF_PER_DAY caps the whole republic).
-    `daily.moments.temptation.taken` (citizen moments) and the criminal cases opened today are kept for the log."""
+    `daily.moments.temptation.taken` (citizen moments) and the criminal cases opened today are kept for the log;
+    the count comes from the ledger when given, else from the (partial) `court.cases` list of the state."""
     d = state.get("daily") or {}
     m = d.get("mischief") or {}
     today, per_day = _num(m.get("today")), _num(m.get("perDay"))
     taken = _num((((d.get("moments") or {}).get("temptation")) or {}).get("taken"))
     day = state.get("day")
     cases = (state.get("court") or {}).get("cases") or []
-    trials = sum(1 for c in cases if c.get("kind") == "criminal" and c.get("openedDay") == day)
+    if trials_by_day is not None:
+        trials, source = trials_by_day.get(day, 0), "ledger"
+    else:
+        trials, source = sum(1 for c in cases if c.get("kind") == "criminal" and c.get("openedDay") == day), "state"
     view = {"today": today, "perDay": per_day, "temptationTaken": taken, "criminalTrialsToday": trials,
+            "trialsFrom": source,
             "tried": _num(m.get("tried")), "caught": _num(m.get("caught"))}
     if today is not None and per_day is not None and today > per_day:
         return view, _alarm("rakyat:mischief-cap", "rakyat",
@@ -437,7 +451,7 @@ def ledger_alarm(dup: dict) -> dict | None:
 
 # ---------------------------------------------------------------- all together
 def evaluate(state: dict, health: dict | None, ledger_by_kind: dict | None, memo: dict, now: float | None = None,
-             ubi_entries: list[dict] | None = None) -> dict:
+             ubi_entries: list[dict] | None = None, trials_by_day: dict | None = None) -> dict:
     now = time.time() if now is None else now
     alarms: list[dict] = []
     rep = street_repeats(state)
@@ -453,7 +467,7 @@ def evaluate(state: dict, health: dict | None, ledger_by_kind: dict | None, memo
     alarms += academy_training(state, memo)
     alarms += school_training(state, memo, now)
     alarms += leader_budget(state, memo)
-    memo["mischiefView"], a = mischief(state)
+    memo["mischiefView"], a = mischief(state, trials_by_day)
     if a:
         alarms.append(a)
     alarms += llm_errors(state, memo)
