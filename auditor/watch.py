@@ -186,6 +186,27 @@ def leader_budget(state: dict, memo: dict) -> list[dict]:
     return out
 
 
+def mischief(state: dict) -> tuple[dict, dict | None]:
+    """Citizens' small wrongs per day against their cap, with the day's temptations taken and criminal trials.
+
+    `daily.mischief.today` must never pass `daily.mischief.perDay` (MISCHIEF_PER_DAY caps the whole republic).
+    `daily.moments.temptation.taken` (citizen moments) and the criminal cases opened today are kept for the log."""
+    d = state.get("daily") or {}
+    m = d.get("mischief") or {}
+    today, per_day = _num(m.get("today")), _num(m.get("perDay"))
+    taken = _num((((d.get("moments") or {}).get("temptation")) or {}).get("taken"))
+    day = state.get("day")
+    cases = (state.get("court") or {}).get("cases") or []
+    trials = sum(1 for c in cases if c.get("kind") == "criminal" and c.get("openedDay") == day)
+    view = {"today": today, "perDay": per_day, "temptationTaken": taken, "criminalTrialsToday": trials,
+            "tried": _num(m.get("tried")), "caught": _num(m.get("caught"))}
+    if today is not None and per_day is not None and today > per_day:
+        return view, _alarm("rakyat:mischief-cap", "rakyat",
+                            f"daily.mischief.today {today:.0f} is over its cap perDay {per_day:.0f} on day {day} "
+                            f"(temptations taken {taken if taken is not None else '-'}, criminal trials today {trials})")
+    return view, None
+
+
 def _ubi_short(ubi_entries: list[dict] | None) -> str:
     short = (ubi_entries[-1].get("data") or {}).get("short") if ubi_entries else None
     return f" (last UBI short by {short})" if short else ""
@@ -432,6 +453,9 @@ def evaluate(state: dict, health: dict | None, ledger_by_kind: dict | None, memo
     alarms += academy_training(state, memo)
     alarms += school_training(state, memo, now)
     alarms += leader_budget(state, memo)
+    memo["mischiefView"], a = mischief(state)
+    if a:
+        alarms.append(a)
     alarms += llm_errors(state, memo)
     dup = ledger_duplicates(ledger_by_kind) if ledger_by_kind is not None else None
     if dup and (a := ledger_alarm(dup)):
@@ -441,5 +465,6 @@ def evaluate(state: dict, health: dict | None, ledger_by_kind: dict | None, memo
     memo["open"] = keys
     return {"alarms": alarms, "opened": [k for k in keys if k not in before], "closed": sorted(before - set(keys)),
             "streets": rep, "acts": memo.get("actsWindow"), "runway": memo.get("runway"),
-            "school": memo.get("schoolWindow"), "budget": memo.get("budgetView"), "today": memo.get("today"),
+            "school": memo.get("schoolWindow"), "budget": memo.get("budgetView"),
+            "mischief": memo.get("mischiefView"), "today": memo.get("today"),
             "ledgerOnce": dup}

@@ -293,6 +293,30 @@ class LeaderBudgetTest(unittest.TestCase):
         self.assertEqual(self.keys(self.st(3.0, 0, hour=12)), set())  # 43% at half the day
 
 
+class MischiefTest(unittest.TestCase):
+    def st(self, today, per_day=60, taken=None):
+        d = {"mischief": {"today": today, "perDay": per_day, "tried": 3, "caught": 1}}
+        if taken is not None:
+            d["moments"] = {"temptation": {"taken": taken}}
+        return {"day": 11, "daily": d, "court": {"cases": [
+            {"kind": "criminal", "openedDay": 11}, {"kind": "criminal", "openedDay": 10}, {"kind": "civil", "openedDay": 11}]}}
+
+    def test_at_or_under_the_cap(self):
+        view, a = watch.mischief(self.st(60))
+        self.assertIsNone(a)
+        self.assertEqual(view["criminalTrialsToday"], 1)
+
+    def test_over_the_cap(self):
+        view, a = watch.mischief(self.st(61, taken=70))
+        self.assertEqual(a["key"], "rakyat:mischief-cap")
+        self.assertEqual(view["temptationTaken"], 70.0)
+
+    def test_fields_not_live_yet(self):
+        view, a = watch.mischief({"daily": {}})
+        self.assertIsNone(a)
+        self.assertIsNone(view["temptationTaken"])
+
+
 class BuildTest(unittest.TestCase):
     def test_restart_without_deploy(self):
         memo = {}
